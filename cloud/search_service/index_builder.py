@@ -1,14 +1,18 @@
-"""Index builder placeholder for FAISS search service.
+"""Search helpers for the local runtime.
 
-In a full implementation this module would create or load a FAISS index
-(e.g., IVF/PQ) from a dataset. For the purpose of this skeleton we simply
-return ``None`` to indicate an empty index.
+The v1 runtime uses SQLite metadata with brute-force cosine similarity over
+stored embeddings. This module exists to keep the service boundary stable so a
+future HNSW/Qdrant adapter can replace the implementation without changing the
+FastAPI surface.
 """
 
-def load_index():
-    """Return a placeholder index.
+from dataclasses import dataclass
 
-    Returns:
-        ``None`` – representing an empty index.
-    """
-    return None
+
+@dataclass
+class LocalSearchIndex:
+    name: str = "sqlite-cosine"
+
+
+def load_index() -> LocalSearchIndex:
+    return LocalSearchIndex()

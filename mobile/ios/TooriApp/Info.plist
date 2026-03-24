@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.toori.app</string>
+    <key>CFBundleName</key>
+    <string>Toori Lens</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Toori uses the camera to build a searchable memory of what the lens sees.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Toori stores captured observations and thumbnails for replay and search.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>

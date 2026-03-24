@@ -3,9 +3,25 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "start": "node node_modules/electron/cli.js .",
+    "start:bundle": "node scripts/start-dev-app.cjs",
+    "web": "vite --host 127.0.0.1 --port 4173",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "electron": "^26.2.0"
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^26.2.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
   }
 }

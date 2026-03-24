@@ -1,5 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld('electronAPI', {
-  search: (embedding) => ipcRenderer.invoke('search-api', embedding)
+contextBridge.exposeInMainWorld("tooriDesktop", {
+  request: (path, options = {}) => ipcRenderer.invoke("runtime:request", { path, ...options }),
+  pickFile: () => ipcRenderer.invoke("runtime:pick-file"),
+  getCameraAccess: () => ipcRenderer.invoke("runtime:camera-access"),
+  requestCameraAccess: () => ipcRenderer.invoke("runtime:request-camera-access"),
+  openCameraSettings: () => ipcRenderer.invoke("runtime:open-camera-settings"),
 });

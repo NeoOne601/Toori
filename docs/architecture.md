@@ -1,10 +1,22 @@
 # System Architecture
 
-The Toori system consists of several high‑level components:
+Toori is organized around a loopback-first runtime and three client surfaces.
 
-- **Mobile app** – native iOS/Android client that captures images, runs on‑device inference, and communicates with the backend.
-- **JEPA service** – cloud service that processes embeddings using the JEPA model.
-- **FAISS service** – provides similarity search over embeddings.
-- **API gateway** – FastAPI gateway that authenticates requests and routes them to the appropriate services.
+## Components
 
-These components work together to enable edge‑cloud hybrid image retrieval.
+- **Runtime API**: FastAPI app on `127.0.0.1:7777` handling `analyze`, `query`, `settings`, `provider health`, `observations`, and event streaming.
+- **Observation Store**: SQLite plus file-backed thumbnails/images in `.toori/`.
+- **Provider Registry**: selects local perception and optional reasoning providers with circuit-breaker fallback.
+- **Desktop Client**: Electron + React operator shell with live lens, replay, search, integrations, and settings.
+- **iOS Client**: SwiftUI source tree using AVFoundation and the shared runtime contract.
+- **Android Client**: Jetpack Compose source tree using CameraX and the shared runtime contract.
+- **SDK Layer**: lightweight Python, TypeScript, Swift, and Kotlin clients for plugin usage.
+
+## Runtime Flow
+
+1. Capture a real frame.
+2. Compute a local embedding through the best available perception provider.
+3. Persist the observation, thumbnail, metadata, and embedding.
+4. Search prior observations locally.
+5. Optionally invoke `ollama`, MLX, or cloud reasoning to produce a natural-language answer.
+6. Stream the result to the active client and any plugin subscribers.

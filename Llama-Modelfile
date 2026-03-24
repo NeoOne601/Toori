@@ -1,0 +1,2 @@
+FROM "/Volumes/Apple/AI Model/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+PARAMETER num_ctx 8192
