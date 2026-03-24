@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jepa-service
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: jepa-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: search-service
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: search-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

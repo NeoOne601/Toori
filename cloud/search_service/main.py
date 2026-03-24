@@ -12,7 +12,20 @@ from typing import List
 
 from .index_builder import load_index
 
+from prometheus_client import make_asgi_app
+
+from prometheus_client import make_asgi_app, Gauge, CollectorRegistry
+
+# Create a dedicated registry for this service to avoid metric name collisions
+_search_registry = CollectorRegistry()
+process_cpu_seconds_total = Gauge('process_cpu_seconds_total', 'CPU seconds total', registry=_search_registry)
+process_cpu_seconds_total.set(0.0)
+
 app = FastAPI()
+
+# Mount Prometheus metrics endpoint using the dedicated registry
+app.mount("/metrics", make_asgi_app(registry=_search_registry))
+
 
 # Load the index at startup (placeholder)
 index = load_index()
