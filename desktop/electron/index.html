@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Toori Camera Capture</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    video, canvas { max-width: 100%; }
+    #result { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Capture Image / Video</h1>
+  <video id="video" autoplay playsinline></video>
+  <button id="captureBtn">Capture Photo</button>
+  <canvas id="canvas" style="display:none;"></canvas>
+  <pre id="result"></pre>
+  <script src="renderer.js"></script>
+</body>
+</html>
