@@ -25,7 +25,20 @@ def default_settings() -> RuntimeSettings:
     default_onnx_labels = str(root / "models" / "vision" / "imagenet-simple-labels.json")
     default_mlx_command = os.getenv("TOORI_MLX_COMMAND") or f"python3.11 {root / 'scripts' / 'mlx_reasoner.py'}"
     return RuntimeSettings(
+        primary_perception_provider="dinov2",
+        fallback_order=["dinov2", "onnx", "basic", "cloud"],
         providers={
+            "dinov2": ProviderConfig(
+                name="dinov2",
+                enabled=True,
+                model="facebookresearch/dinov2:dinov2_vits14",
+                metadata={
+                    "device": os.getenv("TOORI_DINOV2_DEVICE", "mps"),
+                    "sam_device": os.getenv("TOORI_SAM_DEVICE", os.getenv("TOORI_DINOV2_DEVICE", "mps")),
+                    "pool_dim": 128,
+                    "patch_grid": [14, 14],
+                },
+            ),
             "onnx": ProviderConfig(
                 name="onnx",
                 enabled=True,

@@ -142,11 +142,22 @@ The proof surface is strongest when the same live sequence is evaluated by all t
 
 Primary local perception is platform-native:
 
-- `onnx` on desktop
+- `dinov2` + `MobileSAM` on the desktop/runtime path
+- `onnx` as a compatibility fallback on desktop
 - `coreml` on iOS
 - `tflite` on Android
 
 A real fallback descriptor still exists so the app can keep working when the primary backend is missing.
+
+## Perception Migration
+
+The current desktop/runtime proof path has moved from a closed-vocabulary ONNX classifier to:
+
+- DINOv2-small for open-vocabulary patch tokens
+- MobileSAM for live mask proposals
+- random patch masking as the timeout fallback when segmentation is unavailable
+
+This matters because the proof surface should not depend on a fixed label set. A scene can be tracked as a persistent entity thread even when the runtime does not have a canonical class label for it.
 
 ### Reasoning
 
@@ -199,6 +210,7 @@ The proof surface adds explicit world-model endpoints on top of the existing ana
   - evaluates a live or stored sequence against JEPA mode and both baselines
 - `WS /v1/events`
   - emits `world_state.updated`, `entity_track.updated`, and `challenge.updated` in addition to observation events
+  - now also emits additive `jepa_tick` and `llm_latency` events for the immersive proof surface
 
 Conceptual runtime types:
 
@@ -225,6 +237,30 @@ The runtime is the plugin boundary. Other apps should integrate through:
 - generated SDKs in `sdk/`
 
 The important API idea is that clients consume a world model, not just a caption service.
+
+## Immersive Proof Surface
+
+The immersive surface is split into:
+
+- `SpatialCanvas3D` over the live video
+- `OcclusionPanel` for ghost tracks and recovery
+- `ForecastPanel` for `FE(k)` and JEPA vs LLM timing
+- `SigRegGauge` for collapse monitoring
+- `BaselineBattle` for historical baseline comparison
+- `ConsumerMode` for the plain-language public-facing view
+
+Science Mode keeps the full dashboard visible. Consumer Mode keeps the overlay but suppresses dense metrics.
+
+## Open Source Architecture
+
+The repository is intentionally organized so the community can evolve:
+
+- perception backbones in `cloud/perception/`
+- predictor architectures in `cloud/jepa_service/engine.py`
+- consumer translations in the Electron UI layer
+- SDK implementations under `sdk/`
+
+The public route and event contracts stay stable while those internal subsystems evolve.
 
 ## Current Scientific Limits
 

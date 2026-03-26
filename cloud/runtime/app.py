@@ -5,14 +5,16 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from prometheus_client import CollectorRegistry, Counter, Histogram, make_asgi_app
 
 from .service import RuntimeContainer
 from .models import (
     AnalyzeRequest,
     ChallengeEvaluateRequest,
+    JEPAForecastRequest,
     LivingLensTickRequest,
+    ProofReportGenerateRequest,
     QueryRequest,
     RuntimeSettings,
 )
@@ -108,6 +110,14 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         with analyze_latency.time():
             return app.state.runtime.living_lens_tick(payload)
 
+    @app.post("/v1/jepa/forecast", dependencies=[Depends(require_auth)])
+    def jepa_forecast(
+        payload: JEPAForecastRequest,
+        k: int | None = Query(default=None, ge=1, le=32),
+    ):
+        horizon = k if k is not None else payload.k
+        return app.state.runtime.forecast_jepa(payload.session_id, horizon)
+
     @app.post("/v1/query", dependencies=[Depends(require_auth)])
     def query(payload: QueryRequest):
         return app.state.runtime.query(payload)
@@ -119,6 +129,21 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     @app.post("/v1/challenges/evaluate", dependencies=[Depends(require_auth)])
     def evaluate_challenge(payload: ChallengeEvaluateRequest):
         return app.state.runtime.evaluate_challenge(payload)
+
+    @app.post("/v1/proof-report/generate", dependencies=[Depends(require_auth)])
+    def generate_proof_report(payload: ProofReportGenerateRequest):
+        return app.state.runtime.generate_proof_report(payload.session_id, payload.chart_b64)
+
+    @app.get("/v1/proof-report/latest", dependencies=[Depends(require_auth)])
+    def latest_proof_report():
+        latest = app.state.runtime.latest_proof_report()
+        if latest is None or not latest.exists():
+            raise HTTPException(status_code=404, detail="Proof report not found")
+        return StreamingResponse(
+            iter([latest.read_bytes()]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{latest.name}"'},
+        )
 
     @app.websocket("/v1/events")
     async def events_socket(websocket: WebSocket):

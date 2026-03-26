@@ -10,6 +10,16 @@ import {
 } from "react";
 // @ts-ignore - react-grid-layout v2 removed WidthProvider; ResponsiveGridLayout is the composed replacement
 import { ResponsiveGridLayout as _ResponsiveGridLayout } from "react-grid-layout";
+import BaselineBattle from "./components/BaselineBattle";
+import ConsumerMode from "./components/ConsumerMode";
+import ForecastPanel from "./components/ForecastPanel";
+import OcclusionPanel from "./components/OcclusionPanel";
+import SigRegGauge from "./components/SigRegGauge";
+import SpatialCanvas3D from "./components/SpatialCanvas3D";
+
+/* CC-BY-SA 4.0 notice: the desktop proof-surface presentation layer, consumer
+   copy, and immersive visualization layout in this file are licensed for
+   share-alike reuse where the repository documents that UI-specific split. */
 
 const Heatmap3D = lazy(() => import("./Heatmap3D"));
 
@@ -198,6 +208,26 @@ type LivingLensTickResponse = AnalyzeResponse & {
   scene_state: SceneState;
   entity_tracks: EntityTrack[];
   baseline_comparison?: BaselineComparison | null;
+  jepa_tick?: JEPATickPayload | null;
+};
+
+type JEPATickPayload = {
+  energy_map: number[][];
+  entity_tracks: Array<Record<string, unknown>>;
+  talker_event?: string | null;
+  sigreg_loss: number;
+  forecast_errors: Record<string, number>;
+  session_fingerprint: number[];
+  planning_time_ms: number;
+  caption_score: number;
+  retrieval_score: number;
+  timestamp_ms: number;
+  warmup: boolean;
+  mask_results: Array<Record<string, unknown>>;
+  mean_energy: number;
+  energy_std: number;
+  guard_active?: boolean;
+  ema_tau?: number;
 };
 
 type QueryResponse = {
@@ -213,6 +243,7 @@ type WorldStateResponse = {
   history: SceneState[];
   entity_tracks: EntityTrack[];
   challenges: ChallengeRun[];
+  atlas?: Record<string, unknown> | null;
 };
 
 type Settings = Record<string, any>;
@@ -839,6 +870,114 @@ function challengeStepExpectation(index: number): string {
   }
 }
 
+function toForecastValue(
+  tick: JEPATickPayload | null | undefined,
+  horizon: 1 | 2 | 5,
+): number | null {
+  if (!tick) {
+    return null;
+  }
+  const raw = tick.forecast_errors?.[String(horizon)];
+  return typeof raw === "number" ? raw : null;
+}
+
+function toGhostBoxes(
+  tracks: EntityTrack[],
+  observation?: Observation | null,
+): Array<{
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label?: string;
+  score?: number | null;
+  occluded?: boolean;
+  depth?: number | null;
+}> {
+  const width = Math.max(observation?.width || 1, 1);
+  const height = Math.max(observation?.height || 1, 1);
+  return tracks.flatMap((track) => {
+    const metadata = (track.metadata || {}) as Record<string, any>;
+    const bbox = metadata.ghost_bbox_pixels || metadata.bbox_pixels;
+    if (!bbox || typeof bbox !== "object") {
+      return [];
+    }
+    const x = Number(bbox.x);
+    const y = Number(bbox.y);
+    const boxWidth = Number(bbox.width);
+    const boxHeight = Number(bbox.height);
+    if (![x, y, boxWidth, boxHeight].every(Number.isFinite)) {
+      return [];
+    }
+    return [{
+      id: track.id,
+      x: (x / width) * 100,
+      y: (y / height) * 100,
+      width: (boxWidth / width) * 100,
+      height: (boxHeight / height) * 100,
+      label: track.label,
+      score: track.last_similarity,
+      occluded: track.status === "occluded",
+      depth: track.status === "occluded" ? 18 : 0,
+    }];
+  });
+}
+
+function toEnergyAnchors(energyMap?: number[][] | null) {
+  if (!energyMap?.length) {
+    return [];
+  }
+  const flat = energyMap.flatMap((row, rowIndex) =>
+    row.map((value, colIndex) => ({ rowIndex, colIndex, value })),
+  );
+  const max = flat.reduce((best, item) => Math.max(best, item.value), 0);
+  if (max <= 0) {
+    return [];
+  }
+  return flat
+    .filter((item) => item.value > max * 0.35)
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 18)
+    .map((item) => ({
+      id: `energy-${item.rowIndex}-${item.colIndex}`,
+      x: ((item.colIndex + 0.5) / 14) * 100,
+      y: ((item.rowIndex + 0.5) / 14) * 100,
+      z: Math.round((item.value / max) * 90),
+      label: item.value.toFixed(2),
+      tone: item.value / max > 0.6 ? "accent" as const : "live" as const,
+    }));
+}
+
+function consumerMessage(
+  tick: JEPATickPayload | null | undefined,
+  tracks: EntityTrack[],
+): string {
+  const lead = tracks[0]?.label || "it";
+  switch (tick?.talker_event) {
+    case "OCCLUSION_START":
+      return `I'm still tracking ${lead} even though I can't see it`;
+    case "OCCLUSION_END":
+      return `${lead} came back — exactly where I expected`;
+    case "PREDICTION_VIOLATION":
+      return "That wasn't supposed to happen";
+    case "ENTITY_APPEARED":
+      return "Something new just entered";
+    case "ENTITY_DISAPPEARED":
+      return `${lead} left — I'll remember it`;
+    case "SCENE_STABLE":
+      return "Everything is as expected";
+    default:
+      if ((tick?.mean_energy ?? 0) < 0.2) {
+        return "The room looks stable";
+      }
+      if ((tick?.mean_energy ?? 0) < 0.5) {
+        return "Something shifted nearby";
+      }
+      return "Unexpected change detected";
+  }
+}
+
 export default function App() {
   const desktopBridgeAvailable = isDesktopBridgeAvailable();
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Living Lens");
@@ -924,6 +1063,16 @@ export default function App() {
   const [challengeGuideActive, setChallengeGuideActive] = useState(false);
   const [challengeStepIndex, setChallengeStepIndex] = useState(0);
   const [showAllTracks, setShowAllTracks] = useState(false);
+  const [uiMode, setUiMode] = useState<"consumer" | "science">(() => {
+    const stored = window.localStorage.getItem("toori_mode");
+    if (stored === "science" || stored === "consumer") {
+      return stored;
+    }
+    window.localStorage.setItem("toori_mode", "consumer");
+    return "consumer";
+  });
+  const [llmLatencyMs, setLlmLatencyMs] = useState<number | null>(null);
+  const [exportingProof, setExportingProof] = useState(false);
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const livingVideoRef = useRef<HTMLVideoElement | null>(null);
   const liveCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -977,10 +1126,25 @@ export default function App() {
   }, [sessionId]);
 
   useEffect(() => {
+    window.localStorage.setItem("toori_mode", uiMode);
+  }, [uiMode]);
+
+  useEffect(() => {
     const socket = new WebSocket("ws://127.0.0.1:7777/v1/events");
     socket.onopen = () => setEventsState("connected");
     socket.onclose = () => setEventsState("disconnected");
-    socket.onmessage = () => {
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type === "llm_latency") {
+          const ms = Number(message?.payload?.ms);
+          if (Number.isFinite(ms)) {
+            setLlmLatencyMs(ms);
+          }
+        }
+      } catch {
+        // ignore parse errors and still refresh
+      }
       startTransition(() => {
         refreshAll().catch(() => undefined);
       });
@@ -1521,6 +1685,22 @@ export default function App() {
     }
   }
 
+  async function exportProofReport() {
+    setExportingProof(true);
+    setStatus("Generating proof report");
+    try {
+      await runtimeRequest<{ path: string }>("/v1/proof-report/generate", "POST", {
+        session_id: sessionId,
+      });
+      window.open(`${BROWSER_RUNTIME_URL}/v1/proof-report/latest`, "_blank", "noopener,noreferrer");
+      setStatus("Proof report generated");
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      setExportingProof(false);
+    }
+  }
+
   function startGuidedChallenge() {
     setChallengeGuideActive(true);
     setChallengeStepIndex(0);
@@ -1644,6 +1824,7 @@ export default function App() {
   const currentSceneState = livingLensResult?.scene_state || worldState?.current || null;
   const livingTracks = livingLensResult?.entity_tracks || worldState?.entity_tracks || [];
   const livingObservation = livingLensResult?.observation || latestObservation;
+  const currentJepaTick = livingLensResult?.jepa_tick || null;
   const livingAnswer = explainSummary(livingObservation, livingLensResult?.answer?.text || currentSceneState?.observed_state_summary);
   const livingContinuity = currentSceneState?.metrics.temporal_continuity_score ?? (livingObservation ? Math.max(0, 1 - livingObservation.novelty) : null);
   const livingNearest = livingLensResult?.hits?.[0] || null;
@@ -1673,9 +1854,55 @@ export default function App() {
   const currentChallengeStep = challengeGuideActive ? challengeSteps[challengeStepIndex] : null;
   const worldModelSummary = explainWorldModel(currentSceneState);
   const cameraStatusLabel = cameraReady ? "camera ready" : cameraStreamLive ? "camera connected" : "camera idle";
+  const ghostBoxes = toGhostBoxes(livingTracks, livingObservation);
+  const energyAnchors = toEnergyAnchors(currentJepaTick?.energy_map || null);
+  const fe1 = toForecastValue(currentJepaTick, 1);
+  const fe2 = toForecastValue(currentJepaTick, 2);
+  const fe5 = toForecastValue(currentJepaTick, 5);
+  const forecastMonotonic = [fe1, fe2, fe5].every((value) => value != null)
+    ? (fe1 as number) < (fe2 as number) && (fe2 as number) < (fe5 as number)
+    : true;
+  const occlusionTracks = livingTracks.map((track) => ({
+    id: track.id,
+    label: track.label,
+    status:
+      track.status === "re-identified"
+        ? "recovered"
+        : track.status === "violated prediction"
+          ? "violated"
+          : track.status,
+    confidence: track.persistence_confidence,
+    note: String((track.metadata as Record<string, any> | undefined)?.duration_ms || 0) + " ms",
+  }));
+  const consumerText = consumerMessage(currentJepaTick, livingTracks);
+  const atlasNodes = Array.isArray((worldState?.atlas as any)?.nodes) ? (worldState?.atlas as any).nodes : [];
+  const atlasEdges = Array.isArray((worldState?.atlas as any)?.edges) ? (worldState?.atlas as any).edges : [];
+  const consumerNodes = atlasNodes.map((node: any, index: number) => ({
+    id: String(node.entity_id || node.id || `node-${index}`),
+    label: String(node.label || node.entity_id || `Entity ${index + 1}`),
+    x: Number.isFinite(Number(node.centroid?.[0])) ? Number(node.centroid[0]) * 100 : 20 + ((index * 17) % 60),
+    y: Number.isFinite(Number(node.centroid?.[1])) ? Number(node.centroid[1]) * 100 : 25 + ((index * 13) % 50),
+    radius: 10 + Math.min(Number(node.track_length || 1), 10),
+    tone: String(node.status || "visible") === "occluded" ? "memory" as const : "live" as const,
+  }));
+  const consumerLinks = atlasEdges.map((edge: any) => ({
+    source: String(edge.source_id),
+    target: String(edge.target_id),
+    strength: Number(edge.spatial_proximity || 0.5),
+  }));
   const livingHistory = [livingLensResult?.scene_state, ...worldHistory]
     .filter((state): state is SceneState => Boolean(state))
     .filter((state, index, list) => list.findIndex((candidate) => candidate.id === state.id) === index);
+  const baselineHistory = livingHistory.slice(0, 24).map((state, index) => ({
+    id: state.id,
+    label: `Tick ${index + 1}`,
+    winner: livingBaseline?.winner || "jepa_hybrid",
+    composite: Math.max(0, 1 - state.metrics.surprise_score),
+    continuity: state.metrics.temporal_continuity_score,
+    persistence: state.metrics.persistence_confidence,
+    surpriseSeparation: state.metrics.surprise_score,
+    summary: state.observed_state_summary || state.predicted_state_summary,
+  }));
   const challengeHistory = livingHistory.slice(0, 8);
   const trackStatusRank: Record<string, number> = {
     visible: 0,
@@ -1969,24 +2196,84 @@ export default function App() {
               </div>
             </div>
             <div className="layout-switcher">
-              {[
-                { id: "grid", tooltip: "Grid Layout", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="12" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/></svg> },
-                { id: "sidebar", tooltip: "Sidebar Focus", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg> },
-                { id: "stacked", tooltip: "Stacked Column", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></svg> },
-                { id: "focus", tooltip: "Immersive View", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg> },
-              ].map((l) => (
+              <div className="segmented-control">
                 <button
-                  key={l.id}
-                  className={`layout-btn ${layoutMode === l.id ? 'active' : ''}`}
-                  onClick={() => setLayoutMode(l.id as any)}
-                  title={l.tooltip}
+                  className={uiMode === "consumer" ? "tab active" : "tab"}
+                  onClick={() => setUiMode("consumer")}
                 >
-                  {l.icon}
+                  Consumer
                 </button>
-              ))}
+                <button
+                  className={uiMode === "science" ? "tab active" : "tab"}
+                  onClick={() => setUiMode("science")}
+                >
+                  Science
+                </button>
+              </div>
+              <button onClick={exportProofReport} disabled={exportingProof}>
+                {exportingProof ? "Exporting..." : "Export Proof"}
+              </button>
+              {uiMode === "science"
+                ? [
+                    { id: "grid", tooltip: "Grid Layout", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="12" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/></svg> },
+                    { id: "sidebar", tooltip: "Sidebar Focus", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg> },
+                    { id: "stacked", tooltip: "Stacked Column", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></svg> },
+                    { id: "focus", tooltip: "Immersive View", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg> },
+                  ].map((l) => (
+                    <button
+                      key={l.id}
+                      className={`layout-btn ${layoutMode === l.id ? "active" : ""}`}
+                      onClick={() => setLayoutMode(l.id as any)}
+                      title={l.tooltip}
+                    >
+                      {l.icon}
+                    </button>
+                  ))
+                : null}
             </div>
           </header>
 
+          {uiMode === "consumer" ? (
+          <section className="panel-grid lens-grid">
+            <article className="panel camera-panel">
+              <div className="panel-head">
+                <h3>Consumer Mode</h3>
+                <span>{consumerText}</span>
+              </div>
+              <div className="preview-surface">
+                <video ref={livingVideoRef} autoPlay muted playsInline />
+                {showEntities && <DetectionOverlay boxes={livingBoxes} />}
+                {showEnergyMap ? (
+                  <SpatialCanvas3D
+                    warmup={Boolean(currentJepaTick?.warmup)}
+                    ghosts={ghostBoxes}
+                    anchors={energyAnchors}
+                    energyMap={currentJepaTick?.energy_map || []}
+                  />
+                ) : null}
+              </div>
+              <canvas ref={livingCaptureCanvasRef} hidden />
+              <canvas ref={livingDiagnosticsCanvasRef} hidden />
+              <div className="camera-health">
+                <strong>{consumerText}</strong>
+                <p>{worldModelSummary}</p>
+              </div>
+            </article>
+
+            <ConsumerMode
+              copy={{
+                title: "What Toori Knows",
+                subtitle: consumerText,
+                actionLabel: exportingProof ? "Exporting..." : "Export Proof",
+                emptyLabel: "Waiting for live world-state links",
+                statusLabel: "Tracked entities",
+              }}
+              nodes={consumerNodes}
+              links={consumerLinks}
+              onAction={exportProofReport}
+            />
+          </section>
+          ) : (
           <section className={`living-shell layout-${layoutMode}`}>
             <div className="living-subnav-container">
               <div className="living-subnav" role="tablist" aria-label="Living Lens workspaces">
@@ -2038,7 +2325,14 @@ export default function App() {
                     <div className="video-aspect-container">
                       <video ref={livingVideoRef} autoPlay muted playsInline />
                       {showEntities && <DetectionOverlay boxes={livingBoxes} />}
-                      {showEnergyMap && <Suspense fallback={null}><Heatmap3D /></Suspense>}
+                      {showEnergyMap ? (
+                        <SpatialCanvas3D
+                          warmup={Boolean(currentJepaTick?.warmup)}
+                          ghosts={ghostBoxes}
+                          anchors={energyAnchors}
+                          energyMap={currentJepaTick?.energy_map || []}
+                        />
+                      ) : null}
                       <div className="living-overlay">
                         <span className="overlay-pill">{livingLensEnabled ? "Live" : "Paused"}</span>
                         {currentSceneState ? <span className="overlay-pill">scene {currentSceneState.id.substring(0,8)}</span> : null}
@@ -2140,6 +2434,31 @@ export default function App() {
                 </article>
               </div>
             </ResponsiveGridLayout>
+
+            <div className="panel-grid lens-grid">
+              <OcclusionPanel
+                summary={persistenceSignal
+                  ? `${persistenceSignal.occluded_track_ids.length} occluded, ${persistenceSignal.recovered_track_ids.length} recovered`
+                  : "Ghost recovery and occlusion state"}
+                score={currentSceneState?.metrics.occlusion_recovery_score ?? currentSceneState?.metrics.persistence_confidence ?? null}
+                tracks={occlusionTracks as any}
+              />
+              <ForecastPanel
+                k={5}
+                fe={fe5}
+                monotonic={forecastMonotonic}
+                llmMs={llmLatencyMs}
+                jepaMs={currentJepaTick?.planning_time_ms ?? null}
+                horizonLabel={fe1 != null && fe2 != null && fe5 != null
+                  ? `FE(1) ${fe1.toFixed(3)} • FE(2) ${fe2.toFixed(3)} • FE(5) ${fe5.toFixed(3)}`
+                  : "Forecast horizon is warming up"}
+              />
+              <SigRegGauge
+                value={Math.min((currentJepaTick?.sigreg_loss ?? 0) / 3, 1)}
+                guardState={currentJepaTick?.guard_active ? `GUARD ACTIVE τ=${(currentJepaTick?.ema_tau ?? 0.9).toFixed(2)}` : `τ=${(currentJepaTick?.ema_tau ?? 0.996).toFixed(3)}`}
+              />
+              <BaselineBattle history={baselineHistory} />
+            </div>
 
             {livingSection === "overview" && (
               <div className="living-view-grid living-view-grid--overview">
@@ -2418,6 +2737,7 @@ export default function App() {
               </div>
             )}
           </section>
+          )}
           </>
         )}
 

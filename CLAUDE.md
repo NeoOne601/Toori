@@ -100,7 +100,7 @@ flowchart TB
 ### Provider Policy
 
 - Primary local perception targets:
-  - desktop: ONNX when configured
+  - desktop/runtime: DINOv2 + MobileSAM in `cloud/perception/`
   - iOS: CoreML-compatible path in native client
   - Android: TFLite-compatible path in native client
 - Guaranteed local fallback in the Python runtime:
@@ -138,7 +138,16 @@ flowchart TB
 - Reasoning providers (Ollama/MLX) are selectively triggered or operate in query-only mode. Live tick paths must not invoke reasoners autonomously.
 - The JEPA engine must remain pure numy-compatible (`float32`) without CUDA or PyTorch to ensure identical paths for M1/MPS users.
 - `ollama` and MLX must remain optional and health-checked.
-- ONNX/CoreML/TFLite-compatible perception remains primary even when desktop local reasoning is enabled.
+- DINOv2 is the perception backbone for the desktop/runtime path; ONNX is compatibility-only.
+- `torch` imports are allowed only inside `cloud/perception/`.
+- Consumer Mode is the default on first launch via `localStorage["toori_mode"]="consumer"`.
+- The 3D proof overlay stays at `z-index:10` with `pointer-events:none`.
+- The SigReg gauge stays visible in Science Mode.
+- Ghost bounding boxes are stored and rendered in pixel coordinates, never patch indices.
+- Talker firing is gated by `Ē > μ_E + 2·σ_E`.
+- EMA updates happen before predictor forward with no exceptions.
+- Forecast horizons `FE(k)` are expected to increase with `k`; flag non-monotonic behavior.
+- Perception stays backbone-agnostic at the engine boundary; see `CONTRIBUTING.md`.
 - If a provider is unhealthy, the runtime must degrade gracefully instead of blocking capture/search.
 - macOS Camera privacy depends on a real app bundle identity; stock Electron CLI launches should not be treated as proof of permission support.
 

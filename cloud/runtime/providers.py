@@ -18,6 +18,8 @@ import httpx
 import numpy as np
 from PIL import Image, ImageFilter
 
+from cloud.perception import PerceptionPipeline
+
 from .models import (
     Answer,
     BoundingBox,
@@ -311,6 +313,62 @@ class OnnxPerceptionProvider:
                 metadata["top_label"] = labels[top_index]
                 metadata["top_index"] = top_index
         return embedding, max(0.65, _vector_softmax_confidence(selected)), metadata
+
+
+class DinoV2PerceptionProvider:
+    name = "dinov2"
+
+    def __init__(self) -> None:
+        self._pipeline: PerceptionPipeline | None = None
+        self._device: str | None = None
+
+    def health(self, config: ProviderConfig) -> ProviderHealth:
+        if not config.enabled:
+            return ProviderHealth(name=self.name, role="perception", enabled=False, message="disabled")
+        device = str(config.metadata.get("device", "mps"))
+        return ProviderHealth(
+            name=self.name,
+            role="perception",
+            enabled=True,
+            healthy=True,
+            message=f"lazy-loaded DINOv2+SAM pipeline ready on {device}",
+        )
+
+    def perceive(self, image: Image.Image, config: ProviderConfig) -> tuple[list[float], float, dict]:
+        pipeline = self._ensure_pipeline(config)
+        embedding = pipeline.retrieval_embedding(image)
+        return embedding.astype(np.float32).tolist(), 0.76, {
+            "descriptor": "dinov2",
+            "backend": "open-vocabulary",
+            "device": str(config.metadata.get("device", "mps")),
+            "patch_grid": [14, 14],
+        }
+
+    def object_proposals(self, image: Image.Image, config: ProviderConfig, *, max_proposals: int = 5) -> list[BoundingBox]:
+        pipeline = self._ensure_pipeline(config)
+        _, masks = pipeline.encode(image)
+        width, height = image.size
+        proposals: list[BoundingBox] = []
+        for index, mask in enumerate(masks[:max_proposals]):
+            bbox = mask.bbox_pixels
+            proposals.append(
+                BoundingBox(
+                    x=float(bbox["x"]) / max(width, 1),
+                    y=float(bbox["y"]) / max(height, 1),
+                    width=float(bbox["width"]) / max(width, 1),
+                    height=float(bbox["height"]) / max(height, 1),
+                    label=f"entity-{index + 1}",
+                    score=round(float(mask.confidence), 4),
+                )
+            )
+        return proposals
+
+    def _ensure_pipeline(self, config: ProviderConfig) -> PerceptionPipeline:
+        device = str(config.metadata.get("device", "mps"))
+        if self._pipeline is None or self._device != device:
+            self._pipeline = PerceptionPipeline(device=device)
+            self._device = device
+        return self._pipeline
 
 
 class OllamaReasoningProvider:
@@ -611,6 +669,7 @@ class ReasoningOutcome:
 class ProviderRegistry:
     def __init__(self) -> None:
         self.basic = BasicVisionProvider()
+        self.dinov2 = DinoV2PerceptionProvider()
         self.onnx = OnnxPerceptionProvider()
         self.ollama = OllamaReasoningProvider()
         self.cloud = CloudReasoningProvider()
@@ -620,6 +679,7 @@ class ProviderRegistry:
     def health_snapshot(self, settings: RuntimeSettings) -> list[ProviderHealth]:
         providers = settings.providers
         entries: list[ProviderHealth] = []
+        entries.append(self.dinov2.health(providers.get("dinov2", ProviderConfig(name="dinov2", enabled=False))))
         entries.append(self.onnx.health(providers.get("onnx", ProviderConfig(name="onnx", enabled=False))))
         entries.append(self.basic.health(providers.get("basic", ProviderConfig(name="basic", enabled=False))))
         entries.append(
@@ -656,8 +716,18 @@ class ProviderRegistry:
 
     def perceive(self, settings: RuntimeSettings, image: Image.Image) -> tuple[list[float], str, float, dict]:
         providers = settings.providers
-        order = [settings.primary_perception_provider, "basic"]
+        order = [settings.primary_perception_provider, *settings.fallback_order, "basic"]
+        seen: set[str] = set()
         for provider_name in order:
+            if provider_name in seen:
+                continue
+            seen.add(provider_name)
+            if provider_name == "dinov2":
+                config = providers.get("dinov2", ProviderConfig(name="dinov2", enabled=False))
+                health = self.dinov2.health(config)
+                if health.healthy:
+                    embedding, confidence, metadata = self.dinov2.perceive(image, config)
+                    return embedding, "dinov2", confidence, metadata
             if provider_name == "onnx":
                 config = providers.get("onnx", ProviderConfig(name="onnx", enabled=False))
                 health = self.onnx.health(config)
@@ -681,9 +751,14 @@ class ProviderRegistry:
         max_proposals: int = 5,
     ) -> list[BoundingBox]:
         boxes = self._proposal_candidates(image, max_proposals=max_proposals)
+        providers = settings.providers
+        if provider_name == "dinov2":
+            config = providers.get("dinov2", ProviderConfig(name="dinov2", enabled=False))
+            proposals = self.dinov2.object_proposals(image, config, max_proposals=max_proposals)
+            if proposals:
+                return proposals
         if not boxes:
             return []
-        providers = settings.providers
         classifier_name = provider_name if provider_name in {"onnx", "basic"} else "basic"
         if classifier_name == "onnx":
             config = providers.get("onnx", ProviderConfig(name="onnx", enabled=False))

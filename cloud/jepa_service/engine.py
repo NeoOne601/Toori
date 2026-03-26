@@ -1,47 +1,65 @@
-"""JEPA engine: context/target projections, latent predictor, spatial energy, SIGReg.
+"""JEPA engines for compatibility and immersive proof-surface use.
 
-Pure numpy implementation — no PyTorch, no CUDA. Runs on M1 via Accelerate BLAS.
-Consumes embeddings from the existing ProviderRegistry (ONNX or basic provider).
+`JEPAEngine` preserves the pre-existing vector-oriented API used by legacy
+tests and integration points. `ImmersiveJEPAEngine` is the DINOv2/SAM-backed
+single-session engine used by the living-lens runtime path.
+
+CONTRIBUTION SURFACE: `ImmersiveJEPAEngine._predict_vector()` intentionally
+uses a simple 4-layer MLP. Community PRs are welcome for transformer,
+recurrent, or attention-based predictors as long as `tick(frame) -> JEPATick`
+and `forecast_last_state(k)` remain stable.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from typing import NamedTuple, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from time import perf_counter, time
+from typing import Any, NamedTuple, Optional
+from uuid import uuid4
 
 import numpy as np
 
-from cloud.runtime.models import BoundingBox
-
-
-class TickResult(NamedTuple):
-    energy_map: np.ndarray           # shape (grid_h, grid_w), float32
-    mean_energy: float               # scalar mean of energy_map
-    threshold: float                 # current adaptive threshold
-    should_talk: bool                # mean_energy > threshold
-    talker_event: Optional[str]      # placeholder for talker layer
-    prediction_residual: np.ndarray  # shape (embedding_dim,)
-    sigreg_loss: float               # SIGReg monitoring value
+from cloud.perception import MaskResult, PerceptionPipeline
+from cloud.runtime.models import BoundingBox, EntityTrack, JEPATick
 
 
 def _relu(x: np.ndarray) -> np.ndarray:
     return np.maximum(x, 0.0)
 
 
-def _init_linear(in_dim: int, out_dim: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
-    scale = np.sqrt(2.0 / in_dim)
-    return {
-        "weight": rng.standard_normal((in_dim, out_dim)).astype(np.float32) * scale,
-        "bias": np.zeros(out_dim, dtype=np.float32),
-    }
-
-
 def _linear_forward(x: np.ndarray, layer: dict[str, np.ndarray]) -> np.ndarray:
     return x @ layer["weight"] + layer["bias"]
 
 
+def _cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.asarray(left, dtype=np.float32).reshape(-1)
+    right = np.asarray(right, dtype=np.float32).reshape(-1)
+    denom = float(np.linalg.norm(left) * np.linalg.norm(right)) or 1.0
+    return float(np.dot(left, right) / denom)
+
+
+def _xavier_uniform(in_dim: int, out_dim: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
+    limit = np.sqrt(6.0 / max(in_dim + out_dim, 1))
+    return {
+        "weight": rng.uniform(-limit, limit, size=(in_dim, out_dim)).astype(np.float32),
+        "bias": np.zeros(out_dim, dtype=np.float32),
+    }
+
+
+class TickResult(NamedTuple):
+    energy_map: np.ndarray
+    mean_energy: float
+    threshold: float
+    should_talk: bool
+    talker_event: Optional[str]
+    prediction_residual: np.ndarray
+    sigreg_loss: float
+
+
 class JEPAEngine:
-    """Core JEPA engine with context/target projections, MLP predictor, and spatial energy."""
+    """Compatibility JEPA engine that preserves the legacy vector-first API."""
 
     def __init__(
         self,
@@ -68,22 +86,14 @@ class JEPAEngine:
         self._lambda_cov = sigreg_lambda_cov
         self._gamma = sigreg_gamma
         self._rng = np.random.default_rng(seed)
-
-        # Context and target projection layers (embedding_dim -> embedding_dim)
-        self._context_proj = _init_linear(embedding_dim, embedding_dim, self._rng)
-        self._target_proj = {
-            k: v.copy() for k, v in self._context_proj.items()
-        }
-
-        # MLP predictor: embedding_dim -> hidden -> ... -> embedding_dim
+        self._context_proj = _xavier_uniform(embedding_dim, embedding_dim, self._rng)
+        self._target_proj = {key: value.copy() for key, value in self._context_proj.items()}
         self._predictor_layers: list[dict[str, np.ndarray]] = []
-        in_d = embedding_dim
-        for i in range(predictor_layers - 1):
-            self._predictor_layers.append(_init_linear(in_d, predictor_hidden, self._rng))
-            in_d = predictor_hidden
-        self._predictor_layers.append(_init_linear(in_d, embedding_dim, self._rng))
-
-        # State
+        input_dim = embedding_dim
+        for _ in range(predictor_layers - 1):
+            self._predictor_layers.append(_xavier_uniform(input_dim, predictor_hidden, self._rng))
+            input_dim = predictor_hidden
+        self._predictor_layers.append(_xavier_uniform(input_dim, embedding_dim, self._rng))
         self._energy_ema = initial_threshold
         self._threshold = initial_threshold
         self._prev_target_embedding: Optional[np.ndarray] = None
@@ -97,15 +107,6 @@ class JEPAEngine:
         patch_embeddings: Optional[np.ndarray] = None,
         mask: Optional[np.ndarray] = None,
     ) -> TickResult:
-        """Main per-frame update.
-
-        Args:
-            frame_embedding: shape (embedding_dim,) from ONNX/basic provider.
-            patch_embeddings: shape (num_patches, embedding_dim) or None.
-                When None, tiles frame_embedding with spatial noise.
-            mask: shape (grid_h, grid_w) boolean. True = masked (predict these).
-                When None, all patches are predicted.
-        """
         frame_embedding = np.asarray(frame_embedding, dtype=np.float32).ravel()
         assert frame_embedding.shape == (self._embedding_dim,), (
             f"Expected ({self._embedding_dim},), got {frame_embedding.shape}"
@@ -113,8 +114,6 @@ class JEPAEngine:
 
         grid_h, grid_w = self._patch_grid
         num_patches = grid_h * grid_w
-
-        # Build per-patch embeddings if not provided
         if patch_embeddings is None:
             patch_embeddings = self._tile_with_noise(frame_embedding, num_patches)
         else:
@@ -122,74 +121,46 @@ class JEPAEngine:
             if patch_embeddings.shape[0] != num_patches:
                 patch_embeddings = self._tile_with_noise(frame_embedding, num_patches)
 
-        # Step 1: EMA update (BEFORE predictor)
         self._update_ema()
-
-        # Step 2: Context projection
-        context_patches = np.array([
-            _linear_forward(p, self._context_proj) for p in patch_embeddings
-        ])  # (num_patches, embedding_dim)
-
-        # Step 3: Target projection (using EMA weights)
-        target_patches = np.array([
-            _linear_forward(p, self._target_proj) for p in patch_embeddings
-        ])  # (num_patches, embedding_dim)
-
-        # Step 4: Predictor forward pass
-        predicted_patches = self._predict_batch(context_patches)  # (num_patches, embedding_dim)
-
-        # Step 5: Spatial energy map E_i = ||s_target_i - ŝ_pred_i||²
-        residuals = target_patches - predicted_patches  # (num_patches, embedding_dim)
-        per_patch_energy = np.sum(residuals ** 2, axis=1)  # (num_patches,)
-
-        # Apply mask if provided (only compute energy on masked patches for SIGReg,
-        # but report full map for visualization)
+        context_patches = np.array([_linear_forward(patch, self._context_proj) for patch in patch_embeddings])
+        target_patches = np.array([_linear_forward(patch, self._target_proj) for patch in patch_embeddings])
+        predicted_patches = self._predict_batch(context_patches)
+        residuals = target_patches - predicted_patches
+        per_patch_energy = np.sum(residuals ** 2, axis=1)
         energy_map = per_patch_energy.reshape(grid_h, grid_w)
-
-        # Step 6: Global prediction residual
+        mean_energy = float(np.mean(energy_map))
+        self._update_threshold(mean_energy)
+        should_talk = mean_energy > self._threshold
         context_global = _linear_forward(frame_embedding, self._context_proj)
         target_global = _linear_forward(frame_embedding, self._target_proj)
         predicted_global = self._predict(context_global)
         prediction_residual = target_global - predicted_global
-
-        # Step 7: Compute mean energy and update threshold
-        mean_energy = float(np.mean(energy_map))
-        self._update_threshold(mean_energy)
-        should_talk = mean_energy > self._threshold
-
-        # Step 8: SIGReg loss computation
         self._embedding_buffer.append(context_global)
         sigreg_loss = self._compute_sigreg(context_global, target_global)
-
-        # Store state
         self._last_energy_map = energy_map.copy()
         self._prev_target_embedding = target_global.copy()
         self._tick_count += 1
-
         return TickResult(
             energy_map=energy_map,
             mean_energy=mean_energy,
             threshold=self._threshold,
             should_talk=should_talk,
-            talker_event=None,  # filled by SelectiveTalker layer
+            talker_event=None,
             prediction_residual=prediction_residual,
             sigreg_loss=sigreg_loss,
         )
 
     def get_energy_map(self) -> np.ndarray:
-        """Returns the last computed spatial energy map."""
         return self._last_energy_map.copy()
 
     def get_threshold(self) -> float:
-        """Returns the current adaptive energy threshold."""
         return self._threshold
 
     def get_predictor_weights(self) -> dict[str, np.ndarray]:
-        """Returns all predictor weights for checkpointing."""
         weights: dict[str, np.ndarray] = {}
-        for i, layer in enumerate(self._predictor_layers):
-            weights[f"predictor.{i}.weight"] = layer["weight"].copy()
-            weights[f"predictor.{i}.bias"] = layer["bias"].copy()
+        for index, layer in enumerate(self._predictor_layers):
+            weights[f"predictor.{index}.weight"] = layer["weight"].copy()
+            weights[f"predictor.{index}.bias"] = layer["bias"].copy()
         weights["context_proj.weight"] = self._context_proj["weight"].copy()
         weights["context_proj.bias"] = self._context_proj["bias"].copy()
         weights["target_proj.weight"] = self._target_proj["weight"].copy()
@@ -197,42 +168,25 @@ class JEPAEngine:
         return weights
 
     def load_predictor_weights(self, weights: dict[str, np.ndarray]) -> None:
-        """Loads predictor weights from a checkpoint."""
-        for i, layer in enumerate(self._predictor_layers):
-            w_key = f"predictor.{i}.weight"
-            b_key = f"predictor.{i}.bias"
-            if w_key in weights:
-                layer["weight"] = weights[w_key].copy()
-            if b_key in weights:
-                layer["bias"] = weights[b_key].copy()
-        for key in ("context_proj", "target_proj"):
-            proj = self._context_proj if key == "context_proj" else self._target_proj
-            w_key = f"{key}.weight"
-            b_key = f"{key}.bias"
-            if w_key in weights:
-                proj["weight"] = weights[w_key].copy()
-            if b_key in weights:
-                proj["bias"] = weights[b_key].copy()
+        for index, layer in enumerate(self._predictor_layers):
+            for suffix in ("weight", "bias"):
+                key = f"predictor.{index}.{suffix}"
+                if key in weights:
+                    layer[suffix] = np.asarray(weights[key], dtype=np.float32).copy()
+        for prefix, projection in (("context_proj", self._context_proj), ("target_proj", self._target_proj)):
+            for suffix in ("weight", "bias"):
+                key = f"{prefix}.{suffix}"
+                if key in weights:
+                    projection[suffix] = np.asarray(weights[key], dtype=np.float32).copy()
 
     def reset(self) -> None:
-        """Resets internal state for a new session."""
         self._prev_target_embedding = None
         self._embedding_buffer.clear()
         self._last_energy_map = np.zeros(self._patch_grid, dtype=np.float32)
         self._tick_count = 0
 
-    # --- C-JEPA Masking ---
-
     @staticmethod
-    def boxes_to_mask(
-        boxes: list[BoundingBox],
-        grid_h: int,
-        grid_w: int,
-    ) -> np.ndarray:
-        """Convert bounding boxes to a boolean patch mask.
-
-        Returns (grid_h, grid_w) boolean array. True = masked (predict this patch).
-        """
+    def boxes_to_mask(boxes: list[BoundingBox], grid_h: int, grid_w: int) -> np.ndarray:
         mask = np.zeros((grid_h, grid_w), dtype=bool)
         for box in boxes:
             col_start = int(box.x * grid_w)
@@ -243,84 +197,473 @@ class JEPAEngine:
         return mask
 
     def random_mask(self, ratio: float = 0.3) -> np.ndarray:
-        """Fallback random patch masking when no objects detected."""
         grid_h, grid_w = self._patch_grid
         total = grid_h * grid_w
-        num_masked = max(1, int(ratio * total))
+        count = max(1, int(ratio * total))
         mask = np.zeros(total, dtype=bool)
-        indices = self._rng.choice(total, size=num_masked, replace=False)
+        indices = self._rng.choice(total, size=count, replace=False)
         mask[indices] = True
         return mask.reshape(grid_h, grid_w)
 
-    # --- Internal Methods ---
-
     def _tile_with_noise(self, embedding: np.ndarray, num_patches: int) -> np.ndarray:
-        """Tile a single embedding across patches with small spatial noise."""
         tiled = np.tile(embedding, (num_patches, 1))
         noise = self._rng.standard_normal(tiled.shape).astype(np.float32) * 0.01
         return tiled + noise
 
     def _update_ema(self) -> None:
-        """EMA update: target_proj ← τ·target_proj + (1-τ)·context_proj."""
         tau = self._ema_tau
         for key in ("weight", "bias"):
-            self._target_proj[key] = (
-                tau * self._target_proj[key]
-                + (1.0 - tau) * self._context_proj[key]
-            )
+            self._target_proj[key] = (tau * self._target_proj[key]) + ((1.0 - tau) * self._context_proj[key])
 
     def _predict(self, x: np.ndarray) -> np.ndarray:
-        """MLP predictor forward pass for a single vector."""
-        for i, layer in enumerate(self._predictor_layers):
+        for index, layer in enumerate(self._predictor_layers):
             x = _linear_forward(x, layer)
-            if i < len(self._predictor_layers) - 1:
+            if index < len(self._predictor_layers) - 1:
                 x = _relu(x)
         return x
 
     def _predict_batch(self, x: np.ndarray) -> np.ndarray:
-        """MLP predictor forward pass for a batch of vectors."""
-        for i, layer in enumerate(self._predictor_layers):
+        for index, layer in enumerate(self._predictor_layers):
             x = x @ layer["weight"] + layer["bias"]
-            if i < len(self._predictor_layers) - 1:
+            if index < len(self._predictor_layers) - 1:
                 x = _relu(x)
         return x
 
     def _update_threshold(self, mean_energy: float) -> None:
-        """Adaptive threshold update via exponential moving average."""
         alpha = self._energy_ema_alpha
-        self._energy_ema = (1.0 - alpha) * self._energy_ema + alpha * mean_energy
+        self._energy_ema = (1.0 - alpha) * self._energy_ema + (alpha * mean_energy)
         self._threshold = max(self._energy_ema * 1.5, self._min_threshold)
 
-    def _compute_sigreg(
-        self,
-        context_embedding: np.ndarray,
-        target_embedding: np.ndarray,
-    ) -> float:
-        """Compute SIGReg loss as a monitoring signal.
-
-        L = L_invariance + λ_var·L_variance + λ_cov·L_covariance
-        """
-        # L_invariance: prediction error
+    def _compute_sigreg(self, context_embedding: np.ndarray, target_embedding: np.ndarray) -> float:
         l_invariance = float(np.mean((context_embedding - target_embedding) ** 2))
-
         buffer = list(self._embedding_buffer)
         if len(buffer) < 8:
             return l_invariance
-
-        # Stack buffer into matrix (N, d)
-        Z = np.array(buffer, dtype=np.float32)
-
-        # L_variance: encourage per-dimension std >= gamma
-        stds = np.std(Z, axis=0)
+        z = np.array(buffer, dtype=np.float32)
+        stds = np.std(z, axis=0)
         l_variance = float(np.mean(np.maximum(0.0, self._gamma - stds)))
-
-        # L_covariance: decorrelation
-        Z_centered = Z - Z.mean(axis=0, keepdims=True)
-        n = Z_centered.shape[0]
-        cov = (Z_centered.T @ Z_centered) / max(n - 1, 1)
+        z_centered = z - z.mean(axis=0, keepdims=True)
+        n = z_centered.shape[0]
+        cov = (z_centered.T @ z_centered) / max(n - 1, 1)
         d = cov.shape[0]
-        # Zero-out diagonal for off-diagonal penalty
         mask = ~np.eye(d, dtype=bool)
         l_covariance = float(np.sum(cov[mask] ** 2)) / max(d * d, 1)
+        return l_invariance + (self._lambda_var * l_variance) + (self._lambda_cov * l_covariance)
 
-        return l_invariance + self._lambda_var * l_variance + self._lambda_cov * l_covariance
+
+@dataclass
+class _TrackState:
+    id: str
+    label: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    first_observation_id: str
+    last_observation_id: str
+    observations: list[str]
+    prototype_embedding: np.ndarray
+    status: str = "visible"
+    visibility_streak: int = 1
+    occlusion_count: int = 0
+    reidentification_count: int = 0
+    persistence_confidence: float = 0.75
+    continuity_score: float = 0.75
+    last_similarity: float = 1.0
+    status_history: list[str] = field(default_factory=lambda: ["visible"])
+    bbox_pixels: dict[str, float] = field(default_factory=dict)
+    patch_indices: list[int] = field(default_factory=list)
+    misses: int = 0
+    ghost_embedding: Optional[np.ndarray] = None
+    cosine_history: deque[float] = field(default_factory=lambda: deque(maxlen=60))
+    just_created: bool = True
+
+
+class ImmersiveJEPAEngine:
+    """Single-session DINOv2/SAM-backed JEPA 2.1 proof engine."""
+
+    def __init__(self, device: str = "mps", seed: int = 42) -> None:
+        self.perception = PerceptionPipeline(device=device)
+        self._rng = np.random.default_rng(seed)
+        self._theta_ctx = np.eye(384, dtype=np.float32)
+        self._theta_ctx += self._rng.standard_normal((384, 384)).astype(np.float32) * 1e-4
+        self._theta_tgt = self._theta_ctx.copy()
+        self._predictor_layers = [
+            _xavier_uniform(384, 512, self._rng),
+            _xavier_uniform(512, 512, self._rng),
+            _xavier_uniform(512, 512, self._rng),
+            _xavier_uniform(512, 384, self._rng),
+        ]
+        self._mu_E = 0.0
+        self._tick_count = 0
+        self._session_cov = np.zeros((384, 384), dtype=np.float32)
+        self._energy_history: deque[float] = deque(maxlen=256)
+        self._retrieval_history: deque[np.ndarray] = deque(maxlen=120)
+        self._future_predictions: dict[int, deque[tuple[int, np.ndarray]]] = {
+            1: deque(maxlen=256),
+            2: deque(maxlen=256),
+            5: deque(maxlen=256),
+        }
+        self._track_states: dict[str, _TrackState] = {}
+        self._last_forecast_errors = {1: 0.0, 2: 0.0, 5: 0.0}
+        self._last_state: Optional[np.ndarray] = None
+        self._last_planning_ms = 0.0
+        self._last_guard_active = False
+        self._last_tau = 0.996
+        self._guard_ticks_remaining = 0
+        self._last_pred_loss = 0.0
+        self._last_total_loss = 0.0
+
+    def tick(
+        self,
+        frame: np.ndarray,
+        *,
+        session_id: str = "default",
+        observation_id: Optional[str] = None,
+    ) -> JEPATick:
+        frame = np.asarray(frame)
+        if frame.ndim == 2:
+            frame = np.stack([frame] * 3, axis=-1)
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+        patch_tokens, mask_results = self.perception.encode(frame)
+        if not mask_results:
+            fallback_indices = self.perception.fallback_random_patches(n=32)
+        else:
+            fallback_indices = []
+
+        self._ema_update()
+        s_ctx = self._context_encode(patch_tokens)
+        s_pred = self._predict(s_ctx, mask_results, fallback_indices=fallback_indices)
+        s_tgt = self._target_encode(patch_tokens)
+        energy_map = self._compute_energy(s_ctx, s_pred)
+        prediction_residual = s_tgt - s_pred
+        sigreg_loss = self._sigreg(s_ctx)
+        self._last_pred_loss = float(np.mean((s_pred - s_tgt) ** 2))
+        self._last_total_loss = self._last_pred_loss + (0.04 * float(sigreg_loss))
+        _ = prediction_residual
+        current_state = s_ctx.mean(axis=0).astype(np.float32)
+        forecast_errors = self._forecast(current_state)
+        entity_tracks = self._update_occlusion(
+            session_id=session_id,
+            observation_id=observation_id,
+            patch_tokens=s_ctx,
+            mask_results=mask_results,
+        )
+        planning_time_ms = self._planning_speed_ms(current_state)
+        fingerprint = self._update_fingerprint(energy_map, current_state)
+        caption_score, retrieval_score = self._baselines(current_state)
+        mean_energy = float(energy_map.mean())
+        energy_std = float(energy_map.std())
+        talker_event = self._talker(mean_energy, energy_std, entity_tracks)
+        warmup = self._tick_count < 10
+        if warmup:
+            energy_map = np.zeros((14, 14), dtype=np.float32)
+            talker_event = None
+        tick = JEPATick(
+            energy_map=energy_map.astype(np.float32),
+            entity_tracks=entity_tracks,
+            talker_event=talker_event,
+            sigreg_loss=float(sigreg_loss),
+            forecast_errors={int(key): float(value) for key, value in forecast_errors.items()},
+            session_fingerprint=fingerprint.astype(np.float32),
+            planning_time_ms=float(planning_time_ms),
+            caption_score=float(caption_score),
+            retrieval_score=float(retrieval_score),
+            timestamp_ms=int(time() * 1000),
+            warmup=warmup,
+            mask_results=[mask.to_dict() for mask in mask_results],
+            mean_energy=mean_energy,
+            energy_std=energy_std,
+            guard_active=self._last_guard_active,
+            ema_tau=self._last_tau,
+        )
+        self._last_state = current_state.copy()
+        self._tick_count += 1
+        self._adapt_context(current_state)
+        return tick
+
+    def forecast_last_state(self, k: int) -> tuple[np.ndarray, Optional[float]]:
+        if self._last_state is None:
+            return np.zeros(384, dtype=np.float32), None
+        prediction = np.asarray(self._last_state, dtype=np.float32).copy()
+        for _ in range(max(k, 1)):
+            prediction = self._predict_vector(prediction)
+        return prediction.astype(np.float32), self._last_forecast_errors.get(int(k))
+
+    def _ema_update(self) -> None:
+        diff = float(np.linalg.norm(self._theta_tgt - self._theta_ctx))
+        if diff < 0.01:
+            self._guard_ticks_remaining = 10
+        tau = 0.90 if self._guard_ticks_remaining > 0 else 0.996
+        self._last_guard_active = self._guard_ticks_remaining > 0
+        self._last_tau = tau
+        self._theta_tgt = (tau * self._theta_tgt) + ((1.0 - tau) * self._theta_ctx)
+        if self._guard_ticks_remaining > 0:
+            self._guard_ticks_remaining -= 1
+
+    def _context_encode(self, patch_tokens: np.ndarray) -> np.ndarray:
+        return np.asarray(patch_tokens, dtype=np.float32) @ self._theta_ctx
+
+    def _target_encode(self, patch_tokens: np.ndarray) -> np.ndarray:
+        return np.asarray(patch_tokens, dtype=np.float32) @ self._theta_tgt
+
+    def _predict(
+        self,
+        patch_tokens: np.ndarray,
+        mask_results: list[MaskResult],
+        *,
+        fallback_indices: list[int],
+    ) -> np.ndarray:
+        predicted_all = self._predict_batch(np.asarray(patch_tokens, dtype=np.float32))
+        predicted = np.asarray(patch_tokens, dtype=np.float32).copy()
+        mask_indices = sorted({index for mask in mask_results for index in mask.patch_indices})
+        if not mask_indices:
+            mask_indices = fallback_indices
+        if not mask_indices:
+            return predicted_all.astype(np.float32)
+        predicted[mask_indices] = predicted_all[mask_indices]
+        return predicted.astype(np.float32)
+
+    def _predict_vector(self, vector: np.ndarray) -> np.ndarray:
+        x = np.asarray(vector, dtype=np.float32)
+        for index, layer in enumerate(self._predictor_layers):
+            x = _linear_forward(x, layer)
+            if index < len(self._predictor_layers) - 1:
+                x = _relu(x)
+        return x.astype(np.float32)
+
+    def _predict_batch(self, matrix: np.ndarray) -> np.ndarray:
+        x = np.asarray(matrix, dtype=np.float32)
+        for index, layer in enumerate(self._predictor_layers):
+            x = x @ layer["weight"] + layer["bias"]
+            if index < len(self._predictor_layers) - 1:
+                x = _relu(x)
+        return x.astype(np.float32)
+
+    def _compute_energy(self, s_ctx: np.ndarray, s_pred: np.ndarray) -> np.ndarray:
+        energy = np.sum((np.asarray(s_ctx, dtype=np.float32) - np.asarray(s_pred, dtype=np.float32)) ** 2, axis=1)
+        return energy.reshape(14, 14).astype(np.float32)
+
+    def _sigreg(self, s_ctx: np.ndarray) -> float:
+        centered = np.asarray(s_ctx, dtype=np.float32) - np.asarray(s_ctx, dtype=np.float32).mean(axis=0, keepdims=True)
+        _, _, vt = np.linalg.svd(centered, full_matrices=False)
+        rank = min(64, vt.shape[0])
+        sketch = np.zeros((vt.shape[1], vt.shape[1]), dtype=np.float32)
+        for index in range(rank):
+            vector = vt[index]
+            sketch += np.outer(vector, vector).astype(np.float32)
+        identity = np.eye(sketch.shape[0], dtype=np.float32)
+        return float(np.linalg.norm(sketch - identity, ord="fro") ** 2 / max(sketch.shape[0], 1))
+
+    def _update_occlusion(
+        self,
+        *,
+        session_id: str,
+        observation_id: Optional[str],
+        patch_tokens: np.ndarray,
+        mask_results: list[MaskResult],
+    ) -> list[EntityTrack]:
+        observation_key = observation_id or f"tick_{self._tick_count}"
+        detections = []
+        for mask in mask_results:
+            indices = mask.patch_indices or self.perception.fallback_random_patches(n=8)
+            observed = patch_tokens[indices].mean(axis=0).astype(np.float32)
+            detections.append((mask, observed))
+
+        matched_tracks: set[str] = set()
+        matched_detection_indices: set[int] = set()
+
+        for detection_index, (mask, observed) in enumerate(detections):
+            best_track_id: Optional[str] = None
+            best_similarity = 0.0
+            for track_id, state in self._track_states.items():
+                similarity = _cosine_similarity(observed, state.prototype_embedding)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_track_id = track_id
+            if best_track_id is None or best_similarity < 0.72:
+                track_id = f"trk_{uuid4().hex[:8]}"
+                now = datetime.now(timezone.utc)
+                state = _TrackState(
+                    id=track_id,
+                    label=f"entity-{len(self._track_states) + 1}",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    first_observation_id=observation_key,
+                    last_observation_id=observation_key,
+                    observations=[observation_key],
+                    prototype_embedding=observed.copy(),
+                    bbox_pixels=mask.bbox_pixels,
+                    patch_indices=list(mask.patch_indices),
+                )
+                state.cosine_history.append(1.0)
+                self._track_states[track_id] = state
+                matched_tracks.add(track_id)
+                matched_detection_indices.add(detection_index)
+                continue
+
+            state = self._track_states[best_track_id]
+            ghost_similarity = _cosine_similarity(observed, state.ghost_embedding) if state.ghost_embedding is not None else best_similarity
+            was_occluded = state.status == "occluded"
+            state.prototype_embedding = ((0.8 * state.prototype_embedding) + (0.2 * observed)).astype(np.float32)
+            state.last_similarity = best_similarity
+            state.continuity_score = best_similarity
+            state.persistence_confidence = min(1.0, max(0.0, (best_similarity + 1.0) / 2.0))
+            state.last_seen_at = datetime.now(timezone.utc)
+            state.last_observation_id = observation_key
+            if not state.observations or state.observations[-1] != observation_key:
+                state.observations.append(observation_key)
+            state.misses = 0
+            state.visibility_streak += 1
+            state.bbox_pixels = mask.bbox_pixels
+            state.patch_indices = list(mask.patch_indices)
+            state.just_created = False
+            if was_occluded and ghost_similarity > 0.72:
+                state.status = "re-identified"
+                state.reidentification_count += 1
+            else:
+                state.status = "visible"
+            state.status_history.append(state.status)
+            state.cosine_history.append(best_similarity)
+            matched_tracks.add(best_track_id)
+            matched_detection_indices.add(detection_index)
+
+        observed_vectors = [observed for _, observed in detections]
+        for track_id, state in self._track_states.items():
+            if track_id in matched_tracks:
+                continue
+            best_similarity = max((_cosine_similarity(observed, state.prototype_embedding) for observed in observed_vectors), default=0.0)
+            state.last_similarity = best_similarity
+            state.cosine_history.append(best_similarity)
+            state.misses += 1
+            if state.misses >= 3 and best_similarity < 0.65:
+                if state.status != "occluded":
+                    state.occlusion_count += 1
+                state.status = "occluded"
+                state.ghost_embedding = self._predict_vector(state.prototype_embedding)
+            elif state.misses >= 5:
+                state.status = "disappeared"
+            else:
+                state.status = "violated prediction" if best_similarity < 0.5 else state.status
+            state.persistence_confidence = max(0.0, 1.0 - (0.18 * state.misses))
+            state.continuity_score = best_similarity
+            state.status_history.append(state.status)
+
+        entity_tracks: list[EntityTrack] = []
+        for state in self._track_states.values():
+            duration_ms = int((state.last_seen_at - state.first_seen_at).total_seconds() * 1000)
+            entity_tracks.append(
+                EntityTrack(
+                    id=state.id,
+                    session_id=session_id,
+                    label=state.label,
+                    status=state.status,  # type: ignore[arg-type]
+                    first_seen_at=state.first_seen_at,
+                    last_seen_at=state.last_seen_at,
+                    first_observation_id=state.first_observation_id,
+                    last_observation_id=state.last_observation_id,
+                    observations=state.observations[-24:],
+                    visibility_streak=state.visibility_streak,
+                    occlusion_count=state.occlusion_count,
+                    reidentification_count=state.reidentification_count,
+                    persistence_confidence=float(state.persistence_confidence),
+                    continuity_score=float(state.continuity_score),
+                    last_similarity=float(state.last_similarity),
+                    prototype_embedding=state.prototype_embedding.astype(np.float32).tolist(),
+                    status_history=state.status_history[-24:],
+                    metadata={
+                        "bbox_pixels": state.bbox_pixels,
+                        "ghost_bbox_pixels": state.bbox_pixels if state.status == "occluded" else None,
+                        "patch_indices": state.patch_indices,
+                        "ghost_patch_indices": state.patch_indices if state.status == "occluded" else [],
+                        "duration_ms": duration_ms,
+                        "cosine_history": [float(item) for item in state.cosine_history],
+                        "just_created": state.just_created,
+                    },
+                )
+            )
+            state.just_created = False
+        entity_tracks.sort(key=lambda track: track.last_seen_at, reverse=True)
+        return entity_tracks
+
+    def _forecast(self, current_state: np.ndarray) -> dict[int, float]:
+        forecast_errors = {1: self._last_forecast_errors.get(1, 0.0), 2: self._last_forecast_errors.get(2, 0.0), 5: self._last_forecast_errors.get(5, 0.0)}
+        for horizon in (1, 2, 5):
+            queue = self._future_predictions[horizon]
+            due_predictions = [pred for due_tick, pred in list(queue) if due_tick == self._tick_count]
+            self._future_predictions[horizon] = deque(
+                [(due_tick, pred) for due_tick, pred in queue if due_tick > self._tick_count],
+                maxlen=256,
+            )
+            if due_predictions:
+                forecast_errors[horizon] = float(np.mean([np.linalg.norm(current_state - prediction) ** 2 for prediction in due_predictions]))
+            prediction = np.asarray(current_state, dtype=np.float32).copy()
+            for _ in range(horizon):
+                prediction = self._predict_vector(prediction)
+            self._future_predictions[horizon].append((self._tick_count + horizon, prediction.astype(np.float32)))
+        self._last_forecast_errors = forecast_errors
+        return forecast_errors
+
+    def _update_fingerprint(self, energy_map: np.ndarray, current_state: np.ndarray) -> np.ndarray:
+        mean_energy = float(np.asarray(energy_map, dtype=np.float32).mean())
+        self._energy_history.append(mean_energy)
+        centered = current_state - float(np.mean(current_state))
+        outer = np.outer(centered, centered).astype(np.float32)
+        self._session_cov = (0.98 * self._session_cov) + (0.02 * outer)
+        eigenvalues, eigenvectors = np.linalg.eigh(self._session_cov + (1e-6 * np.eye(self._session_cov.shape[0], dtype=np.float32)))
+        _ = eigenvalues
+        top_vectors = eigenvectors[:, -32:]
+        fingerprint = np.concatenate(
+            [
+                np.array(
+                    [
+                        float(np.mean(self._energy_history)),
+                        float(np.var(self._energy_history)),
+                    ],
+                    dtype=np.float32,
+                ),
+                top_vectors.T.reshape(-1).astype(np.float32),
+            ]
+        )
+        return fingerprint.astype(np.float32)
+
+    def _baselines(self, current_state: np.ndarray) -> tuple[float, float]:
+        previous = self._retrieval_history[-1] if self._retrieval_history else np.asarray(current_state, dtype=np.float32)
+        caption_score = max(0.0, _cosine_similarity(np.asarray(current_state, dtype=np.float32), previous))
+        retrieval_score = max(
+            (_cosine_similarity(np.asarray(current_state, dtype=np.float32), item) for item in self._retrieval_history),
+            default=caption_score,
+        )
+        self._retrieval_history.append(np.asarray(current_state, dtype=np.float32).copy())
+        return float(caption_score), float(retrieval_score)
+
+    def _talker(self, mean_energy: float, energy_std: float, entity_tracks: list[EntityTrack]) -> Optional[str]:
+        self._mu_E = (0.05 * mean_energy) + (0.95 * self._mu_E)
+        tau_talk = self._mu_E + (2.0 * energy_std)
+        if mean_energy <= tau_talk:
+            return None
+        if any(track.status == "re-identified" for track in entity_tracks):
+            return "OCCLUSION_END"
+        if any(track.status == "occluded" for track in entity_tracks):
+            return "OCCLUSION_START"
+        if any(track.status == "disappeared" for track in entity_tracks):
+            return "ENTITY_DISAPPEARED"
+        if any(bool(track.metadata.get("just_created")) for track in entity_tracks):
+            return "ENTITY_APPEARED"
+        return "PREDICTION_VIOLATION"
+
+    def _planning_speed_ms(self, current_state: np.ndarray) -> float:
+        started_at = perf_counter()
+        prediction = np.asarray(current_state, dtype=np.float32).copy()
+        for _ in range(5):
+            prediction = self._predict_vector(prediction)
+        _ = prediction
+        self._last_planning_ms = (perf_counter() - started_at) * 1000.0
+        return self._last_planning_ms
+
+    def _adapt_context(self, current_state: np.ndarray) -> None:
+        normalized = np.asarray(current_state, dtype=np.float32)
+        norm = float(np.linalg.norm(normalized)) or 1.0
+        normalized = normalized / norm
+        update = np.outer(normalized, normalized).astype(np.float32) * 1e-4
+        self._theta_ctx = np.clip(self._theta_ctx + update, -2.0, 2.0).astype(np.float32)

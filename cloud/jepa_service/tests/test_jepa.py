@@ -19,6 +19,6 @@ def test_embed_returns_real_embedding(tmp_path):
     response = client.post("/embed", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["provider"] in {"onnx", "basic"}
+    assert data["provider"] in {"dinov2", "onnx", "basic"}
     assert len(data["embedding"]) == 128
     assert any(abs(value) > 0 for value in data["embedding"])

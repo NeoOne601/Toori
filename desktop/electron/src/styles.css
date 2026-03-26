@@ -1895,3 +1895,422 @@ textarea {
   inset: 0;
   border-radius: 20px;
 }
+
+/* ─── New Desktop Surfaces ─── */
+
+.spatial-canvas3d {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.spatial-canvas3d__stage {
+  position: absolute;
+  inset: 0;
+  perspective: 1100px;
+  transform-style: preserve-3d;
+}
+
+.spatial-canvas3d__bars {
+  position: absolute;
+  inset: 0;
+}
+
+.spatial-canvas3d__bar {
+  position: absolute;
+  transform-origin: center bottom;
+}
+
+.spatial-canvas3d__bar::before {
+  content: "";
+  position: absolute;
+  inset: 12% 18%;
+  border-radius: 8px 8px 2px 2px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bar-color) 78%, white), var(--bar-color));
+  opacity: 0.82;
+  transform: scaleY(var(--bar-scale));
+  transform-origin: center bottom;
+  box-shadow: 0 12px 28px rgba(7, 17, 27, 0.12);
+}
+
+.spatial-canvas3d__anchor,
+.spatial-canvas3d__ghost {
+  position: absolute;
+  transform-style: preserve-3d;
+}
+
+.spatial-canvas3d__anchor {
+  width: 0;
+  height: 0;
+  color: var(--text);
+}
+
+.spatial-canvas3d__anchor span,
+.spatial-canvas3d__ghost-label,
+.spatial-canvas3d__ghost-score {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.24rem 0.52rem;
+  backdrop-filter: blur(10px);
+  background: rgba(7, 17, 27, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.75rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.spatial-canvas3d__ghost {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 181, 102, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 153, 77, 0.12), rgba(255, 153, 77, 0.02)),
+    rgba(7, 17, 27, 0.2);
+  box-shadow:
+    0 0 0 1px rgba(255, 165, 77, 0.18) inset,
+    0 0 22px rgba(255, 153, 77, 0.12);
+}
+
+.spatial-canvas3d__ghost.is-occluded {
+  animation: spatial-amber-pulse 1.8s ease-in-out infinite;
+  border-color: rgba(255, 181, 102, 0.72);
+}
+
+.spatial-canvas3d__ghost-label {
+  position: absolute;
+  left: 0.55rem;
+  top: 0.55rem;
+}
+
+.spatial-canvas3d__ghost-score {
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.55rem;
+}
+
+.spatial-canvas3d__anchor.is-live span {
+  border-color: rgba(67, 216, 201, 0.32);
+}
+
+.spatial-canvas3d__anchor.is-stable span {
+  border-color: rgba(67, 216, 201, 0.18);
+}
+
+.spatial-canvas3d__anchor.is-memory span {
+  border-color: rgba(130, 171, 255, 0.28);
+}
+
+.spatial-canvas3d__anchor.is-accent span {
+  border-color: rgba(255, 140, 66, 0.32);
+}
+
+@keyframes spatial-amber-pulse {
+  0%,
+  100% {
+    transform: scale(1) translate3d(0, 0, 0);
+    box-shadow:
+      0 0 0 1px rgba(255, 181, 102, 0.22) inset,
+      0 0 22px rgba(255, 153, 77, 0.12);
+  }
+
+  50% {
+    transform: scale(1.015) translate3d(0, 0, 0);
+    box-shadow:
+      0 0 0 1px rgba(255, 181, 102, 0.42) inset,
+      0 0 28px rgba(255, 153, 77, 0.24);
+  }
+}
+
+.occlusion-panel__score,
+.sigreg-gauge__guard,
+.forecast-panel__badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.7rem 0.8rem;
+}
+
+.occlusion-panel__score span,
+.sigreg-gauge__guard span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.occlusion-panel__tracks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+
+.occlusion-panel__track {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 0.8rem 0.9rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.occlusion-panel__track[data-status="occluded"] {
+  border-color: rgba(255, 181, 102, 0.4);
+}
+
+.occlusion-panel__track[data-status="recovered"] {
+  border-color: rgba(67, 216, 201, 0.34);
+}
+
+.occlusion-panel__track[data-status="violated"],
+.occlusion-panel__track[data-status="disappeared"] {
+  border-color: rgba(255, 107, 107, 0.36);
+}
+
+.occlusion-panel__track-top,
+.forecast-panel__metric,
+.forecast-panel__slot,
+.sigreg-gauge__zone span,
+.consumer-mode__status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.occlusion-panel__ghost-badge {
+  border-radius: 999px;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid rgba(255, 181, 102, 0.34);
+  color: #ffd29b;
+  background: rgba(255, 153, 77, 0.08);
+  font-size: 0.76rem;
+}
+
+.occlusion-panel__track-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-top: 0.55rem;
+}
+
+.forecast-panel__badge {
+  align-items: flex-start;
+}
+
+.forecast-panel__badge[data-monotonic="true"] {
+  border-color: rgba(67, 216, 201, 0.34);
+  color: var(--accent-2);
+}
+
+.forecast-panel__badge[data-monotonic="false"] {
+  border-color: rgba(255, 181, 102, 0.34);
+  color: #ffd29b;
+}
+
+.forecast-panel__metric {
+  margin-bottom: 0.9rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.forecast-panel__metric span {
+  color: var(--muted);
+}
+
+.forecast-panel__metric strong {
+  font-size: 1.4rem;
+}
+
+.forecast-panel__timings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.forecast-panel__slot {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.forecast-panel__slot span {
+  color: var(--muted);
+}
+
+.forecast-panel__horizon {
+  margin: 0.85rem 0 0;
+}
+
+.sigreg-gauge__meter {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.sigreg-gauge__zones {
+  position: relative;
+  display: block;
+  min-height: 46px;
+}
+
+.sigreg-gauge__zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sigreg-gauge__zone span {
+  width: 100%;
+  height: 100%;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.sigreg-gauge__zone.is-calm {
+  background: rgba(67, 216, 201, 0.08);
+}
+
+.sigreg-gauge__zone.is-watch {
+  background: rgba(255, 202, 94, 0.1);
+}
+
+.sigreg-gauge__zone.is-guard {
+  background: rgba(255, 181, 102, 0.12);
+}
+
+.sigreg-gauge__zone.is-trip {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.sigreg-gauge__track {
+  position: relative;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.sigreg-gauge__fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(67, 216, 201, 0.7), rgba(255, 181, 102, 0.9));
+  border-radius: inherit;
+}
+
+.sigreg-gauge__marker {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(7, 17, 27, 0.8);
+  background: #ffd29b;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 3px rgba(255, 181, 102, 0.18);
+}
+
+.baseline-battle__history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.baseline-battle__row {
+  align-items: stretch;
+}
+
+.consumer-mode__layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(260px, 1.2fr);
+  gap: 1rem;
+  align-items: center;
+}
+
+.consumer-mode__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.consumer-mode__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.consumer-mode__field span,
+.consumer-mode__status span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.consumer-mode__status {
+  padding: 0.82rem 0.9rem;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.consumer-mode__graph {
+  min-height: 260px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(circle at top, rgba(255, 140, 66, 0.12), transparent 36%),
+    radial-gradient(circle at bottom right, rgba(67, 216, 201, 0.12), transparent 32%),
+    rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.consumer-mode__graph svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.consumer-mode__link {
+  stroke: rgba(157, 177, 198, 0.38);
+  stroke-linecap: round;
+}
+
+.consumer-mode__node {
+  fill: rgba(67, 216, 201, 0.28);
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 1.5;
+}
+
+.consumer-mode__node.is-accent {
+  fill: rgba(255, 140, 66, 0.28);
+}
+
+.consumer-mode__node.is-memory {
+  fill: rgba(130, 171, 255, 0.28);
+}
+
+.consumer-mode__node.is-live {
+  fill: rgba(67, 216, 201, 0.32);
+}
+
+.consumer-mode__node.is-stable {
+  fill: rgba(84, 206, 176, 0.28);
+}
+
+.consumer-mode__label {
+  fill: var(--text);
+  font-size: 4px;
+  paint-order: stroke fill;
+  stroke: rgba(7, 17, 27, 0.7);
+  stroke-width: 1px;
+}

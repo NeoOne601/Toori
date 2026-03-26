@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
+import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -55,11 +57,11 @@ class RuntimeSettings(BaseModel):
     camera_device: str = "default"
     theme_preference: ThemePreference = "system"
     sampling_fps: float = 1.0
-    primary_perception_provider: str = "onnx"
+    primary_perception_provider: str = "dinov2"
     reasoning_backend: str = "cloud"
     search_provider: str = "local"
     local_reasoning_disabled: bool = True
-    fallback_order: list[str] = Field(default_factory=lambda: ["onnx", "basic", "cloud"])
+    fallback_order: list[str] = Field(default_factory=lambda: ["dinov2", "onnx", "basic", "cloud"])
     decode_auto_threshold: float = 0.32
     top_k: int = 6
     retention_days: int = 30
@@ -295,6 +297,65 @@ class TalkerEvent(BaseModel):
     description: str = ""
 
 
+@dataclass
+class JEPATick:
+    energy_map: np.ndarray
+    entity_tracks: list["EntityTrack"]
+    talker_event: Optional[str]
+    sigreg_loss: float
+    forecast_errors: dict[int, float]
+    session_fingerprint: np.ndarray
+    planning_time_ms: float
+    caption_score: float
+    retrieval_score: float
+    timestamp_ms: int
+    warmup: bool
+    mask_results: list[dict[str, Any]]
+    mean_energy: float
+    energy_std: float
+    guard_active: bool = False
+    ema_tau: float = 0.996
+
+    def to_payload(self) -> "JEPATickPayload":
+        return JEPATickPayload(
+            energy_map=np.asarray(self.energy_map, dtype=np.float32).tolist(),
+            entity_tracks=[track.model_dump(mode="json") for track in self.entity_tracks],
+            talker_event=self.talker_event,
+            sigreg_loss=float(self.sigreg_loss),
+            forecast_errors={int(key): float(value) for key, value in self.forecast_errors.items()},
+            session_fingerprint=np.asarray(self.session_fingerprint, dtype=np.float32).tolist(),
+            planning_time_ms=float(self.planning_time_ms),
+            caption_score=float(self.caption_score),
+            retrieval_score=float(self.retrieval_score),
+            timestamp_ms=int(self.timestamp_ms),
+            warmup=bool(self.warmup),
+            mask_results=self.mask_results,
+            mean_energy=float(self.mean_energy),
+            energy_std=float(self.energy_std),
+            guard_active=bool(self.guard_active),
+            ema_tau=float(self.ema_tau),
+        )
+
+
+class JEPATickPayload(BaseModel):
+    energy_map: list[list[float]]
+    entity_tracks: list[dict[str, Any]] = Field(default_factory=list)
+    talker_event: Optional[str] = None
+    sigreg_loss: float = 0.0
+    forecast_errors: dict[int, float] = Field(default_factory=dict)
+    session_fingerprint: list[float] = Field(default_factory=list)
+    planning_time_ms: float = 0.0
+    caption_score: float = 0.0
+    retrieval_score: float = 0.0
+    timestamp_ms: int
+    warmup: bool = True
+    mask_results: list[dict[str, Any]] = Field(default_factory=list)
+    mean_energy: float = 0.0
+    energy_std: float = 0.0
+    guard_active: bool = False
+    ema_tau: float = 0.996
+
+
 class AtlasNode(BaseModel):
     entity_id: str
     label: str
@@ -322,6 +383,7 @@ class LivingLensTickResponse(AnalyzeResponse):
     entity_tracks: list[EntityTrack] = Field(default_factory=list)
     baseline_comparison: Optional[BaselineComparison] = None
     talker_event: Optional[TalkerEvent] = None
+    jepa_tick: Optional[JEPATickPayload] = None
 
 
 class WorldStateResponse(BaseModel):
@@ -339,6 +401,30 @@ class ChallengeEvaluateRequest(BaseModel):
     challenge_set: ChallengeSet = "both"
     proof_mode: ProofMode = "both"
     limit: int = Field(default=8, ge=2, le=64)
+
+
+class JEPAForecastRequest(BaseModel):
+    session_id: str = "default"
+    k: int = Field(default=1, ge=1, le=32)
+
+
+class JEPAForecastResponse(BaseModel):
+    session_id: str
+    k: int
+    prediction: list[float] = Field(default_factory=list)
+    forecast_error: Optional[float] = None
+    ready: bool = False
+
+
+class ProofReportGenerateRequest(BaseModel):
+    session_id: str
+    chart_b64: Optional[str] = None
+
+
+class ProofReportResponse(BaseModel):
+    session_id: str
+    path: str
+    generated: bool = True
 
 
 class ProviderHealthResponse(BaseModel):

@@ -7,16 +7,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-REQUIREMENTS = [
-    ("fastapi", "fastapi"),
-    ("uvicorn", "uvicorn"),
-    ("pydantic", "pydantic"),
-    ("prometheus_client", "prometheus_client"),
-    ("httpx", "httpx"),
-    ("numpy", "numpy"),
-    ("pillow", "PIL"),
-    ("onnxruntime", "onnxruntime"),
-    ("websockets", "websockets"),
+BASE_IMPORTS = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "prometheus_client",
+    "httpx",
+    "numpy",
+    "PIL",
+    "onnxruntime",
+    "websockets",
+    "weasyprint",
+]
+
+OPTIONAL_PERCEPTION_PACKAGES = [
+    "torch>=2.1.0",
+    "torchvision",
+    "git+https://github.com/ChaoningZhang/MobileSAM",
 ]
 
 def ensure_python_311() -> None:
@@ -26,26 +33,38 @@ def ensure_python_311() -> None:
     if not python311:
         print("python3.11 is not installed. Continuing with the active interpreter.")
         return
-    print(f"Re-launching setup with {python311} so ONNX Runtime can be installed on Apple Silicon.")
+    print(f"Re-launching setup with {python311} so ONNX Runtime and perception extras can be installed on Apple Silicon.")
     os.execv(python311, [python311, __file__])
 
-def check_python_packages():
+def _missing_base_imports() -> list[str]:
     missing = []
-    for pkg, import_name in REQUIREMENTS:
+    for import_name in BASE_IMPORTS:
         try:
             __import__(import_name)
         except ImportError:
-            missing.append(pkg)
-    if missing:
-        print(f"Installing missing Python packages: {missing}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
-    else:
-        print("All required Python packages are present.")
+            missing.append(import_name)
+    return missing
+
+
+def install_requirements(*, include_optional: bool = False) -> None:
+    requirements_path = Path.cwd() / "requirements.txt"
+    print(f"Installing base requirements from {requirements_path}")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(requirements_path)])
+    if include_optional:
+        print("Installing optional DINOv2/SAM perception extras")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *OPTIONAL_PERCEPTION_PACKAGES])
 
 def main():
     print("=== Backend setup script ===")
     ensure_python_311()
-    check_python_packages()
+    include_optional = os.environ.get("TOORI_INSTALL_PERCEPTION_EXTRAS") == "1"
+    if _missing_base_imports():
+        install_requirements(include_optional=include_optional)
+    elif include_optional:
+        install_requirements(include_optional=True)
+    else:
+        print("Base requirements already installed.")
+        print("Skipping optional DINOv2/SAM installs. Set TOORI_INSTALL_PERCEPTION_EXTRAS=1 to install perception extras.")
     subprocess.check_call([sys.executable, str(Path.cwd() / "scripts" / "download_desktop_models.py")], cwd=Path.cwd())
     data_dir = Path.cwd() / ".toori"
     data_dir.mkdir(exist_ok=True)

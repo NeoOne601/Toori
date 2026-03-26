@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+prometheus_client
+httpx
+numpy
+pillow
+onnxruntime
+websockets
+weasyprint
+
+# Optional perception stack. `scripts/setup_backend.py` installs these when
+# `TOORI_INSTALL_PERCEPTION_EXTRAS=1` is set so offline/test runs can keep the
+# deterministic numpy fallback path.
+# torch>=2.1.0
+# torchvision
+# git+https://github.com/ChaoningZhang/MobileSAM

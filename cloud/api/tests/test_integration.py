@@ -250,7 +250,7 @@ def test_forced_mlx_http_analyze_returns_answer(tmp_path, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["answer"]["provider"] == "mlx"
-    assert body["observation"]["providers"] == ["basic", "mlx"] or body["observation"]["providers"] == ["onnx", "mlx"]
+    assert body["observation"]["providers"] in (["basic", "mlx"], ["onnx", "mlx"], ["dinov2", "mlx"])
     assert body["reasoning_trace"][0]["provider"] == "mlx"
     assert body["reasoning_trace"][0]["success"] is True
 

@@ -51,6 +51,8 @@ Toori differentiates itself by making temporal world-model behavior first-class:
 
 That combination is the differentiator: Toori is not trying to be a prettier captioning app. It is trying to make latent-state reasoning visible, testable, and reusable.
 
+In practice that means Toori can stay useful in scenes that are not ImageNet-shaped. A Kolkata bazaar frame with a thela, a matir handi, or a phuchkawala's moving hands can still be tracked as a live entity thread even when the system has no stable English label for it.
+
 ## What It Proves
 
 Toori is intended to make these claims visible and testable:
@@ -155,12 +157,13 @@ For a realistic macOS packaging path, the app must be built and signed as a real
 
 Open **Settings** and set the providers you want to use:
 
-- `providers.onnx.model_path` for desktop ONNX perception
+- `providers.dinov2` metadata for the desktop/runtime DINOv2 + MobileSAM path
+- `providers.onnx.model_path` for legacy ONNX compatibility when you explicitly switch back
 - `providers.ollama.base_url` and `providers.ollama.model` for local Ollama reasoning
 - `providers.mlx.model_path` and `providers.mlx.metadata.command` for MLX reasoning
 - `providers.cloud.base_url`, `providers.cloud.model`, and `providers.cloud.api_key` for cloud fallback reasoning
 
-The local M1 defaults include a bundled ONNX model and support for optional `ollama` and MLX reasoning on macOS.
+The local M1 defaults prefer DINOv2 perception, keep ONNX as a compatibility path, and support optional `ollama` and MLX reasoning on macOS.
 
 ## Proof Surface Terms
 
@@ -195,6 +198,7 @@ The live world-model outputs are written for humans, not for a paper:
 - `What changed` means the elements that appeared, disappeared, or shifted enough to matter.
 - `Persistence graph` means the tracked scene threads the model is trying to keep alive across occlusion and reappearance.
 - `Challenge evaluation` means a guided sequence that compares the JEPA-style mode against captioning and retrieval baselines on the same real session.
+- `Consumer Mode` means the plain-language proof surface with the immersive overlay still visible but without the dense science metrics.
 
 ## Core API
 
@@ -216,6 +220,15 @@ Run the verified backend suite:
 ```bash
 pytest -q cloud/api/tests cloud/jepa_service/tests cloud/search_service/tests cloud/monitoring/tests tests/test_readme.py
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](/Users/macuser/toori/CONTRIBUTING.md) for the current contribution surfaces: perception backbones, predictor architectures, Consumer Mode translations, and SDK extensions.
+
+## License
+
+- Engine and SDK code: Apache 2.0
+- UI proof surface and translation-facing presentation assets: CC-BY-SA 4.0 where noted
 
 ## Notes
 

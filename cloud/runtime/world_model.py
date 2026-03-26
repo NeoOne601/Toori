@@ -106,8 +106,21 @@ def clamp_unit(value: float) -> float:
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     left_vec = np.array(left, dtype=np.float32)
     right_vec = np.array(right, dtype=np.float32)
+    if left_vec.size != right_vec.size:
+        left_vec, right_vec = _align_embedding_pair(left_vec, right_vec)
     denom = (np.linalg.norm(left_vec) or 1.0) * (np.linalg.norm(right_vec) or 1.0)
     return clamp_unit(np.dot(left_vec, right_vec) / denom)
+
+
+def _align_embedding_pair(left: np.ndarray, right: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    target = min(left.size, right.size)
+    if target <= 0:
+        return np.zeros(1, dtype=np.float32), np.zeros(1, dtype=np.float32)
+    if left.size != target:
+        left = np.array([float(chunk.mean()) for chunk in np.array_split(left, target)], dtype=np.float32)
+    if right.size != target:
+        right = np.array([float(chunk.mean()) for chunk in np.array_split(right, target)], dtype=np.float32)
+    return left, right
 
 
 def mean_embedding(observations: list[Observation], fallback: list[float]) -> list[float]:
@@ -369,11 +382,15 @@ def _updated_track(
     reidentified = status == "re-identified"
     visible = status in {"visible", "re-identified"}
     history = [*track.status_history[-7:], status]
+    track_embedding = np.array(track.prototype_embedding, dtype=np.float32) if track.prototype_embedding else np.array([], dtype=np.float32)
+    observation_embedding = np.array(observation.embedding, dtype=np.float32)
+    if track_embedding.size and track_embedding.size != observation_embedding.size:
+        track_embedding, observation_embedding = _align_embedding_pair(track_embedding, observation_embedding)
     prototype = (
         [
             float(value)
             for value in (
-                (np.array(track.prototype_embedding, dtype=np.float32) + np.array(observation.embedding, dtype=np.float32))
+                (track_embedding + observation_embedding)
                 / 2.0
             ).tolist()
         ]

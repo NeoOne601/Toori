@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
@@ -17,10 +18,13 @@ from .models import (
     Answer,
     ChallengeEvaluateRequest,
     ChallengeRun,
+    JEPAForecastResponse,
+    JEPATick,
     LivingLensTickRequest,
     LivingLensTickResponse,
     Observation,
     ObservationsResponse,
+    ProofReportResponse,
     ProviderHealthResponse,
     QueryRequest,
     QueryResponse,
@@ -38,13 +42,17 @@ from .world_model import build_baseline_comparison, build_challenge_run, build_o
 
 class RuntimeContainer:
     def __init__(self, data_dir: str | Path | None = None) -> None:
-        from cloud.jepa_service.engine import JEPAEngine
+        from cloud.jepa_service.engine import ImmersiveJEPAEngine, JEPAEngine
         
         self.data_dir = resolve_data_dir(data_dir)
         self.store = ObservationStore(self.data_dir)
         self.providers = ProviderRegistry()
         self.events = EventBus()
         self.engine = JEPAEngine()
+        self._immersive_engine_factory = ImmersiveJEPAEngine
+        self._immersive_engines: dict[str, ImmersiveJEPAEngine] = {}
+        self._jepa_ticks_by_session: dict[str, deque[JEPATick]] = defaultdict(lambda: deque(maxlen=240))
+        self._latest_proof_report: Optional[Path] = None
         self.talker = SelectiveTalker()
         self.atlas = EpistemicAtlas()
         self._previous_tracks: list = []
@@ -79,67 +87,56 @@ class RuntimeContainer:
         observations = list(reversed(self.store.recent_observations(session_id=request.session_id, limit=8)))
         history = list(reversed(self.store.recent_scene_states(session_id=request.session_id, limit=8)))
         baseline = build_baseline_comparison(observations, history) if request.proof_mode in {"both", "baseline"} else None
-
-        # --- JEPA engine tick ---
-        embedding = np.array(response.observation.embedding, dtype=np.float32)
-        proposal_boxes = scene_state.proposal_boxes
-        if proposal_boxes:
-            mask = self.engine.boxes_to_mask(
-                proposal_boxes,
-                self.engine._patch_grid[0],
-                self.engine._patch_grid[1],
-            )
-        else:
-            mask = self.engine.random_mask()
-        tick_result = self.engine.tick(embedding, mask=mask)
-
-        # --- Selective talker ---
-        talker_event: TalkerEvent | None = None
-        talker_event = self.talker.evaluate(
-            mean_energy=tick_result.mean_energy,
-            threshold=tick_result.threshold,
-            should_talk=tick_result.should_talk,
-            entity_tracks=tracks,
-            previous_tracks=self._previous_tracks,
-            persistence_signal=scene_state.metrics.persistence_signal,
+        frame = np.asarray(Image.open(response.observation.image_path).convert("RGB"), dtype=np.uint8)
+        immersive_engine = self._engine_for_session(request.session_id)
+        jepa_tick = immersive_engine.tick(
+            frame,
+            session_id=request.session_id,
+            observation_id=response.observation.id,
         )
-        self._previous_tracks = [t.model_copy() for t in tracks[:12]]
+        self._jepa_ticks_by_session[request.session_id].append(jepa_tick)
 
-        # --- Epistemic atlas ---
+        immersive_tracks = jepa_tick.entity_tracks[:12]
+        self.store.save_entity_tracks(immersive_tracks)
+        talker_event = self._talker_event_from_jepa(jepa_tick, immersive_tracks)
+        self._previous_tracks = [track.model_copy() for track in immersive_tracks]
+
         self.atlas.update(
-            entity_tracks=tracks,
+            entity_tracks=immersive_tracks,
             scene_state=scene_state,
-            energy_map=tick_result.energy_map,
+            energy_map=jepa_tick.energy_map,
         )
 
-        # Override world-model surprise with JEPA prediction residual
-        scene_state.metrics.surprise_score = round(float(min(tick_result.mean_energy, 1.0)), 4)
-        scene_state.metrics.prediction_consistency = round(float(max(1.0 - tick_result.mean_energy, 0.0)), 4)
+        scene_state.metrics.surprise_score = round(float(min(jepa_tick.mean_energy, 1.0)), 4)
+        scene_state.metrics.prediction_consistency = round(float(max(1.0 - jepa_tick.mean_energy, 0.0)), 4)
 
-        # Publish JEPA-specific events
+        threshold = float(getattr(immersive_engine, "_mu_E", 0.0) + (2.0 * jepa_tick.energy_std))
+        should_talk = bool(jepa_tick.talker_event)
         self.events.publish(
             "jepa.energy_map",
             {
-                "grid": list(self.engine._patch_grid),
-                "values": tick_result.energy_map.ravel().tolist(),
-                "mean_energy": tick_result.mean_energy,
-                "threshold": tick_result.threshold,
-                "should_talk": tick_result.should_talk,
-                "sigreg_loss": tick_result.sigreg_loss,
+                "grid": [14, 14],
+                "values": np.asarray(jepa_tick.energy_map, dtype=np.float32).ravel().tolist(),
+                "mean_energy": jepa_tick.mean_energy,
+                "threshold": threshold,
+                "should_talk": should_talk,
+                "sigreg_loss": jepa_tick.sigreg_loss,
             },
         )
+        self.events.publish(
+            "jepa_tick",
+            {"payload": jepa_tick.to_payload().model_dump(mode="json")},
+        )
         if talker_event is not None:
-            self.events.publish(
-                "jepa.talker_event",
-                talker_event.model_dump(mode="json"),
-            )
+            self.events.publish("jepa.talker_event", talker_event.model_dump(mode="json"))
 
         return LivingLensTickResponse(
             **response.model_dump(),
             scene_state=scene_state,
-            entity_tracks=tracks[:12],
+            entity_tracks=immersive_tracks,
             baseline_comparison=baseline,
             talker_event=talker_event,
+            jepa_tick=jepa_tick.to_payload(),
         )
 
     def get_world_state(self, session_id: str) -> WorldStateResponse:
@@ -154,6 +151,72 @@ class RuntimeContainer:
             challenges=challenges,
             atlas=self.atlas.to_dict(),
         )
+
+    def forecast_jepa(self, session_id: str, k: int) -> JEPAForecastResponse:
+        engine = self._immersive_engines.get(session_id)
+        if engine is None:
+            return JEPAForecastResponse(session_id=session_id, k=k, prediction=[], forecast_error=None, ready=False)
+        prediction, forecast_error = engine.forecast_last_state(k)
+        return JEPAForecastResponse(
+            session_id=session_id,
+            k=k,
+            prediction=np.asarray(prediction, dtype=np.float32).tolist(),
+            forecast_error=forecast_error,
+            ready=bool(prediction.size),
+        )
+
+    def generate_proof_report(self, session_id: str, chart_b64: str | None = None) -> ProofReportResponse:
+        from .proof_report import generate_proof_report
+
+        ticks = list(self._jepa_ticks_by_session.get(session_id, deque()))
+        path = generate_proof_report(ticks=ticks, session_id=session_id, chart_b64=chart_b64)
+        self._latest_proof_report = Path(path)
+        return ProofReportResponse(session_id=session_id, path=str(path), generated=True)
+
+    def latest_proof_report(self) -> Optional[Path]:
+        return self._latest_proof_report
+
+    def _engine_for_session(self, session_id: str):
+        if session_id not in self._immersive_engines:
+            self._immersive_engines[session_id] = self._immersive_engine_factory()
+        return self._immersive_engines[session_id]
+
+    def _talker_event_from_jepa(self, tick: JEPATick, entity_tracks: list) -> TalkerEvent | None:
+        if not tick.talker_event:
+            return None
+        event_type = tick.talker_event
+        names = [track.label for track in entity_tracks[:2]]
+        name = names[0] if names else "entity"
+        descriptions = {
+            "ENTITY_APPEARED": "Something new just entered",
+            "ENTITY_DISAPPEARED": f"{name} left - I'll remember it",
+            "OCCLUSION_START": f"I'm still tracking {name} even though I can't see it",
+            "OCCLUSION_END": f"{name} came back - exactly where I expected",
+            "PREDICTION_VIOLATION": "That wasn't supposed to happen",
+            "SCENE_STABLE": "Everything is as expected",
+        }
+        return TalkerEvent(
+            event_type=event_type,  # type: ignore[arg-type]
+            confidence=max(0.0, min(1.0, tick.mean_energy)),
+            entity_ids=[track.id for track in entity_tracks[:4]],
+            energy_summary=tick.mean_energy,
+            description=descriptions.get(event_type, "Unexpected change detected"),
+        )
+
+    def _emit_reasoning_latency(self, trace: list[ReasoningTraceEntry]) -> None:
+        for entry in trace:
+            if entry.provider not in {"ollama", "mlx"}:
+                continue
+            if not entry.attempted or entry.latency_ms is None:
+                continue
+            self.events.publish(
+                "llm_latency",
+                {
+                    "provider": entry.provider,
+                    "ms": float(entry.latency_ms),
+                    "success": entry.success,
+                },
+            )
 
     def evaluate_challenge(self, request: ChallengeEvaluateRequest) -> ChallengeRun:
         if request.observation_ids:
@@ -216,6 +279,7 @@ class RuntimeContainer:
                 )
                 answer = outcome.answer
                 reasoning_trace = outcome.trace
+                self._emit_reasoning_latency(reasoning_trace)
         else:
             hits = self.store.search_by_text(
                 request.query or "",
@@ -238,6 +302,7 @@ class RuntimeContainer:
                 )
                 answer = outcome.answer
                 reasoning_trace = outcome.trace
+                self._emit_reasoning_latency(reasoning_trace)
 
         return QueryResponse(
             hits=hits,
@@ -422,6 +487,7 @@ class RuntimeContainer:
             image_path=observation.image_path,
             context=context,
         )
+        self._emit_reasoning_latency(outcome.trace)
         return outcome.answer, outcome.trace
 
     def _load_image(self, image_base64: Optional[str], file_path: Optional[str]) -> tuple[bytes, Image.Image]:
