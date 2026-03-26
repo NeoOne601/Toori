@@ -66,7 +66,7 @@ This is not a claim that Toori is a full research-grade JEPA implementation. It 
 
 - [cloud/runtime](/Users/macuser/toori/cloud/runtime): runtime contracts, observation storage, provider routing, world-model state, event streaming, and proof-surface APIs
 - [cloud/api/main.py](/Users/macuser/toori/cloud/api/main.py): loopback runtime entrypoint on `127.0.0.1:7777`
-- [cloud/jepa_service/app.py](/Users/macuser/toori/cloud/jepa_service/app.py): compatibility perception service
+- [cloud/jepa_service/engine.py](/Users/macuser/toori/cloud/jepa_service/engine.py): JEPA engine and spatial energy maps
 - [cloud/search_service/main.py](/Users/macuser/toori/cloud/search_service/main.py): compatibility search service
 - [desktop/electron](/Users/macuser/toori/desktop/electron): Electron shell plus React/Vite UI
 - [mobile/ios/TooriApp](/Users/macuser/toori/mobile/ios/TooriApp): SwiftUI client sources
@@ -81,6 +81,9 @@ This is not a claim that Toori is a full research-grade JEPA implementation. It 
 flowchart LR
   Camera["Live Camera / File Input"] --> Runtime["Toori Runtime"]
   Runtime --> Perception["Primary Local Perception"]
+  Perception --> JEPA["JEPA Engine"]
+  JEPA --> Atlas["Epistemic Atlas"]
+  JEPA --> Talker["Selective Talker"]
   Perception --> Observation["Observation Storage"]
   Observation --> World["World Model Layer"]
   World --> Living["Living Lens Proof Surface"]
@@ -163,10 +166,11 @@ The local M1 defaults include a bundled ONNX model and support for optional `oll
 
 - **Live Lens**: manual capture and debugging surface
 - **Living Lens**: the continuous proof surface showing world-model behavior in real time
-- **Prediction consistency**: how well the next observation matched the latent expectation
-- **Temporal continuity**: whether a scene remains stable across time
-- **Surprise**: how strongly the next frame violates expectation
-- **Persistence**: whether the same entity or scene thread survives occlusion or movement
+- **JEPA Residual / Energy**: purely numerical target for surprise detection; low energy indicates prediction consistency
+- **Epistemic Atlas**: spatial tracking of entities and their relationship threads across time
+- **Selective Talker**: adaptive event narration that only triggers on significant JEPA surprises or track shifts
+- **Responsive Grid**: the modular Living Lens dashboard layout that adaptively separates understanding, scene pulse, and memory relinking
+- **Saliency Filtering**: dynamic entity identification that rejects weak or irrelevant proposals (threshold 0.15)
 - **Passive mode**: the continuous monitoring mode that keeps updating the scene model without waiting for manual capture
 
 ## Proof Workflow

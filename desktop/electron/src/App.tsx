@@ -1,11 +1,21 @@
 import {
   FormEvent,
+  Suspense,
+  lazy,
   startTransition,
   useDeferredValue,
   useEffect,
   useRef,
   useState,
 } from "react";
+// @ts-ignore - react-grid-layout v2 removed WidthProvider; ResponsiveGridLayout is the composed replacement
+import { ResponsiveGridLayout as _ResponsiveGridLayout } from "react-grid-layout";
+
+const Heatmap3D = lazy(() => import("./Heatmap3D"));
+
+// v2 API: ResponsiveGridLayout already wraps width detection internally.
+// Cast to any to avoid type mismatches from incomplete @types/react-grid-layout v1 stubs.
+const ResponsiveGridLayout = _ResponsiveGridLayout as any;
 
 type ProviderHealth = {
   name: string;
@@ -648,9 +658,28 @@ function ObservationThumbnail({ src, alt }: { src: string; alt: string }) {
       src={src}
       alt=""
       title={alt}
+      crossOrigin="anonymous"
       onError={() => setFailed(true)}
     />
   );
+}
+
+const DETECTION_COLORS = [
+  "rgba(67, 216, 201, 0.85)",   // Teal
+  "rgba(255, 140, 66, 0.85)",   // Orange
+  "rgba(130, 171, 255, 0.85)",  // Blue
+  "rgba(246, 199, 106, 0.85)",  // Yellow
+  "rgba(255, 107, 107, 0.85)",  // Red
+  "rgba(155, 107, 255, 0.85)",  // Purple
+  "rgba(84, 206, 176, 0.85)",   // Green
+];
+
+function getLabelColor(label: string): string {
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) {
+    hash = label.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return DETECTION_COLORS[Math.abs(hash) % DETECTION_COLORS.length];
 }
 
 function DetectionOverlay({ boxes }: { boxes: BoundingBox[] }) {
@@ -659,23 +688,29 @@ function DetectionOverlay({ boxes }: { boxes: BoundingBox[] }) {
   }
   return (
     <div className="detection-overlay" aria-hidden="true">
-      {boxes.map((box, index) => (
-        <div
-          key={`${box.label || "box"}-${index}-${box.x}-${box.y}`}
-          className="detection-box"
-          style={{
-            left: `${Math.max(0, Math.min(box.x, 0.96)) * 100}%`,
-            top: `${Math.max(0, Math.min(box.y, 0.96)) * 100}%`,
-            width: `${Math.max(0.04, Math.min(box.width, 1 - box.x)) * 100}%`,
-            height: `${Math.max(0.04, Math.min(box.height, 1 - box.y)) * 100}%`,
-          }}
-        >
-          <span>
-            {box.label || "tracked region"}
-            {box.score != null ? ` ${box.score.toFixed(2)}` : ""}
-          </span>
-        </div>
-      ))}
+      {boxes.map((box, index) => {
+        const fallbackLabel = box.label || "tracked region";
+        const color = getLabelColor(fallbackLabel);
+        return (
+          <div
+            key={`${fallbackLabel}-${index}-${box.x}-${box.y}`}
+            className="detection-box"
+            style={{
+              left: `${Math.max(0, Math.min(box.x, 0.96)) * 100}%`,
+              top: `${Math.max(0, Math.min(box.y, 0.96)) * 100}%`,
+              width: `${Math.max(0.04, Math.min(box.width, 1 - box.x)) * 100}%`,
+              height: `${Math.max(0.04, Math.min(box.height, 1 - box.y)) * 100}%`,
+              borderColor: color,
+              backgroundColor: color.replace('0.85)', '0.12)'),
+            }}
+          >
+            <span style={{ backgroundColor: color }}>
+              {fallbackLabel}
+              {box.score != null ? ` ${box.score.toFixed(2)}` : ""}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -833,6 +868,52 @@ export default function App() {
   const [cameraStreamLive, setCameraStreamLive] = useState(false);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [livingLensEnabled, setLivingLensEnabled] = useState(true);
+  const [showEnergyMap, setShowEnergyMap] = useState<boolean>(true);
+  const [showEntities, setShowEntities] = useState(true);
+  const [lensMaximized, setLensMaximized] = useState(false);
+  const [layoutMode, setLayoutMode] = useState<"grid" | "sidebar" | "stacked" | "focus">("grid");
+  
+  const defaultLayouts = {
+    grid: {
+      lg: [
+        { i: 'monitor', x: 0, y: 0, w: 8, h: 6, minW: 4, minH: 4 },
+        { i: 'understanding', x: 8, y: 0, w: 4, h: 3 },
+        { i: 'pulse', x: 8, y: 3, w: 4, h: 3 },
+        { i: 'matches', x: 0, y: 6, w: 12, h: 4 },
+      ]
+    },
+    sidebar: {
+      lg: [
+        { i: 'monitor', x: 0, y: 0, w: 4, h: 10 },
+        { i: 'understanding', x: 4, y: 0, w: 8, h: 5 },
+        { i: 'pulse', x: 4, y: 5, w: 8, h: 5 },
+        { i: 'matches', x: 0, y: 10, w: 12, h: 4 },
+      ]
+    },
+    stacked: {
+      lg: [
+        { i: 'monitor', x: 0, y: 0, w: 12, h: 6 },
+        { i: 'understanding', x: 0, y: 6, w: 12, h: 3 },
+        { i: 'pulse', x: 0, y: 9, w: 12, h: 3 },
+        { i: 'matches', x: 0, y: 12, w: 12, h: 4 },
+      ]
+    },
+    focus: {
+      lg: [
+        { i: 'monitor', x: 0, y: 0, w: 12, h: 10 },
+        { i: 'understanding', x: 0, y: 10, w: 6, h: 4 },
+        { i: 'pulse', x: 6, y: 10, w: 6, h: 4 },
+        { i: 'matches', x: 0, y: 14, w: 12, h: 4 },
+      ]
+    }
+  };
+
+  const [currentLayouts, setCurrentLayouts] = useState(defaultLayouts.grid);
+
+  useEffect(() => {
+    setCurrentLayouts(defaultLayouts[layoutMode]);
+  }, [layoutMode]);
+
   const [livingLensIntervalS, setLivingLensIntervalS] = useState(6);
   const [livingLensPrompt, setLivingLensPrompt] = useState("");
   const [livingLensBusy, setLivingLensBusy] = useState(false);
@@ -1719,7 +1800,8 @@ export default function App() {
               </div>
               <div className="preview-surface">
                 <video ref={liveVideoRef} autoPlay muted playsInline />
-                <DetectionOverlay boxes={liveBoxes} />
+                {showEntities && <DetectionOverlay boxes={liveBoxes} />}
+                {showEnergyMap && <Suspense fallback={null}><Heatmap3D /></Suspense>}
               </div>
               <canvas ref={liveCaptureCanvasRef} hidden />
               <canvas ref={liveDiagnosticsCanvasRef} hidden />
@@ -1856,175 +1938,200 @@ export default function App() {
         )}
 
         {activeTab === "Living Lens" && (
-          <section className="living-shell">
-            <div className="living-subnav" role="tablist" aria-label="Living Lens workspaces">
+          <>
+          {/* ── Global Controls Header (z-100, never overlapped) ── */}
+          <header className="global-controls-header">
+            <div className="global-controls-left">
+              <label className="field checkbox compact-check">
+                <input type="checkbox" checked={livingLensEnabled} onChange={(e) => setLivingLensEnabled(e.target.checked)} />
+                <span>Auto analyze</span>
+              </label>
+              <label className="field checkbox compact-check">
+                <input type="checkbox" checked={showEnergyMap} onChange={(e) => setShowEnergyMap(e.target.checked)} />
+                <span>3D Heatmap</span>
+              </label>
+              <label className="field checkbox compact-check">
+                <input type="checkbox" checked={showEntities} onChange={(e) => setShowEntities(e.target.checked)} />
+                <span>Entities</span>
+              </label>
+              <div className="interval-control">
+                <span className="interval-label">Interval</span>
+                <input type="number" min="2" max="30" value={livingLensIntervalS} onChange={(e) => setLivingLensIntervalS(Number(e.target.value) || 6)} />
+                <small>s</small>
+              </div>
+            </div>
+            <div className="layout-switcher">
               {[
-                { id: "overview", label: "Overview", detail: "Scene delta and live metrics" },
-                { id: "memory", label: "Memory", detail: "Continuity memory and entity tracks" },
-                { id: "challenge", label: "Challenge Lab", detail: "Guided proof run and baselines" },
-              ].map((item) => (
+                { id: "grid", tooltip: "Grid Layout", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="12" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/></svg> },
+                { id: "sidebar", tooltip: "Sidebar Focus", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg> },
+                { id: "stacked", tooltip: "Stacked Column", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></svg> },
+                { id: "focus", tooltip: "Immersive View", icon: <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg> },
+              ].map((l) => (
                 <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={livingSection === item.id}
-                  className={livingSection === item.id ? "living-subtab active" : "living-subtab"}
-                  onClick={() => setLivingSection(item.id as "overview" | "memory" | "challenge")}
+                  key={l.id}
+                  className={`layout-btn ${layoutMode === l.id ? 'active' : ''}`}
+                  onClick={() => setLayoutMode(l.id as any)}
+                  title={l.tooltip}
                 >
-                  <strong>{item.label}</strong>
-                  <span>{item.detail}</span>
+                  {l.icon}
                 </button>
               ))}
             </div>
+          </header>
 
-            <div className="living-stage-grid">
-              <article className="panel panel--live living-stage-panel">
-                <div className="panel-head">
-                  <div>
+          <section className={`living-shell layout-${layoutMode}`}>
+            <div className="living-subnav-container">
+              <div className="living-subnav" role="tablist" aria-label="Living Lens workspaces">
+                {[
+                  { id: "overview", label: "Overview", detail: "Scene delta and live metrics" },
+                  { id: "memory", label: "Memory", detail: "Continuity memory and entity tracks" },
+                  { id: "challenge", label: "Challenge Lab", detail: "Guided proof run and baselines" },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={livingSection === item.id}
+                    className={livingSection === item.id ? "living-subtab active" : "living-subtab"}
+                    onClick={() => setLivingSection(item.id as "overview" | "memory" | "challenge")}
+                  >
+                    <strong>{item.label}</strong>
+                    <span>{item.detail}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <ResponsiveGridLayout
+              className="living-stage-grid"
+              layouts={currentLayouts}
+              breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xss: 0 }}
+              cols={{ lg: 12, md: 10, sm: 6, xs: 4, xss: 2 }}
+              rowHeight={80}
+              onLayoutChange={(current: any, all: any) => {
+                if (layoutMode === "grid") setCurrentLayouts(all);
+              }}
+              draggableHandle=".panel-head"
+              margin={[20, 20]}
+            >
+              <div key="monitor">
+                <article className="panel panel--live living-stage-panel" style={{ height: '100%', margin: 0, display: 'flex', flexDirection: 'column' }}>
+                  <div className="panel-head">
                     <h3>Scene Monitor</h3>
-                    <p className="muted">
-                      Continuous scene understanding with temporal memory, expected state, surprise tracking, and persistence signals.
-                    </p>
                   </div>
-                  <div className="living-controls">
-                    <label className="field checkbox">
-                      <input
-                        type="checkbox"
-                        checked={livingLensEnabled}
-                        onChange={(event) => setLivingLensEnabled(event.target.checked)}
-                      />
-                      <span>Auto analyze every {Math.max(2, livingLensIntervalS)} seconds</span>
-                    </label>
-                    <label className="field compact-field">
-                      <span>Interval (s)</span>
-                      <input
-                        type="number"
-                        min="2"
-                        max="30"
-                        value={livingLensIntervalS}
-                        onChange={(event) => setLivingLensIntervalS(Number(event.target.value) || 6)}
-                      />
-                    </label>
+                  <div className={`living-preview preview-surface ${lensMaximized ? 'maximized' : ''}`} style={{ flex: 1, minHeight: 0 }}>
+                    <button 
+                      className="maximize-btn" 
+                      onClick={(e) => { e.stopPropagation(); setLensMaximized(!lensMaximized); }}
+                      title={lensMaximized ? "Restore view" : "Maximize view"}
+                    >
+                      {lensMaximized ? "⤓ Restore" : "⤢ Maximize"}
+                    </button>
+                    <div className="video-aspect-container">
+                      <video ref={livingVideoRef} autoPlay muted playsInline />
+                      {showEntities && <DetectionOverlay boxes={livingBoxes} />}
+                      {showEnergyMap && <Suspense fallback={null}><Heatmap3D /></Suspense>}
+                      <div className="living-overlay">
+                        <span className="overlay-pill">{livingLensEnabled ? "Live" : "Paused"}</span>
+                        {currentSceneState ? <span className="overlay-pill">scene {currentSceneState.id.substring(0,8)}</span> : null}
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="living-preview preview-surface">
-                  <video ref={livingVideoRef} autoPlay muted playsInline />
-                  <DetectionOverlay boxes={livingBoxes} />
-                  <canvas ref={livingCaptureCanvasRef} hidden />
-                  <canvas ref={livingDiagnosticsCanvasRef} hidden />
-                  <div className="living-overlay">
-                    <span className="overlay-pill">{livingLensEnabled ? "Auto analysis on" : "Auto analysis paused"}</span>
-                    <span className="overlay-pill">{livingLensBusy ? "Analyzing scene" : "Monitoring"}</span>
-                    <span className="overlay-pill">{cameraDiagnostics.selectedLabel}</span>
-                    {currentSceneState ? <span className="overlay-pill">scene {currentSceneState.id}</span> : null}
+                  <div className="signal-grid living-primary-kpi-grid" style={{ marginTop: 'auto', paddingTop: '1rem' }}>
+                    <div className="diagnostic-card panel--live">
+                      <span>Status</span>
+                      <strong>{livingLensStatus}</strong>
+                    </div>
+                    <div className="diagnostic-card panel--stable">
+                      <span>Prediction</span>
+                      <strong>{currentSceneState ? currentSceneState.metrics.prediction_consistency.toFixed(2) : "n/a"}</strong>
+                    </div>
+                    <div className="diagnostic-card panel--persistence">
+                      <span>Persistence</span>
+                      <strong>{currentSceneState ? currentSceneState.metrics.persistence_confidence.toFixed(2) : "n/a"}</strong>
+                    </div>
                   </div>
-                </div>
-                <div className="signal-grid living-primary-kpi-grid">
-                  <div className="diagnostic-card panel--live">
-                    <span>Status</span>
-                    <strong>{livingLensStatus}</strong>
-                  </div>
-                  <div className="diagnostic-card panel--stable">
-                    <span>Prediction</span>
-                    <strong>{currentSceneState ? currentSceneState.metrics.prediction_consistency.toFixed(2) : "n/a"}</strong>
-                  </div>
-                  <div className="diagnostic-card panel--stable">
-                    <span>Continuity</span>
-                    <strong>{livingContinuity != null ? livingContinuity.toFixed(2) : "n/a"}</strong>
-                  </div>
-                  <div className="diagnostic-card panel--change">
-                    <span>Novelty</span>
-                    <strong>{livingObservation ? livingObservation.novelty.toFixed(2) : "n/a"}</strong>
-                  </div>
-                </div>
-                <div className="signal-grid living-secondary-kpi-grid">
-                  <div className="diagnostic-card panel--change">
-                    <span>Surprise</span>
-                    <strong>{currentSceneState ? currentSceneState.metrics.surprise_score.toFixed(2) : "n/a"}</strong>
-                  </div>
-                  <div className="diagnostic-card panel--persistence">
-                    <span>Persistence</span>
-                    <strong>{currentSceneState ? currentSceneState.metrics.persistence_confidence.toFixed(2) : "n/a"}</strong>
-                  </div>
-                  <div className="diagnostic-card panel--persistence">
-                    <span>Occlusion recovery</span>
-                    <strong>{currentSceneState ? currentSceneState.metrics.occlusion_recovery_score.toFixed(2) : "n/a"}</strong>
-                  </div>
-                </div>
-                <label className="field">
-                  <span>Ask while monitoring</span>
-                  <textarea
-                    rows={3}
-                    placeholder="Ask in realtime. The next automatic update will use this prompt without requiring a manual capture."
-                    value={livingLensPrompt}
-                    onChange={(event) => setLivingLensPrompt(event.target.value)}
-                  />
-                </label>
-                <div className="camera-health panel--stable">
-                  <strong>Expected scene state</strong>
-                  <p>{worldModelSummary}</p>
-                </div>
-              </article>
+                </article>
+              </div>
 
-              <div className="living-summary-stack">
-                <article className="panel panel--stable living-summary-panel">
+              <div key="understanding">
+                <article className="panel panel--stable living-summary-panel" style={{ height: '100%', margin: 0, display: 'flex', flexDirection: 'column' }}>
                   <div className="panel-head">
                     <h3>Live Understanding</h3>
-                    <span>{livingObservation ? livingObservation.id : "waiting"}</span>
                   </div>
-                  {livingObservation ? (
-                    <div className="stack">
-                      <div className="observation-card">
-                        <ObservationThumbnail src={assetUrl(livingObservation.thumbnail_path)} alt={livingObservation.id} />
-                        <div>
-                          <p className="muted">{new Date(livingObservation.created_at).toLocaleString()}</p>
-                          <p>{livingAnswer}</p>
-                          <div className="chips chips--stable">
-                            <span>confidence {livingObservation.confidence.toFixed(2)}</span>
-                            <span>novelty {livingObservation.novelty.toFixed(2)}</span>
-                            <span>{livingObservation.providers.join(" + ")}</span>
+                  <div style={{ flex: 1, overflow: 'auto' }}>
+                    {livingObservation ? (
+                      <div className="stack">
+                        <div className="observation-card">
+                          <ObservationThumbnail src={assetUrl(livingObservation.thumbnail_path)} alt={livingObservation.id} />
+                          <div>
+                            <p style={{ fontSize: '0.9rem' }}>{livingAnswer}</p>
+                            <div className="chips chips--stable">
+                              <span>conf {livingObservation.confidence.toFixed(2)}</span>
+                              <span>{livingObservation.providers[0]}</span>
+                            </div>
                           </div>
                         </div>
                       </div>
-                      {renderReasoningTrace(livingLensResult?.reasoning_trace || [])}
-                    </div>
-                  ) : (
-                    <p className="muted">Point the camera at a scene and Living Lens will start building temporal evidence here.</p>
-                  )}
-                </article>
-
-                <article className="panel panel--change living-summary-panel">
-                  <div className="panel-head">
-                    <h3>Scene Pulse</h3>
-                    <span>{currentSceneState ? "live" : "idle"}</span>
+                    ) : (
+                      <p className="muted">Monitoring...</p>
+                    )}
                   </div>
-                  {currentSceneState ? (
-                    <div className="stack">
-                      <div className="camera-health panel--stable">
-                        <strong>What stayed stable</strong>
-                        <div className="chips chips--stable">
-                          {(continuitySignal?.stable_elements || []).map((item) => (
-                            <span key={item}>{item}</span>
-                          ))}
-                          {!continuitySignal?.stable_elements?.length ? <span>No stable anchors yet</span> : null}
-                        </div>
-                      </div>
-                      <div className="camera-health panel--change">
-                        <strong>What changed</strong>
-                        <div className="chips chips--changed">
-                          {(continuitySignal?.changed_elements || []).map((item) => (
-                            <span key={item}>{item}</span>
-                          ))}
-                          {!continuitySignal?.changed_elements?.length ? <span>Scene is currently stable</span> : null}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="muted">Once a world state is available, this panel will separate stable scene anchors from true changes.</p>
-                  )}
                 </article>
               </div>
-            </div>
+
+              <div key="pulse">
+                <article className="panel panel--change living-summary-panel" style={{ height: '100%', margin: 0, display: 'flex', flexDirection: 'column' }}>
+                  <div className="panel-head">
+                    <h3>Scene Pulse</h3>
+                  </div>
+                  <div style={{ flex: 1, overflow: 'auto' }}>
+                    {currentSceneState ? (
+                      <div className="stack">
+                        <div className="camera-health panel--stable" style={{ padding: '0.5rem' }}>
+                          <small>Stable Anchors</small>
+                          <div className="chips chips--stable">
+                            {(continuitySignal?.stable_elements || []).slice(0, 3).map((item) => (
+                              <span key={item}>{item}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="camera-health panel--change" style={{ padding: '0.5rem' }}>
+                          <small>Changes</small>
+                          <div className="chips chips--changed">
+                            {(continuitySignal?.changed_elements || []).slice(0, 3).map((item) => (
+                              <span key={item}>{item}</span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="muted">Waiting for state...</p>
+                    )}
+                  </div>
+                </article>
+              </div>
+
+              <div key="matches">
+                <article className="panel panel--persistence living-summary-panel" style={{ height: '100%', margin: 0, display: 'flex', flexDirection: 'column' }}>
+                  <div className="panel-head">
+                    <h3>Memory Relinking</h3>
+                  </div>
+                  <div className="stack" style={{ flex: 1, overflow: 'auto' }}>
+                    {(livingLensResult?.hits || []).length > 0 ? (
+                      livingLensResult!.hits.slice(0, 3).map((hit: any) => (
+                        <div key={hit.observation_id} className="observation-card miniature" style={{ padding: '0.4rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', marginBottom: '4px' }}>
+                           <span style={{ fontSize: '0.8rem' }}>{hit.observation_id.substring(0, 12)}</span>
+                           <span className="accent-2" style={{ fontSize: '0.8rem', marginLeft: 'auto' }}>{(hit.score * 100).toFixed(0)}%</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="muted">Searching history...</p>
+                    )}
+                  </div>
+                </article>
+              </div>
+            </ResponsiveGridLayout>
 
             {livingSection === "overview" && (
               <div className="living-view-grid living-view-grid--overview">
@@ -2303,6 +2410,7 @@ export default function App() {
               </div>
             )}
           </section>
+          </>
         )}
 
         {activeTab === "Memory Search" && (

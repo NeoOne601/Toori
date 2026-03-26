@@ -77,6 +77,8 @@ function configureSessionPermissions() {
 }
 
 function createWindow() {
+  const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+
   const win = new BrowserWindow({
     width: 1560,
     height: 980,
@@ -88,13 +90,18 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
+      // Allow loading local file:// assets and cross-origin WebSocket
+      webSecurity: false,
     },
   });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    win.webContents.openDevTools({ mode: "detach" });
   } else {
     win.loadFile(path.join(__dirname, "dist", "index.html"));
+    // Uncomment to debug production build issues:
+    // if (isDev) win.webContents.openDevTools({ mode: "detach" });
   }
 
   win.webContents.on("did-fail-load", (_event, code, description, validatedURL) => {
@@ -105,6 +112,7 @@ function createWindow() {
     logEvent("render-process-gone", JSON.stringify(details));
   });
 }
+
 
 app.whenReady().then(() => {
   logEvent("app-ready");

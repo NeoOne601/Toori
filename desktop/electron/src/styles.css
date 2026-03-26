@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap');
+
 :root {
   color-scheme: dark;
   --bg: #07111b;
@@ -18,7 +20,9 @@
   --tone-challenge: rgba(255, 202, 94, 0.14);
   --tone-comparison: rgba(160, 182, 255, 0.12);
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  --font-main: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Outfit', sans-serif;
+  font-family: var(--font-main);
 }
 
 [data-theme="light"] {
@@ -45,6 +49,17 @@
 
 * {
   box-sizing: border-box;
+}
+
+h1, h2, h3, h4, .brand-logo {
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+h1, h2, h3, h4, p, span, strong, small {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
 }
 
 html,
@@ -438,6 +453,7 @@ textarea {
   flex-direction: column;
   gap: 1rem;
   min-height: 0;
+  overflow: visible;
 }
 
 .living-subnav {
@@ -471,53 +487,54 @@ textarea {
 }
 
 .living-stage-grid {
-  display: grid;
-  grid-template-columns: minmax(420px, 1.22fr) minmax(320px, 0.9fr);
-  gap: 1rem;
-  align-items: start;
-  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
+  min-height: 320px;
 }
 
-.living-stage-panel,
-.living-summary-panel {
-  min-height: 0;
+.living-stage-panel {
+  flex: 1 1 540px;
+  min-width: 0;
 }
 
 .living-summary-stack {
-  display: grid;
-  gap: 1rem;
+  flex: 1 1 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.living-summary-panel {
+  width: 100%;
   min-height: 0;
 }
 
 .living-view-grid {
-  display: grid;
-  gap: 1rem;
-  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
   min-height: 0;
 }
 
-.living-view-grid--overview {
-  grid-template-columns: minmax(0, 1.22fr) minmax(320px, 0.82fr);
+.living-view-grid > * {
+  flex: 1 1 340px;
+  min-width: 0;
 }
 
-.living-view-grid--overview .living-panel-span-2 {
-  grid-row: span 2;
+.living-view-grid--overview > .living-panel-span-2 {
+  flex: 1 1 540px;
 }
 
-.living-view-grid--memory {
-  grid-template-columns: minmax(320px, 0.92fr) minmax(320px, 1fr) minmax(320px, 1fr);
-}
-
-.living-view-grid--challenge {
-  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
-}
-
-.living-view-grid--challenge .panel--challenge:first-child {
-  grid-row: span 2;
+.living-view-grid--challenge > .panel--challenge:first-child {
+  flex: 1 1 540px;
 }
 
 .living-shell .panel-scroll .scroll-stack {
-  max-height: min(50vh, 560px);
+  max-height: min(60vh, 600px);
 }
 
 .living-summary-panel .trace-list {
@@ -560,18 +577,66 @@ textarea {
 
 .living-preview video {
   width: 100%;
-  min-height: clamp(250px, 38vh, 460px);
   max-height: min(52vh, 560px);
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 20px;
   border: 1px solid var(--line);
   background: #000;
   display: block;
 }
 
+/* Container that constrains overlays to the video's rendered dimensions */
+.video-aspect-container {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.living-preview.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  border-radius: 0;
+}
+
+.living-preview.maximized video {
+  max-height: calc(100vh - 40px);
+  width: auto;
+  border-radius: 24px;
+}
+
+.living-preview .maximize-btn {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(8px);
+  color: white;
+  padding: 0.5rem 1rem;
+  font-weight: bold;
+  opacity: 0;
+}
+
+.living-preview:hover .maximize-btn {
+  opacity: 1;
+}
+
 .detection-overlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   border-radius: 20px;
   overflow: hidden;
@@ -1249,21 +1314,6 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .living-stage-grid,
-  .living-view-grid--memory {
-    grid-template-columns: 1fr;
-  }
-
-  .living-view-grid--overview,
-  .living-view-grid--challenge {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .living-view-grid--overview .living-panel-span-2,
-  .living-view-grid--challenge .panel--challenge:first-child {
-    grid-row: span 1;
-  }
-
   .camera-controls {
     grid-template-columns: 1fr;
   }
@@ -1284,11 +1334,7 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .living-subnav,
-  .living-stage-grid,
-  .living-view-grid--overview,
-  .living-view-grid--memory,
-  .living-view-grid--challenge {
+  .living-subnav {
     grid-template-columns: 1fr;
   }
 
@@ -1385,4 +1431,464 @@ textarea {
     height: auto;
     aspect-ratio: 4 / 3;
   }
+}
+/* --- React Grid Layout Support --- */
+.react-grid-layout {
+  position: relative;
+  transition: height 200ms ease;
+  width: 100% !important;
+}
+
+.react-grid-item {
+  transition: all 200ms ease;
+  transition-property: left, top;
+}
+
+.react-grid-item.resizing {
+  z-index: 1000;
+  will-change: width, height;
+}
+
+.react-grid-item.react-draggable-dragging {
+  transition: none;
+  z-index: 1001;
+  will-change: left, top;
+}
+
+.react-grid-item.dropping {
+  visibility: hidden;
+}
+
+.react-grid-item.react-grid-placeholder {
+  background: rgba(67, 216, 201, 0.1);
+  border-radius: 20px;
+  opacity: 0.5;
+  transition-duration: 100ms;
+  z-index: 2;
+  user-select: none;
+}
+
+.react-grid-item > .react-resizable-handle {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  bottom: 0;
+  right: 0;
+  cursor: se-resize;
+  z-index: 10;
+}
+
+.react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  border-radius: 1px;
+}
+
+/* Living Lens Global Controls Header */
+.living-subnav-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+.living-global-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.control-group .field.checkbox {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.control-group .field.checkbox:hover {
+  color: var(--text);
+}
+
+.interval-control {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--line);
+}
+
+.interval-control input {
+  width: 40px;
+  background: transparent;
+  border: none;
+  color: var(--accent-2);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: center;
+  outline: none;
+}
+
+.interval-control small {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Layout Switcher */
+.layout-switcher {
+  display: flex;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.4rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.layout-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0;
+  color: var(--muted);
+  transition: all 160ms ease;
+}
+
+.layout-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+.layout-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.layout-btn.active {
+  background: rgba(67, 216, 201, 0.15);
+  border-color: rgba(67, 216, 201, 0.3);
+  color: var(--accent-2);
+}
+
+/* Maximized Video Mode Fixes */
+.living-preview.maximized {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999 !important;
+  background: #000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+
+.living-preview.maximized video {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+  border-radius: 0 !important;
+}
+
+.living-preview.maximized .energy-heatmap,
+.living-preview.maximized .detection-overlay {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.layout-btn[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 10px;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+  z-index: 10000;
+  border: 1px solid var(--line);
+}
+
+/* Grid Wrapper to fix react-grid-layout position relative inside flex/grid */
+.living-stage-grid {
+  display: block !important;
+  position: relative;
+  contain: layout;
+}
+
+/* ─── Global Controls Header (z-100, never overlapped) ─── */
+
+.global-controls-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 1.2rem;
+  background: rgba(7, 17, 27, 0.88);
+  backdrop-filter: blur(22px) saturate(1.4);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.global-controls-left {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.compact-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+}
+
+.compact-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent-2);
+}
+
+.compact-check span {
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.interval-control {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.interval-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.interval-control input[type="number"] {
+  width: 52px;
+  padding: 0.35rem 0.5rem;
+  border-radius: 10px;
+  text-align: center;
+  font-size: 0.85rem;
+}
+
+.interval-control small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* ─── Layout Switcher ─── */
+
+.layout-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.2rem;
+}
+
+.layout-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px;
+  cursor: pointer;
+  transition: all 180ms ease;
+  position: relative;
+}
+
+.layout-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.layout-btn.active {
+  background: linear-gradient(135deg, rgba(255, 140, 66, 0.22), rgba(67, 216, 201, 0.18));
+  border-color: rgba(255, 140, 66, 0.4);
+  color: var(--accent);
+  box-shadow: 0 0 12px rgba(255, 140, 66, 0.15);
+}
+
+.layout-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ─── Layout Mode Classes (on .living-shell) ─── */
+
+.living-shell.layout-grid .living-preview {
+  position: relative;
+  overflow: hidden;
+}
+
+.living-shell.layout-grid .heatmap-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.living-shell.layout-sidebar .living-stage-grid {
+  display: flex !important;
+  flex-direction: row;
+}
+
+.living-shell.layout-stacked .living-stage-grid {
+  display: flex !important;
+  flex-direction: column;
+}
+
+.living-shell.layout-focus .living-preview {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 50 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  background: var(--bg) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.living-shell.layout-focus .living-preview video {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 0;
+}
+
+.living-shell.layout-focus .living-preview .heatmap-canvas {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+}
+
+.living-shell.layout-focus .living-preview .maximize-btn {
+  z-index: 60;
+}
+
+/* ─── Heatmap Canvas Container ─── */
+
+.heatmap-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 20px;
+  overflow: hidden;
+  z-index: 5;
+}
+
+.heatmap-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ─── Overlap Prevention ─── */
+
+.living-preview {
+  position: relative;
+  overflow: hidden;
+}
+
+.video-aspect-container .detection-overlay,
+.video-aspect-container .heatmap-canvas,
+.video-aspect-container .living-overlay {
+  pointer-events: none;
+}
+
+/* Maximized mode: ensure header stays above */
+.living-preview.maximized ~ .global-controls-header,
+.global-controls-header {
+  z-index: 100;
+}
+
+/* Override old energy-heatmap references */
+.living-preview.maximized .heatmap-canvas,
+.living-preview.maximized .detection-overlay {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Ensure the heatmap canvas also lives inside the video container */
+.video-aspect-container .heatmap-canvas {
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
 }

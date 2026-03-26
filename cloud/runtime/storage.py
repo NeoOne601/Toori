@@ -6,8 +6,9 @@ import threading
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Generator
 from uuid import uuid4
+import contextlib
 
 import numpy as np
 from PIL import Image
@@ -39,16 +40,22 @@ class ObservationStore:
         self.thumbs_dir = self.data_dir / "thumbs"
         self.db_path = self.data_dir / "runtime.sqlite3"
         self._lock = threading.Lock()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.frames_dir.mkdir(parents=True, exist_ok=True)
         self.thumbs_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
         if self.load_settings() is None:
             self.save_settings(default_settings())
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:

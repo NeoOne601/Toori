@@ -721,14 +721,22 @@ class ProviderRegistry:
             if existing is None or float(existing.score or 0.0) < float(proposal.score or 0.0):
                 scored[label] = proposal
         proposals = sorted(scored.values(), key=lambda item: float(item.score or 0.0), reverse=True)
+        # Filter out weak proposals so we don't always show max_proposals boxes
+        proposals = [p for p in proposals if float(p.score or 0.0) >= 0.25]
         return proposals[:max_proposals]
 
     def _proposal_candidates(self, image: Image.Image, *, max_proposals: int = 5) -> list[tuple[BoundingBox, float]]:
         regions = _grid_regions(image)
         if not regions:
             return []
+        # Filter out regions with low saliency so we don't always emit 5 boxes
+        saliency_threshold = 0.15
+        salient_regions = [(box, sal) for box, sal in regions if sal >= saliency_threshold]
+        if not salient_regions:
+            # If nothing passes threshold, keep only the best region
+            salient_regions = [regions[0]]
         center_region = min(
-            regions,
+            salient_regions,
             key=lambda item: abs((item[0].x + item[0].width / 2.0) - 0.5) + abs((item[0].y + item[0].height / 2.0) - 0.5),
         )
         quadrants = {
@@ -747,7 +755,7 @@ class ProviderRegistry:
             )
         }
         for predicate in quadrants.values():
-            quadrant_region = next((region for region in regions if predicate(region)), None)
+            quadrant_region = next((region for region in salient_regions if predicate(region)), None)
             if quadrant_region is None:
                 continue
             key = (
@@ -763,7 +771,7 @@ class ProviderRegistry:
             if len(selected) >= max_proposals:
                 break
         if len(selected) < max_proposals:
-            for region in regions:
+            for region in salient_regions:
                 key = (round(region[0].x, 4), round(region[0].y, 4), round(region[0].width, 4), round(region[0].height, 4))
                 if key in seen:
                     continue

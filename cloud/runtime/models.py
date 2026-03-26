@@ -17,6 +17,14 @@ ThemePreference = Literal["system", "dark", "light"]
 ProofMode = Literal["jepa", "baseline", "both"]
 ChallengeSet = Literal["live", "curated", "both"]
 TrackStatus = Literal["visible", "occluded", "re-identified", "disappeared", "violated prediction"]
+TalkerEventType = Literal[
+    "ENTITY_APPEARED",
+    "ENTITY_DISAPPEARED",
+    "OCCLUSION_START",
+    "OCCLUSION_END",
+    "PREDICTION_VIOLATION",
+    "SCENE_STABLE",
+]
 
 
 class ProviderConfig(BaseModel):
@@ -279,10 +287,41 @@ class QueryResponse(BaseModel):
     reasoning_trace: list[ReasoningTraceEntry] = Field(default_factory=list)
 
 
+class TalkerEvent(BaseModel):
+    event_type: TalkerEventType
+    confidence: float = 0.0
+    entity_ids: list[str] = Field(default_factory=list)
+    energy_summary: float = 0.0
+    description: str = ""
+
+
+class AtlasNode(BaseModel):
+    entity_id: str
+    label: str
+    centroid: tuple[float, float] = (0.5, 0.5)
+    track_length: int = 0
+    confidence: float = 0.0
+    last_energy: float = 0.0
+    status: TrackStatus = "visible"
+    first_seen_at: datetime = Field(default_factory=utc_now)
+    last_seen_at: datetime = Field(default_factory=utc_now)
+
+
+class AtlasEdge(BaseModel):
+    source_id: str
+    target_id: str
+    interaction_energy: float = 0.0
+    spatial_proximity: float = 0.0
+    co_occurrence_count: int = 0
+    last_seen_together: datetime = Field(default_factory=utc_now)
+    status: Literal["active", "stale", "broken"] = "active"
+
+
 class LivingLensTickResponse(AnalyzeResponse):
     scene_state: SceneState
     entity_tracks: list[EntityTrack] = Field(default_factory=list)
     baseline_comparison: Optional[BaselineComparison] = None
+    talker_event: Optional[TalkerEvent] = None
 
 
 class WorldStateResponse(BaseModel):
@@ -291,6 +330,7 @@ class WorldStateResponse(BaseModel):
     history: list[SceneState] = Field(default_factory=list)
     entity_tracks: list[EntityTrack] = Field(default_factory=list)
     challenges: list[ChallengeRun] = Field(default_factory=list)
+    atlas: Optional[dict[str, Any]] = None
 
 
 class ChallengeEvaluateRequest(BaseModel):

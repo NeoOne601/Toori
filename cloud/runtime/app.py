@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from prometheus_client import CollectorRegistry, Counter, Histogram, make_asgi_app
 
 from .service import RuntimeContainer
@@ -85,7 +85,16 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             target.relative_to(data_root)
         except ValueError as exc:
             raise HTTPException(status_code=403, detail="File path is outside runtime data directory") from exc
-        return FileResponse(target)
+        import mimetypes
+        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        return Response(
+            content=target.read_bytes(),
+            media_type=content_type,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
 
     @app.post("/v1/analyze", dependencies=[Depends(require_auth)])
     def analyze(payload: AnalyzeRequest):

@@ -44,6 +44,10 @@ When deciding between “better captioning” and “better world-state evidence
 flowchart TB
   Camera["Live Camera / File Upload"] --> Runtime["FastAPI Runtime"]
   Runtime --> Perception["Primary Local Perception"]
+  Perception --> JEPA["JEPA Engine"]
+  JEPA --> EpistemicAtlas["Epistemic Atlas"]
+  JEPA --> Talker["Selective Talker"]
+  Talker --> Events["WebSocket Events"]
   Perception --> Store["Observation Store"]
   Store --> World["World Model Layer"]
   World --> Metrics["Prediction / Continuity / Surprise / Persistence"]
@@ -52,7 +56,7 @@ flowchart TB
   Challenge --> Baselines["Captioning + Retrieval Baselines"]
   Runtime --> Reasoning["Optional Ollama / MLX / Cloud Reasoning"]
   Reasoning --> Store
-  World --> Events["WebSocket Events"]
+  World --> Events
   Events --> UI["Desktop / Browser / Mobile Clients"]
   Events --> SDK["Plugin SDKs"]
 ```
@@ -60,6 +64,9 @@ flowchart TB
 ## Primary Entry Points
 
 - [cloud/api/main.py](/Users/macuser/toori/cloud/api/main.py): main runtime app
+- [cloud/jepa_service/engine.py](/Users/macuser/toori/cloud/jepa_service/engine.py): JEPA engine and spatial energy maps
+- [cloud/runtime/talker.py](/Users/macuser/toori/cloud/runtime/talker.py): selective talker event generator
+- [cloud/runtime/atlas.py](/Users/macuser/toori/cloud/runtime/atlas.py): epistemic atlas for entity tracking
 - [cloud/runtime/app.py](/Users/macuser/toori/cloud/runtime/app.py): app factory and routes
 - [cloud/runtime/service.py](/Users/macuser/toori/cloud/runtime/service.py): core analyze/query/settings logic
 - [desktop/electron/main.js](/Users/macuser/toori/desktop/electron/main.js): Electron shell entrypoint
@@ -83,6 +90,9 @@ flowchart TB
 ### Runtime
 
 - `RuntimeContainer` coordinates settings, provider health, observation storage, local similarity search, and event publication.
+- `JEPAEngine` computes purely numerical latent predictions (`||s - ŝ||²`) and spatial energy maps natively.
+- `SelectiveTalker` uses adaptive energy thresholds to gate logic without wasting LLM cycles.
+- `EpistemicAtlas` maintains in-memory entity relationship graphs tracking co-occurrence and persistence.
 - `ObservationStore` persists observations and settings in SQLite under `.toori/`.
 - `ProviderRegistry` selects perception and reasoning providers and enforces circuit-breaker fallback.
 - The proof-surface layer adds scene state, entity tracks, prediction windows, and challenge runs on top of observations.
@@ -125,6 +135,8 @@ flowchart TB
 
 - Never reintroduce placeholder zero-vector behavior in user-facing flows.
 - Search results must always refer to actual stored observations.
+- Reasoning providers (Ollama/MLX) are selectively triggered or operate in query-only mode. Live tick paths must not invoke reasoners autonomously.
+- The JEPA engine must remain pure numy-compatible (`float32`) without CUDA or PyTorch to ensure identical paths for M1/MPS users.
 - `ollama` and MLX must remain optional and health-checked.
 - ONNX/CoreML/TFLite-compatible perception remains primary even when desktop local reasoning is enabled.
 - If a provider is unhealthy, the runtime must degrade gracefully instead of blocking capture/search.

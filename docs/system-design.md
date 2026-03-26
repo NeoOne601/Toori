@@ -44,23 +44,21 @@ Each observation includes:
 
 ### 2. World-model layer
 
-Above observations, Toori maintains temporal state:
+Above observations, Toori maintains temporal state using a native **JEPA Engine**:
 
 - `SceneState`
 - `EntityTrack`
+- `EpistemicAtlas` graph of entities and interactions
 - `PredictionWindow`
-- `WorldModelMetrics`
-- `ChallengeRun`
-- `BaselineComparison`
+- `LivingLensTickResponse`
 - `world_state_id` linked from each `Observation`
 
 This layer is responsible for:
 
-- tracking a scene across time
-- linking observations to a world-state id
-- remembering entities through temporary occlusion
-- storing the current prediction window
-- recording whether the next frame matched expectation
+- predicting latent representations using a 4-layer MLP predictor and EMA target encoder
+- computing spatial energy maps `||s - ŝ||²` natively without LLMs
+- generating semantic events via a `SelectiveTalker` gated by adaptive energy thresholds
+- tracking a scene across time and maintaining the Epistemic Atlas
 
 ### 3. Proof layer
 
@@ -91,18 +89,14 @@ flowchart LR
 
 This is the layer the user should trust when judging whether Toori is actually demonstrating JEPA-like behavior.
 
-## Data Flow
-
 1. A client captures a frame.
-2. The runtime stores the observation and updates the current world state.
-3. The temporal predictor scores the transition from the previous latent window to the new observation.
-4. Entity tracks are updated or re-identified.
-5. Metrics are computed:
-   - continuity
-   - surprise
-   - persistence
-   - prediction consistency
-   - occlusion recovery
+2. The runtime stores the observation and extracts a context representation (e.g., ONNX, CoreML, TFLite).
+3. The native `JEPAEngine` computes latent predictions `||s - ŝ||²` against the context, producing a spatial energy map.
+4. The `EpistemicAtlas` updates entity tracks and relationship edges.
+5. Metrics are computed based purely on numerical error and spatial thresholding.
+6. The `SelectiveTalker` evaluates the energy landscape; if an anomaly surpasses the EMA threshold, an event (e.g., `ENTITY_APPEARED`) is emitted.
+7. Reasoning paths (Ollama/MLX) are selectively queried only when explicit synthesis is required, leaving the live tick loop to run at < 200ms latency.
+8. Events are streamed to the UI and plugin clients.
 6. The runtime optionally produces a caption or answer, but the proof does not depend on language output.
 7. Events are streamed to the UI and plugin clients.
 
