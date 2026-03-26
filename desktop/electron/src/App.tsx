@@ -985,7 +985,15 @@ export default function App() {
         refreshAll().catch(() => undefined);
       });
     };
-    return () => socket.close();
+    return () => {
+      if (socket.readyState === WebSocket.CONNECTING) {
+        // Prevent strictly unmounting while connecting (React 18 double-mount), which prints error
+        socket.onopen = () => socket.close();
+        socket.onerror = () => {};
+      } else {
+        socket.close();
+      }
+    };
   }, []);
 
   useEffect(() => {

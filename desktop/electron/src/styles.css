@@ -577,7 +577,7 @@ textarea {
 
 .living-preview video {
   width: 100%;
-  max-height: min(52vh, 560px);
+  height: 100%;
   object-fit: contain;
   border-radius: 20px;
   border: 1px solid var(--line);
@@ -588,8 +588,11 @@ textarea {
 /* Container that constrains overlays to the video's rendered dimensions */
 .video-aspect-container {
   position: relative;
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
   border-radius: 20px;

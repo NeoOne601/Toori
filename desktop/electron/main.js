@@ -146,25 +146,33 @@ app.on("window-all-closed", () => {
 
 ipcMain.handle("runtime:request", async (_, payload) => {
   const requestPath = payload.path.startsWith("/") ? payload.path : `/${payload.path}`;
-  const response = await fetch(`${RUNTIME_URL}${requestPath}`, {
-    method: payload.method || "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(payload.headers || {}),
-    },
-    body: payload.body ? JSON.stringify(payload.body) : undefined,
-  });
+  try {
+    const response = await fetch(`${RUNTIME_URL}${requestPath}`, {
+      method: payload.method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(payload.headers || {}),
+      },
+      body: payload.body ? JSON.stringify(payload.body) : undefined,
+    });
 
-  const contentType = response.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await response.json()
+      : await response.text();
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    data,
-  };
+    return {
+      ok: response.ok,
+      status: response.status,
+      data,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      data: { error: "Runtime unreachable", details: String(error) }
+    };
+  }
 });
 
 ipcMain.handle("runtime:pick-file", async () => {

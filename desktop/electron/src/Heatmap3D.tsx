@@ -128,11 +128,15 @@ function useEnergyWebSocket(onData: (payload: EnergyMapPayload) => void) {
 
     return () => {
       isMounted = false;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) {
-        socket.onclose = null;
-        socket.close();
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.onopen = () => socket?.close();
+          socket.onerror = () => {};
+        } else {
+          socket.close();
+        }
       }
+      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, []);
 }
