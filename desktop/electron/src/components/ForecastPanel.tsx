@@ -1,4 +1,5 @@
 import type { CSSProperties, HTMLAttributes } from "react";
+import { feColor, feContext } from "../lib/formatting";
 
 type ForecastPanelProps = {
   k?: number;
@@ -50,9 +51,23 @@ export default function ForecastPanel({
         </span>
       </div>
 
-      <div className="forecast-panel__metric">
-        <span>FE({k})</span>
-        <strong>{fe == null ? "n/a" : fe.toFixed(3)}</strong>
+      <div className="fe-display">
+        <div className="fe-header">
+          <span className="fe-label">FE({k})</span>
+          <span className="fe-value" style={{ color: feColor(fe) }}>
+            {fe != null ? fe.toFixed(1) : "—"}
+          </span>
+        </div>
+        <div className="fe-bar-track">
+          <div
+            className="fe-bar-fill"
+            style={{
+              width: `${Math.min(((fe ?? 0) / 200) * 100, 100)}%`,
+              background: feColor(fe),
+            }}
+          />
+        </div>
+        <p className="fe-context muted">{feContext(fe)}</p>
       </div>
 
       <div className="forecast-panel__timings">

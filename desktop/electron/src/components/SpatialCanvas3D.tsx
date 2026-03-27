@@ -1,4 +1,5 @@
 import type { CSSProperties, HTMLAttributes, ReactNode } from "react";
+import SpatialHeatmap from "../SpatialHeatmap";
 
 export type SpatialCanvasGhostBox = {
   id: string;
@@ -64,36 +65,7 @@ export default function SpatialCanvas3D({
       {...rest}
     >
       <div className="spatial-canvas3d__stage">
-        {energyMap.length ? (
-          <div className="spatial-canvas3d__bars">
-            {energyMap.flatMap((row, rowIndex) =>
-              row.map((value, colIndex) => {
-                const normalized = maxEnergy > 0 ? value / maxEnergy : 0;
-                return (
-                  <div
-                    key={`bar-${rowIndex}-${colIndex}`}
-                    className="spatial-canvas3d__bar"
-                    style={
-                      {
-                        left: `${(colIndex / 14) * 100}%`,
-                        top: `${(rowIndex / 14) * 100}%`,
-                        width: `${100 / 14}%`,
-                        height: `${100 / 14}%`,
-                        ["--bar-scale" as any]: `${Math.max(normalized, 0.02)}`,
-                        ["--bar-color" as any]:
-                          normalized < 0.2
-                            ? "#1a1a2e"
-                            : normalized < 0.6
-                              ? "#f0a500"
-                              : "#e63946",
-                      } as CSSProperties
-                    }
-                  />
-                );
-              }),
-            )}
-          </div>
-        ) : null}
+        {energyMap.length ? <SpatialHeatmap energyMap={energyMap} /> : null}
 
         {anchors.map((anchor) => (
           <div

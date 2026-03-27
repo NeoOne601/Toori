@@ -99,22 +99,32 @@ export default function ConsumerMode({
 
       <div className="consumer-mode__layout">
         <div className="consumer-mode__copy">
-          <label className="consumer-mode__field">
-            <span>{ui.searchLabel}</span>
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => onQueryChange?.(event.target.value)}
-              placeholder={ui.searchLabel}
-            />
-          </label>
+          {onQueryChange ? (
+            <label className="consumer-mode__field">
+              <span>{ui.searchLabel}</span>
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => onQueryChange?.(event.target.value)}
+                placeholder={ui.searchLabel}
+              />
+            </label>
+          ) : null}
 
           <div className="consumer-mode__status">
             <span>{ui.statusLabel}</span>
             <strong>{nodes.length}</strong>
           </div>
 
-          <p className="muted">{ui.emptyLabel}</p>
+          {!nodes.length ? (
+            <div className="consumer-skeleton" aria-label="Loading world state">
+              <div className="skeleton-line w-80" />
+              <div className="skeleton-line w-60" />
+              <div className="skeleton-line w-70" />
+            </div>
+          ) : (
+            <p className="muted">{ui.emptyLabel}</p>
+          )}
         </div>
 
         <div className="consumer-mode__graph" aria-hidden="true">

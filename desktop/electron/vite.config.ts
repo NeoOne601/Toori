@@ -25,20 +25,18 @@ function electronCompatBuild() {
 export default defineConfig({
   base: "./",
   plugins: [react(), electronCompatBuild()],
-  // Force react-grid-layout to be pre-bundled as CJS so named exports
-  // (Responsive, WidthProvider) are available in the ESM context.
-  optimizeDeps: {
-    include: ["react-grid-layout"],
-  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    commonjsOptions: {
-      include: [/react-grid-layout/, /node_modules/],
-    },
   },
   server: {
     port: 5173,
     strictPort: true,
+    proxy: {
+      "/v1/file": {
+        target: "http://127.0.0.1:7777",
+        changeOrigin: true,
+      },
+    },
   },
 });
