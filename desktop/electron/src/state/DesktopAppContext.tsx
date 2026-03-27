@@ -15,12 +15,19 @@ import {
   consumerMessage,
   explainSummary,
   explainWorldModel,
+  formatEntityBaseLabel,
   normalizeBoxes,
   toEnergyAnchors,
   toForecastValue,
   toGhostBoxes,
 } from "../lib/formatting";
-import type { AnalyzeResponse, ChallengeRun, Observation, SceneState } from "../types";
+import type {
+  AnalyzeResponse,
+  ChallengeRun,
+  ConsumerGraphNode,
+  Observation,
+  SceneState,
+} from "../types";
 
 function useDesktopAppValue() {
   const [activeTab, setActiveTab] = useState<AppTab>("Living Lens");
@@ -223,6 +230,16 @@ function useDesktopAppValue() {
     : camera.cameraStreamLive
       ? "camera connected"
       : "camera idle";
+  const cameraConnectionState =
+    !camera.cameraAccess.granted && camera.cameraAccess.status !== "unknown"
+      ? "blocked"
+      : camera.cameraBusy
+        ? "reconnecting"
+        : camera.cameraReady
+          ? "live"
+          : camera.cameraStreamLive
+            ? "degraded"
+            : "offline";
   const ghostBoxes = toGhostBoxes(livingTracks, livingObservation);
   const energyAnchors = toEnergyAnchors(currentJepaTick?.energy_map || null);
   const fe1 = toForecastValue(currentJepaTick, 1);
@@ -251,7 +268,45 @@ function useDesktopAppValue() {
   const atlasEdges = Array.isArray((world.worldState?.atlas as any)?.edges)
     ? (world.worldState?.atlas as any).edges
     : [];
-  const consumerNodes = atlasNodes.map((node: any, index: number) => ({
+  const trackNodeFallback = livingTracks.slice(0, 6).map((track, index) => {
+    const metadata = (track.metadata || {}) as Record<string, any>;
+    const bbox = metadata.bbox_pixels || metadata.ghost_bbox_pixels || metadata.bbox;
+    const width = Math.max(livingObservation?.width || 1, 1);
+    const height = Math.max(livingObservation?.height || 1, 1);
+    const center =
+      bbox && typeof bbox === "object" && Number.isFinite(Number(bbox.x)) && Number.isFinite(Number(bbox.y))
+        ? {
+            x:
+              Number(bbox.width) > 1
+                ? ((Number(bbox.x) + Number(bbox.width) / 2) / width) * 100
+                : (Number(bbox.x) + Number(bbox.width || 0) / 2) * 100,
+            y:
+              Number(bbox.height) > 1
+                ? ((Number(bbox.y) + Number(bbox.height) / 2) / height) * 100
+                : (Number(bbox.y) + Number(bbox.height || 0) / 2) * 100,
+          }
+        : {
+            x: 20 + ((index * 17) % 60),
+            y: 25 + ((index * 13) % 50),
+          };
+    return {
+      id: String(track.id),
+      label: formatEntityBaseLabel(track),
+      x: Math.max(10, Math.min(center.x, 90)),
+      y: Math.max(10, Math.min(center.y, 90)),
+      radius: 10 + Math.min(track.visibility_streak || 1, 10),
+      tone: track.status === "occluded" ? "memory" : track.status === "visible" ? "live" : "stable",
+    };
+  });
+  const boxNodeFallback = livingBoxes.slice(0, 6).map((box, index) => ({
+    id: `box-${index}`,
+    label: formatEntityBaseLabel({ label: box.label, metadata: box.metadata }),
+    x: Math.max(10, Math.min((box.x + box.width / 2) * 100, 90)),
+    y: Math.max(10, Math.min((box.y + box.height / 2) * 100, 90)),
+    radius: 12,
+    tone: "live" as const,
+  }));
+  const atlasNodeData = atlasNodes.map((node: any, index: number) => ({
     id: String(node.entity_id || node.id || `node-${index}`),
     label: String(node.label || node.entity_id || `Entity ${index + 1}`),
     x: Number.isFinite(Number(node.centroid?.[0]))
@@ -263,11 +318,24 @@ function useDesktopAppValue() {
     radius: 10 + Math.min(Number(node.track_length || 1), 10),
     tone: String(node.status || "visible") === "occluded" ? "memory" : "live",
   }));
-  const consumerLinks = atlasEdges.map((edge: any) => ({
-    source: String(edge.source_id),
-    target: String(edge.target_id),
-    strength: Number(edge.spatial_proximity || 0.5),
-  }));
+  const consumerNodes =
+    trackNodeFallback.length > 0
+      ? trackNodeFallback
+      : atlasNodeData.length > 0
+        ? atlasNodeData
+        : boxNodeFallback;
+  const consumerLinks =
+    trackNodeFallback.length > 0 || boxNodeFallback.length > 0
+      ? consumerNodes.slice(1).map((node: ConsumerGraphNode) => ({
+          source: consumerNodes[0]?.id || node.id,
+          target: node.id,
+          strength: 0.45,
+        }))
+      : atlasEdges.map((edge: any) => ({
+          source: String(edge.source_id),
+          target: String(edge.target_id),
+          strength: Number(edge.spatial_proximity || 0.5),
+        }));
   const livingHistory = [livingLens.livingLensResult?.scene_state, ...worldHistory]
     .filter((state): state is SceneState => Boolean(state))
     .filter((state, index, list) => list.findIndex((candidate) => candidate.id === state.id) === index);
@@ -352,6 +420,7 @@ function useDesktopAppValue() {
     currentChallengeStep,
     worldModelSummary,
     cameraStatusLabel,
+    cameraConnectionState,
     ghostBoxes,
     energyAnchors,
     fe1,

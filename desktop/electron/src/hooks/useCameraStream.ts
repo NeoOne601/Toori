@@ -25,6 +25,8 @@ const DEFAULT_CAMERA_DIAGNOSTICS: CameraDiagnostics = {
   error: null,
 };
 
+const CAPTURE_MAX_SIDE = 960;
+
 type UseCameraStreamOptions = {
   activeTab: AppTab;
   settings: Settings | null;
@@ -132,6 +134,25 @@ function diagnosticsMessage(phase: string, error?: string | null): string {
   }
 }
 
+function diagnosticsEqual(left: CameraDiagnostics, right: CameraDiagnostics): boolean {
+  return (
+    left.phase === right.phase &&
+    left.selectedDeviceId === right.selectedDeviceId &&
+    left.selectedLabel === right.selectedLabel &&
+    left.permissionStatus === right.permissionStatus &&
+    left.resolution === right.resolution &&
+    left.readyState === right.readyState &&
+    left.trackState === right.trackState &&
+    left.trackMuted === right.trackMuted &&
+    left.trackEnabled === right.trackEnabled &&
+    left.lastFrameAt === right.lastFrameAt &&
+    left.frameLuma === right.frameLuma &&
+    left.blackFrameDetected === right.blackFrameDetected &&
+    left.message === right.message &&
+    left.error === right.error
+  );
+}
+
 async function waitForVideoReadiness(
   video: HTMLVideoElement,
   stream: MediaStream,
@@ -218,6 +239,18 @@ export function useCameraStream({
   const livingDiagnosticsCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const activeCameraDeviceIdRef = useRef("default");
+  const autoReconnectAtRef = useRef(0);
+
+  function replaceCameraDiagnostics(next: CameraDiagnostics) {
+    setCameraDiagnostics((current) => (diagnosticsEqual(current, next) ? current : next));
+  }
+
+  function updateCameraDiagnostics(updater: (current: CameraDiagnostics) => CameraDiagnostics) {
+    setCameraDiagnostics((current) => {
+      const next = updater(current);
+      return diagnosticsEqual(current, next) ? current : next;
+    });
+  }
 
   function activeVideoElement() {
     return activeTab === "Living Lens" ? livingVideoRef.current : liveVideoRef.current;
@@ -293,7 +326,7 @@ export function useCameraStream({
     video.muted = true;
     video.playsInline = true;
     video.autoplay = true;
-    setCameraDiagnostics((current) => ({
+    updateCameraDiagnostics((current) => ({
       ...current,
       phase: "stream attached",
       message: diagnosticsMessage("stream attached"),
@@ -312,7 +345,7 @@ export function useCameraStream({
       "Auto camera";
     activeCameraDeviceIdRef.current = effectiveDeviceId;
     setSelectedCameraId(effectiveDeviceId);
-    setCameraDiagnostics({
+    replaceCameraDiagnostics({
       phase: readiness.ready ? "stream attached" : "camera retrying",
       selectedDeviceId: effectiveDeviceId,
       selectedLabel: effectiveLabel,
@@ -341,7 +374,7 @@ export function useCameraStream({
     if (!navigator.mediaDevices?.getUserMedia) {
       const message = "This environment does not support camera capture";
       setCameraStreamLive(false);
-      setCameraDiagnostics({
+      replaceCameraDiagnostics({
         ...DEFAULT_CAMERA_DIAGNOSTICS,
         phase: "camera error",
         message,
@@ -373,7 +406,7 @@ export function useCameraStream({
             : access.status === "not-determined"
               ? "macOS did not show the camera prompt"
               : "Camera access is not granted";
-      setCameraDiagnostics({
+      replaceCameraDiagnostics({
         ...DEFAULT_CAMERA_DIAGNOSTICS,
         phase: "camera error",
         permissionStatus: access.status,
@@ -384,7 +417,7 @@ export function useCameraStream({
       setCameraBusy(false);
       return;
     }
-    setCameraDiagnostics((current) => ({
+    updateCameraDiagnostics((current) => ({
       ...current,
       phase: options.phase,
       permissionStatus: access.status,
@@ -413,7 +446,7 @@ export function useCameraStream({
             audio: false,
           });
         } catch {
-          setCameraDiagnostics((current) => ({
+          updateCameraDiagnostics((current) => ({
             ...current,
             phase: "camera retrying",
             message: diagnosticsMessage("camera retrying"),
@@ -436,7 +469,7 @@ export function useCameraStream({
       stopStream(provisionalStream);
       setCameraStreamLive(false);
       const message = (error as Error).message;
-      setCameraDiagnostics((current) => ({
+      updateCameraDiagnostics((current) => ({
         ...current,
         phase: "camera error",
         permissionStatus: access.status,
@@ -485,7 +518,7 @@ export function useCameraStream({
             : access.status === "not-determined"
               ? "macOS did not show the camera prompt"
               : "Camera access is not granted";
-      setCameraDiagnostics((current) => ({
+      updateCameraDiagnostics((current) => ({
         ...current,
         phase: "camera error",
         permissionStatus: access.status,
@@ -518,10 +551,11 @@ export function useCameraStream({
     if (!ctx || !video.videoWidth || !video.videoHeight) {
       return null;
     }
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const scale = Math.min(1, CAPTURE_MAX_SIDE / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/png").split(",")[1];
+    return canvas.toDataURL("image/jpeg", 0.82).split(",")[1];
   }
 
   useEffect(() => {
@@ -581,8 +615,8 @@ export function useCameraStream({
       }
       let frameLuma: number | null = null;
       if (width > 0 && height > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        canvas.width = 64;
-        canvas.height = 36;
+        canvas.width = 40;
+        canvas.height = 24;
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
         let totalLuma = 0;
@@ -601,6 +635,7 @@ export function useCameraStream({
       }
       const blackFrameDetected = darkFrameCount >= 3 && width > 0 && height > 0;
       const stalled = now - lastFrameMs > 2500;
+      const roundedFrameLuma = frameLuma == null ? null : Math.round(frameLuma);
       setCameraStreamLive(track.readyState === "live");
       const phase =
         track.readyState !== "live"
@@ -615,22 +650,136 @@ export function useCameraStream({
       setCameraReady(
         track.readyState === "live" && !blackFrameDetected && !stalled && width > 0 && height > 0,
       );
-      setCameraDiagnostics((current) => ({
-        ...current,
-        phase,
-        resolution,
-        readyState: String(video.readyState),
-        trackState: track.readyState,
-        trackMuted: track.muted,
-        trackEnabled: track.enabled,
-        lastFrameAt,
-        frameLuma,
-        blackFrameDetected,
-        message: diagnosticsMessage(phase, current.error),
-      }));
-    }, 700);
+      updateCameraDiagnostics((current) => {
+        return {
+          ...current,
+          phase,
+          resolution,
+          readyState: String(video.readyState),
+          trackState: track.readyState,
+          trackMuted: track.muted,
+          trackEnabled: track.enabled,
+          lastFrameAt,
+          frameLuma: roundedFrameLuma,
+          blackFrameDetected,
+          message: diagnosticsMessage(phase),
+          error: null,
+        };
+      });
+    }, 1200);
     return () => window.clearInterval(interval);
   }, [streamEpoch, activeTab]);
+
+  useEffect(() => {
+    const stream = streamRef.current;
+    const video = activeVideoElement();
+    if (!stream || !video || video.srcObject === stream) {
+      return;
+    }
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.play().catch(() => undefined);
+  });
+
+  useEffect(() => {
+    const stream = streamRef.current;
+    const track = stream?.getVideoTracks()[0];
+    if (!track) {
+      return;
+    }
+
+    const handleMute = () => {
+      setCameraReady(false);
+      updateCameraDiagnostics((current) => ({
+        ...current,
+        phase: "video stalled",
+        trackMuted: true,
+        trackEnabled: track.enabled,
+        trackState: track.readyState,
+        blackFrameDetected: false,
+        message: diagnosticsMessage("video stalled"),
+        error: null,
+      }));
+    };
+
+    const handleUnmute = () => {
+      updateCameraDiagnostics((current) => ({
+        ...current,
+        phase: "stream attached",
+        trackMuted: false,
+        trackEnabled: track.enabled,
+        trackState: track.readyState,
+        message: diagnosticsMessage("stream attached"),
+        error: null,
+      }));
+    };
+
+    const handleEnded = () => {
+      setCameraReady(false);
+      setCameraStreamLive(false);
+      updateCameraDiagnostics((current) => ({
+        ...current,
+        phase: "camera error",
+        trackMuted: track.muted,
+        trackEnabled: track.enabled,
+        trackState: track.readyState,
+        blackFrameDetected: false,
+        message: diagnosticsMessage("camera error", "Camera stream ended"),
+        error: "Camera stream ended",
+      }));
+    };
+
+    track.addEventListener("mute", handleMute);
+    track.addEventListener("unmute", handleUnmute);
+    track.addEventListener("ended", handleEnded);
+    return () => {
+      track.removeEventListener("mute", handleMute);
+      track.removeEventListener("unmute", handleUnmute);
+      track.removeEventListener("ended", handleEnded);
+    };
+  }, [streamEpoch]);
+
+  useEffect(() => {
+    if (!navigator.mediaDevices?.addEventListener) {
+      return;
+    }
+    const handleDeviceChange = () => {
+      enumerateVideoDevices()
+        .then((devices) => {
+          setCameraDevices(devices);
+          if (!devices.length) {
+            return;
+          }
+          const activeTrack = streamRef.current?.getVideoTracks()[0];
+          if (!activeTrack || activeTrack.readyState !== "live") {
+            retryCamera(true).catch(() => undefined);
+          }
+        })
+        .catch(() => undefined);
+    };
+    navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+  }, [selectedCameraId]);
+
+  useEffect(() => {
+    const degraded =
+      cameraDiagnostics.blackFrameDetected ||
+      cameraDiagnostics.phase === "video stalled" ||
+      cameraDiagnostics.phase === "camera error";
+    if (!degraded || cameraBusy || !cameraAccess.granted) {
+      return;
+    }
+    if (Date.now() - autoReconnectAtRef.current < 12000) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      autoReconnectAtRef.current = Date.now();
+      retryCamera(false).catch(() => undefined);
+    }, 1400);
+    return () => window.clearTimeout(timeout);
+  }, [cameraAccess.granted, cameraBusy, cameraDiagnostics.blackFrameDetected, cameraDiagnostics.phase]);
 
   return {
     desktopBridgeAvailable,

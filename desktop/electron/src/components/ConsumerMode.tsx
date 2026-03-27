@@ -80,6 +80,10 @@ export default function ConsumerMode({
 }: ConsumerModeProps) {
   const ui = { ...defaultCopy, ...copy };
   const nodeMap = buildNodeMap(nodes);
+  const semanticLabels = nodes
+    .map((node) => node.label)
+    .filter((label) => label && !/^entity[-\s]?\d+$/i.test(label))
+    .slice(0, 4);
 
   return (
     <section
@@ -123,7 +127,18 @@ export default function ConsumerMode({
               <div className="skeleton-line w-70" />
             </div>
           ) : (
-            <p className="muted">{ui.emptyLabel}</p>
+            <div className="consumer-mode__insights">
+              <p className="muted">
+                {semanticLabels.length
+                  ? `Tracking ${semanticLabels.join(", ")}`
+                  : `Tracking ${nodes.length} live entities`}
+              </p>
+              <div className="chips chips--stable">
+                {semanticLabels.length
+                  ? semanticLabels.map((label) => <span key={label}>{label}</span>)
+                  : nodes.slice(0, 4).map((node) => <span key={node.id}>{node.label}</span>)}
+              </div>
+            </div>
           )}
         </div>
 

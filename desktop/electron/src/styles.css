@@ -2426,6 +2426,68 @@ textarea {
   font-size: 0.78rem;
 }
 
+.camera-runtime-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.42rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+
+.camera-runtime-label {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.camera-device-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.camera-status-dot,
+.video-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-flex;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.2);
+}
+
+.video-status-dot {
+  width: 11px;
+  height: 11px;
+}
+
+.camera-status-dot.is-live,
+.video-status-dot.is-live {
+  background: #2dc653;
+  box-shadow: 0 0 12px rgba(45, 198, 83, 0.75);
+}
+
+.camera-status-dot.is-reconnecting,
+.camera-status-dot.is-degraded,
+.video-status-dot.is-reconnecting,
+.video-status-dot.is-degraded {
+  background: #f0a500;
+  box-shadow: 0 0 12px rgba(240, 165, 0, 0.65);
+}
+
+.camera-status-dot.is-offline,
+.camera-status-dot.is-blocked,
+.video-status-dot.is-offline,
+.video-status-dot.is-blocked {
+  background: #e63946;
+  box-shadow: 0 0 12px rgba(230, 57, 70, 0.55);
+}
+
 .signal-grid {
   display: grid;
   gap: 0.75rem;
@@ -2665,6 +2727,7 @@ textarea {
   pointer-events: none;
   border-radius: 20px;
   overflow: hidden;
+  mix-blend-mode: screen;
 }
 
 .spatial-heatmap__cell {
@@ -2672,7 +2735,7 @@ textarea {
 }
 
 .spatial-heatmap__cell.is-active {
-  box-shadow: inset 0 0 10px rgba(67, 216, 201, 0.15);
+  box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.14);
 }
 
 .forecast-panel__timings {
@@ -2687,6 +2750,11 @@ textarea {
 
 .consumer-mode__copy {
   justify-content: space-between;
+}
+
+.consumer-mode__insights {
+  display: grid;
+  gap: 0.7rem;
 }
 
 .consumer-mode__graph {

@@ -11,6 +11,7 @@ export type DesktopBridge = {
   getCameraAccess?: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
   requestCameraAccess?: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
   openCameraSettings?: () => Promise<boolean>;
+  openPath?: (targetPath: string) => Promise<string>;
 };
 
 export const BROWSER_RUNTIME_URL = "http://127.0.0.1:7777";

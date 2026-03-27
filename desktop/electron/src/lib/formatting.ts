@@ -28,14 +28,22 @@ export function formatEntityDisplayLabel(entity: {
   metadata?: Record<string, unknown> | null;
   last_similarity?: number | null;
 }): string {
-  const label =
-    humanizeLabel(entity.label) ||
-    metadataValue(entity.metadata ?? undefined, "caption") ||
-    metadataValue(entity.metadata ?? undefined, "top_label") ||
-    "tracked region";
+  const label = formatEntityBaseLabel(entity);
   const confidenceText =
     entity.last_similarity != null ? ` ${(entity.last_similarity * 100).toFixed(0)}%` : "";
   return `${label}${confidenceText}`;
+}
+
+export function formatEntityBaseLabel(entity: {
+  label?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): string {
+  return (
+    humanizeLabel(entity.label) ||
+    metadataValue(entity.metadata ?? undefined, "caption") ||
+    metadataValue(entity.metadata ?? undefined, "top_label") ||
+    "tracked region"
+  );
 }
 
 export function formatRelativeTime(value?: string | null): string {

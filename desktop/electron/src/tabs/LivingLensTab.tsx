@@ -17,6 +17,16 @@ import KPICard from "../widgets/KPICard";
 
 export default function LivingLensTab() {
   const app = useDesktopApp();
+  const cameraStateLabel =
+    app.cameraConnectionState === "live"
+      ? "Live"
+      : app.cameraConnectionState === "reconnecting"
+        ? "Reconnecting"
+        : app.cameraConnectionState === "blocked"
+          ? "Blocked"
+          : app.cameraConnectionState === "degraded"
+            ? "Degraded"
+            : "Offline";
 
   const scienceMonitorFooter = (
     <div className="signal-grid">
@@ -74,8 +84,18 @@ export default function LivingLensTab() {
             />
             <small>s</small>
           </div>
+          <div className="camera-runtime-chip">
+            <span className={`camera-status-dot is-${app.cameraConnectionState}`} title={cameraStateLabel} />
+            <span className="camera-runtime-label">{cameraStateLabel}</span>
+            <span className="camera-device-chip">
+              {app.camera.cameraDiagnostics.selectedLabel || "Auto camera"}
+            </span>
+          </div>
         </div>
         <div className="layout-switcher">
+          <button onClick={() => app.camera.retryCamera(false)} disabled={app.camera.cameraBusy}>
+            {app.camera.cameraBusy ? "Reconnecting..." : "Reconnect Camera"}
+          </button>
           <div className="segmented-control">
             <button
               className={app.uiMode === "consumer" ? "tab active" : "tab"}
@@ -111,6 +131,11 @@ export default function LivingLensTab() {
             ghosts={app.ghostBoxes}
             anchors={app.energyAnchors}
             uiMode="consumer"
+            overlay={
+              <div className="living-overlay">
+                <span className={`video-status-dot is-${app.cameraConnectionState}`} title={cameraStateLabel} />
+              </div>
+            }
             footer={
               <div className="camera-health">
                 <strong>{app.consumerText}</strong>
@@ -169,9 +194,7 @@ export default function LivingLensTab() {
                   uiMode="science"
                   overlay={
                     <div className="living-overlay">
-                      <span className="overlay-pill">
-                        {app.livingLens.livingLensEnabled ? "Live" : "Paused"}
-                      </span>
+                      <span className={`video-status-dot is-${app.cameraConnectionState}`} title={cameraStateLabel} />
                     </div>
                   }
                   footer={scienceMonitorFooter}

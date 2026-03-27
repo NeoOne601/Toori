@@ -232,3 +232,10 @@ ipcMain.handle("runtime:open-camera-settings", async () => {
   }
   return false;
 });
+
+ipcMain.handle("runtime:open-path", async (_event, targetPath) => {
+  if (!targetPath) {
+    return "Missing path";
+  }
+  return await shell.openPath(targetPath);
+});

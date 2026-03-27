@@ -1,5 +1,5 @@
-import { startTransition, useCallback, useEffect, useState } from "react";
-import { BROWSER_RUNTIME_URL } from "./useRuntimeBridge";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { BROWSER_RUNTIME_URL, getDesktopBridge } from "./useRuntimeBridge";
 import type {
   AnalyzeResponse,
   ChallengeRun,
@@ -34,6 +34,8 @@ export function useWorldState({
   const [challengeBusy, setChallengeBusy] = useState(false);
   const [llmLatencyMs, setLlmLatencyMs] = useState<number | null>(null);
   const [exportingProof, setExportingProof] = useState(false);
+  const lastRefreshAtRef = useRef(0);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const refreshAll = useCallback(async () => {
     const [settingsResponse, healthResponse, observationsResponse, worldStateResponse] =
@@ -114,10 +116,18 @@ export function useWorldState({
     setExportingProof(true);
     setStatus("Generating proof report");
     try {
-      await runtimeRequest<{ path: string }>("/v1/proof-report/generate", "POST", {
+      const result = await runtimeRequest<{ path?: string }>("/v1/proof-report/generate", "POST", {
         session_id: sessionId,
       });
-      window.open(`${BROWSER_RUNTIME_URL}/v1/proof-report/latest`, "_blank", "noopener,noreferrer");
+      const desktopBridge = getDesktopBridge();
+      if (desktopBridge.openPath && result.path) {
+        const openError = await desktopBridge.openPath(result.path);
+        if (openError) {
+          throw new Error(openError);
+        }
+      } else {
+        window.open(`${BROWSER_RUNTIME_URL}/v1/proof-report/latest`, "_blank", "noopener,noreferrer");
+      }
       setStatus("Proof report generated");
     } catch (error) {
       setStatus((error as Error).message);
@@ -125,6 +135,32 @@ export function useWorldState({
       setExportingProof(false);
     }
   }
+
+  const scheduleRefresh = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastRefreshAtRef.current;
+    const run = () => {
+      lastRefreshAtRef.current = Date.now();
+      startTransition(() => {
+        refreshAll().catch(() => undefined);
+      });
+    };
+    if (elapsed >= 750) {
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      run();
+      return;
+    }
+    if (refreshTimerRef.current != null) {
+      return;
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      run();
+    }, 750 - elapsed);
+  }, [refreshAll]);
 
   useEffect(() => {
     refreshAll().catch((error) => setStatus((error as Error).message));
@@ -142,15 +178,18 @@ export function useWorldState({
           if (Number.isFinite(ms)) {
             setLlmLatencyMs(ms);
           }
+          return;
         }
       } catch {
         // Ignore parse failures and still refresh.
       }
-      startTransition(() => {
-        refreshAll().catch(() => undefined);
-      });
+      scheduleRefresh();
     };
     return () => {
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
       if (socket.readyState === WebSocket.CONNECTING) {
         socket.onopen = () => socket.close();
         socket.onerror = () => {};
@@ -158,7 +197,7 @@ export function useWorldState({
         socket.close();
       }
     };
-  }, [refreshAll]);
+  }, [scheduleRefresh]);
 
   useEffect(() => {
     const root = document.documentElement;
