@@ -7,3 +7,14 @@ contextBridge.exposeInMainWorld("tooriDesktop", {
   requestCameraAccess: () => ipcRenderer.invoke("runtime:request-camera-access"),
   openCameraSettings: () => ipcRenderer.invoke("runtime:open-camera-settings"),
 });
+
+const _origWarn = console.warn.bind(console);
+console.warn = (...args) => {
+  if (typeof args[0] === 'string' && args[0].includes('electron-compat')) return;
+  _origWarn(...args);
+};
+const _origLog = console.log.bind(console);
+console.log = (...args) => {
+  if (typeof args[0] === 'string' && args[0].includes('Stripped crossorigin')) return;
+  _origLog(...args);
+};

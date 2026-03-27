@@ -76,6 +76,17 @@ function configureSessionPermissions() {
   }
 }
 
+const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+
+// ─── SECTION 1: GPU / Tile memory fix ────────────────────────────────────────
+app.commandLine.appendSwitch('--disable-gpu-sandbox');
+app.commandLine.appendSwitch('--enable-gpu-rasterization');
+app.commandLine.appendSwitch('--enable-zero-copy');
+app.commandLine.appendSwitch('--gpu-memory-buffer-size', '134217728'); // 128MB
+// FAST FALLBACK for persistent "tile memory limits exceeded"
+app.commandLine.appendSwitch('--disable-gpu-compositing');
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
+
 function createWindow() {
   const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -90,9 +101,31 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
-      // Allow loading local file:// assets and cross-origin WebSocket
-      webSecurity: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      sandbox: true,
+      backgroundThrottling: false,
     },
+  });
+
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          [
+            "default-src 'self' file: data: blob:;",
+            "script-src 'self' 'unsafe-inline' file:;",
+            "style-src 'self' 'unsafe-inline' file: https://fonts.googleapis.com;",
+            "font-src 'self' file: data: https://fonts.gstatic.com;",
+            "connect-src 'self' http://127.0.0.1:7777 ws://127.0.0.1:7777;",
+            "img-src 'self' file: data: blob: http://127.0.0.1:7777;",
+            "media-src 'self' file: blob:;",
+            "worker-src 'self' blob:;",
+          ].join(' ')
+        ]
+      }
+    });
   });
 
   if (process.env.VITE_DEV_SERVER_URL) {

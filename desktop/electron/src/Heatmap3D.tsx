@@ -66,8 +66,8 @@ const heatmapFragmentShader = /* glsl */ `
     // Age-based fade: 0.0 (fresh) -> 1.0 (expired)
     float ageFade = 1.0 - clamp(vAge, 0.0, 1.0);
 
-    // Combined alpha
-    float alpha = vIntensity * softEdge * ageFade * 0.85;
+    // Combined alpha (cap at 0.28 to prevent overlay obliteration)
+    float alpha = min(vIntensity * softEdge * ageFade * 0.6, 0.28);
 
     // Additive glow bloom
     float glow = softEdge * vIntensity * ageFade * 0.3;
@@ -271,6 +271,7 @@ class HeatmapErrorBoundary extends Component<
 function Heatmap3DCanvas() {
   return (
     <Canvas
+      dpr={1}
       orthographic
       camera={{ zoom: 1, near: 0.1, far: 100, position: [0, 0, 5] }}
       gl={{
