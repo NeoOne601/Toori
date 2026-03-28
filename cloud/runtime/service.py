@@ -1,25 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import hashlib
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Optional
+from time import perf_counter
+from typing import Any, Optional
 
 import numpy as np
 from PIL import Image
 
 from .atlas import EpistemicAtlas
+from .error_types import SmritiPipelineError
 from .config import resolve_data_dir
 from .events import EventBus
+from .jepa_worker import JEPAWorkItem, JEPAWorkerPool
 from .models import (
     AnalyzeRequest,
     AnalyzeResponse,
     Answer,
     ChallengeEvaluateRequest,
     ChallengeRun,
+    EntityTrack,
     JEPAForecastResponse,
     JEPATick,
+    JEPATickPayload,
     LivingLensTickRequest,
     LivingLensTickResponse,
     Observation,
@@ -31,31 +38,197 @@ from .models import (
     ReasoningTraceEntry,
     RuntimeSettings,
     SceneState,
+    SmritiRecallItem,
+    SmritiRecallRequest,
+    SmritiRecallResponse,
+    SmritiTagPersonRequest,
+    SmritiTagPersonResponse,
     TalkerEvent,
     WorldStateResponse,
 )
+from .observability import CorrelationContext
 from .providers import ProviderRegistry
+from .smriti_storage import SmetiDB
 from .storage import ObservationStore
 from .talker import SelectiveTalker
 from .world_model import build_baseline_comparison, build_challenge_run, build_object_summary, build_scene_state
 
 
+class ProgressiveComputationScheduler:
+    """
+    Manages the tiered computation schedule.
+    """
+
+    def __init__(self) -> None:
+        self._force_full_pipeline = False
+
+    def should_run_sag(
+        self,
+        frame_count: int,
+        energy_variance: float,
+        anchor_cache_age_frames: int,
+    ) -> bool:
+        if self._force_full_pipeline:
+            return True
+        if frame_count <= 0 or frame_count % 3 != 0:
+            return False
+        return energy_variance > 0.01 or anchor_cache_age_frames >= 3
+
+    def should_run_cwma(
+        self,
+        frame_count: int,
+        anchor_matches_changed: bool,
+    ) -> bool:
+        if self._force_full_pipeline:
+            self._force_full_pipeline = False
+            return True
+        if frame_count <= 0 or frame_count % 10 != 0:
+            return False
+        return anchor_matches_changed
+
+    def force_full_pipeline(self) -> None:
+        self._force_full_pipeline = True
+
+
+def _jepa_tick_from_payload(payload: JEPATickPayload) -> JEPATick:
+    return JEPATick(
+        energy_map=np.asarray(payload.energy_map, dtype=np.float32),
+        entity_tracks=[EntityTrack.model_validate(track) for track in payload.entity_tracks],
+        talker_event=payload.talker_event,
+        sigreg_loss=float(payload.sigreg_loss),
+        forecast_errors={int(key): float(value) for key, value in payload.forecast_errors.items()},
+        session_fingerprint=np.asarray(payload.session_fingerprint, dtype=np.float32),
+        planning_time_ms=float(payload.planning_time_ms),
+        caption_score=float(payload.caption_score),
+        retrieval_score=float(payload.retrieval_score),
+        timestamp_ms=int(payload.timestamp_ms),
+        warmup=bool(payload.warmup),
+        mask_results=payload.mask_results,
+        mean_energy=float(payload.mean_energy),
+        energy_std=float(payload.energy_std),
+        guard_active=bool(payload.guard_active),
+        ema_tau=float(payload.ema_tau),
+        depth_strata=payload.depth_strata,
+        anchor_matches=payload.anchor_matches,
+        setu_descriptions=payload.setu_descriptions,
+        alignment_loss=float(payload.alignment_loss),
+    )
+
+
 class RuntimeContainer:
     def __init__(self, data_dir: str | Path | None = None) -> None:
         from cloud.jepa_service.engine import ImmersiveJEPAEngine, JEPAEngine
-        
+
         self.data_dir = resolve_data_dir(data_dir)
         self.store = ObservationStore(self.data_dir)
+        self.smriti_db = SmetiDB(self.data_dir)
         self.providers = ProviderRegistry()
         self.events = EventBus()
         self.engine = JEPAEngine()
         self._immersive_engine_factory = ImmersiveJEPAEngine
         self._immersive_engines: dict[str, ImmersiveJEPAEngine] = {}
         self._jepa_ticks_by_session: dict[str, deque[JEPATick]] = defaultdict(lambda: deque(maxlen=240))
+        self._jepa_pool: JEPAWorkerPool | None = None
         self._latest_proof_report: Optional[Path] = None
         self.talker = SelectiveTalker()
         self.atlas = EpistemicAtlas()
         self._previous_tracks: list = []
+        self._progressive_scheduler = ProgressiveComputationScheduler()
+        self._jepa_energy_ema: dict[str, float] = defaultdict(float)
+
+    async def smriti_recall(self, payload: SmritiRecallRequest) -> SmritiRecallResponse:
+        started = perf_counter()
+        query_embedding = self._embed_smriti_query(payload.query)
+        results = await asyncio.to_thread(
+            self.smriti_db.hybrid_search,
+            query_embedding,
+            payload.query,
+            payload.top_k,
+        )
+        filtered = [
+            result
+            for result in results
+            if self._smriti_result_matches_filters(
+                result,
+                person_filter=payload.person_filter,
+                location_filter=payload.location_filter,
+                time_start=payload.time_start,
+                time_end=payload.time_end,
+                min_confidence=payload.min_confidence,
+            )
+        ][: payload.top_k]
+        items = [
+            SmritiRecallItem(
+                media_id=result.media_id,
+                file_path=result.file_path,
+                thumbnail_path=result.thumbnail_path,
+                setu_score=float(result.setu_score),
+                hybrid_score=float(result.hybrid_score),
+                primary_description=result.primary_description,
+                anchor_basis=result.anchor_basis,
+                depth_stratum=result.depth_stratum,
+                hallucination_risk=max(0.0, min(1.0, 1.0 - float(result.hybrid_score))),
+                created_at=result.created_at,
+                person_names=result.person_names,
+                location_name=result.location_name,
+            )
+            for result in filtered
+        ]
+        return SmritiRecallResponse(
+            query=payload.query,
+            results=items,
+            total_searched=len(results),
+            setu_ms=round((perf_counter() - started) * 1000.0, 3),
+        )
+
+    async def smriti_tag_person(self, payload: SmritiTagPersonRequest) -> SmritiTagPersonResponse:
+        media = self.smriti_db.get_smriti_media(payload.media_id)
+        seed_embedding = np.asarray(media.embedding if media and media.embedding else self._embed_smriti_query(payload.person_name), dtype=np.float32)
+        person = self.smriti_db.get_person_by_name(payload.person_name)
+        if person is None:
+            person = self.smriti_db.create_person(payload.person_name, seed_embedding)
+        if media is not None and payload.confirmed:
+            self.smriti_db.link_person_to_media(person.id, media.id, 1.0)
+        propagated_to = self.smriti_db.propagate_person_tag(person.id) if media is not None else 0
+        return SmritiTagPersonResponse(person_id=person.id, propagated_to=propagated_to)
+
+    def smriti_person_journal(self, person_name: str) -> dict[str, Any]:
+        person = self.smriti_db.get_person_by_name(person_name)
+        if person is None:
+            return {"person_name": person_name, "entries": [], "count": 0}
+        with self.smriti_db._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.id, m.file_path, m.ingested_at
+                FROM smriti_person_media pm
+                JOIN smriti_media m ON m.id = pm.media_id
+                WHERE pm.person_id = ?
+                ORDER BY m.ingested_at DESC
+                """,
+                (person.id,),
+            ).fetchall()
+        entries = [
+            {
+                "media_id": row["id"],
+                "file_path": row["file_path"],
+                "ingested_at": row["ingested_at"],
+            }
+            for row in rows
+        ]
+        return {"person_name": person_name, "entries": entries, "count": len(entries)}
+
+    def smriti_clusters(self) -> dict[str, Any]:
+        return self.smriti_db.get_mandala_data()
+
+    def smriti_metrics(self) -> dict[str, Any]:
+        worker_stats = self._jepa_pool.get_worker_stats() if self._jepa_pool is not None else []
+        pending_media = self.smriti_db.get_pending_media(limit=100)
+        return {
+            "workers": worker_stats,
+            "pending_media": len(pending_media),
+            "recent_sessions": sorted(self._jepa_ticks_by_session.keys())[-8:],
+            "energy_ema": {session_id: float(value) for session_id, value in self._jepa_energy_ema.items()},
+        }
 
     def get_settings(self) -> RuntimeSettings:
         settings = self.store.load_settings()
@@ -82,19 +255,36 @@ class RuntimeContainer:
         response, _, _ = self._analyze_with_world_model(request)
         return response
 
-    def living_lens_tick(self, request: LivingLensTickRequest) -> LivingLensTickResponse:
-        response, scene_state, tracks = self._analyze_with_world_model(request, _is_tick=True)
+    async def living_lens_tick(self, request: LivingLensTickRequest) -> LivingLensTickResponse:
+        response, scene_state, tracks = await asyncio.to_thread(self._analyze_with_world_model, request, True)
         observations = list(reversed(self.store.recent_observations(session_id=request.session_id, limit=8)))
         history = list(reversed(self.store.recent_scene_states(session_id=request.session_id, limit=8)))
         baseline = build_baseline_comparison(observations, history) if request.proof_mode in {"both", "baseline"} else None
-        frame = np.asarray(Image.open(response.observation.image_path).convert("RGB"), dtype=np.uint8)
-        immersive_engine = self._engine_for_session(request.session_id)
-        jepa_tick = immersive_engine.tick(
-            frame,
+        if request.query:
+            self._progressive_scheduler.force_full_pipeline()
+        frame = await asyncio.to_thread(self._load_frame_array, response.observation.image_path)
+        correlation_id = CorrelationContext.get()
+        if correlation_id == "no-correlation":
+            correlation_id = CorrelationContext.new()
+        work_item = JEPAWorkItem(
+            correlation_id=correlation_id,
             session_id=request.session_id,
+            frame_array=frame.tobytes(),
+            frame_shape=frame.shape,
+            frame_dtype=str(frame.dtype),
+            priority=0 if request.query else 3,
             observation_id=response.observation.id,
         )
+        jepa_pool = self._ensure_jepa_pool()
+        result = await jepa_pool.submit(work_item)
+        if result.error is not None:
+            raise SmritiPipelineError(stage="jepa_worker", message=result.error)
+        payload = JEPATickPayload.model_validate(result.jepa_tick_dict)
+        jepa_tick = _jepa_tick_from_payload(payload)
         self._jepa_ticks_by_session[request.session_id].append(jepa_tick)
+        self._prime_forecast_engine(request.session_id, result.state_vector, payload.forecast_errors)
+        previous_ema = self._jepa_energy_ema[request.session_id]
+        self._jepa_energy_ema[request.session_id] = (0.05 * float(payload.mean_energy)) + (0.95 * previous_ema)
 
         immersive_tracks = jepa_tick.entity_tracks[:12]
         self.store.save_entity_tracks(immersive_tracks)
@@ -110,7 +300,7 @@ class RuntimeContainer:
         scene_state.metrics.surprise_score = round(float(min(jepa_tick.mean_energy, 1.0)), 4)
         scene_state.metrics.prediction_consistency = round(float(max(1.0 - jepa_tick.mean_energy, 0.0)), 4)
 
-        threshold = float(getattr(immersive_engine, "_mu_E", 0.0) + (2.0 * jepa_tick.energy_std))
+        threshold = float(self._jepa_energy_ema[request.session_id] + (2.0 * jepa_tick.energy_std))
         should_talk = bool(jepa_tick.talker_event)
         self.events.publish(
             "jepa.energy_map",
@@ -138,6 +328,11 @@ class RuntimeContainer:
             talker_event=talker_event,
             jepa_tick=jepa_tick.to_payload(),
         )
+
+    async def shutdown(self) -> None:
+        if self._jepa_pool is not None:
+            await self._jepa_pool.shutdown()
+            self._jepa_pool = None
 
     def get_world_state(self, session_id: str) -> WorldStateResponse:
         history = self.store.recent_scene_states(session_id=session_id, limit=24)
@@ -180,6 +375,27 @@ class RuntimeContainer:
         if session_id not in self._immersive_engines:
             self._immersive_engines[session_id] = self._immersive_engine_factory()
         return self._immersive_engines[session_id]
+
+    def _prime_forecast_engine(
+        self,
+        session_id: str,
+        state_vector: list[float] | None,
+        forecast_errors: dict[int, float],
+    ) -> None:
+        if state_vector is None:
+            return
+        engine = self._engine_for_session(session_id)
+        engine._last_state = np.asarray(state_vector, dtype=np.float32)
+        engine._last_forecast_errors = {int(key): float(value) for key, value in forecast_errors.items()}
+
+    def _ensure_jepa_pool(self) -> JEPAWorkerPool:
+        if self._jepa_pool is None:
+            self._jepa_pool = JEPAWorkerPool()
+        return self._jepa_pool
+
+    def _load_frame_array(self, image_path: str) -> np.ndarray:
+        with Image.open(image_path) as image:
+            return np.asarray(image.convert("RGB"), dtype=np.uint8)
 
     def _talker_event_from_jepa(self, tick: JEPATick, entity_tracks: list) -> TalkerEvent | None:
         if not tick.talker_event:
@@ -537,3 +753,34 @@ class RuntimeContainer:
             if value:
                 tags.append(str(value))
         return tags
+
+    def _embed_smriti_query(self, query: str, dim: int = 128) -> np.ndarray:
+        seed_bytes = hashlib.blake2b(query.encode("utf-8"), digest_size=8).digest()
+        seed = int.from_bytes(seed_bytes, byteorder="big", signed=False)
+        rng = np.random.default_rng(seed)
+        vector = rng.standard_normal(dim).astype(np.float32)
+        norm = float(np.linalg.norm(vector)) or 1.0
+        return (vector / norm).astype(np.float32)
+
+    def _smriti_result_matches_filters(
+        self,
+        result,
+        *,
+        person_filter: str | None,
+        location_filter: str | None,
+        time_start,
+        time_end,
+        min_confidence: float,
+    ) -> bool:
+        if person_filter and person_filter not in result.person_names:
+            return False
+        if location_filter and result.location_name != location_filter:
+            return False
+        if time_start and result.created_at < time_start:
+            return False
+        if time_end and result.created_at > time_end:
+            return False
+        confidence = max(0.0, min(1.0, float(result.hybrid_score)))
+        if confidence < min_confidence:
+            return False
+        return True

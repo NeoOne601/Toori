@@ -22,7 +22,12 @@ from uuid import uuid4
 import numpy as np
 
 from cloud.perception import MaskResult, PerceptionPipeline
+from cloud.jepa_service.confidence_gate import EpistemicConfidenceGate
 from cloud.runtime.models import BoundingBox, EntityTrack, JEPATick
+from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
+from cloud.jepa_service.depth_separator import TemporalParallaxDepthSeparator, DepthStrataMap
+from cloud.jepa_service.world_model_alignment import CrossModalWorldModelAligner
+from cloud.runtime.setu2 import Setu2Bridge
 
 
 def _relu(x: np.ndarray) -> np.ndarray:
@@ -311,6 +316,13 @@ class ImmersiveJEPAEngine:
         self._guard_ticks_remaining = 0
         self._last_pred_loss = 0.0
         self._last_total_loss = 0.0
+        self._tpds = TemporalParallaxDepthSeparator(grid=(14, 14))
+        self._sag = SemanticAnchorGraph(max_matches_per_frame=8)
+        self._cwma = CrossModalWorldModelAligner(lambda_cwma=0.15)
+        self._ecgd = EpistemicConfidenceGate()
+        self._setu2 = Setu2Bridge()
+        self._last_energy_map: np.ndarray = np.zeros((14, 14), dtype=np.float32)
+        self._last_depth_strata: DepthStrataMap = DepthStrataMap.cold_start()
 
     def tick(
         self,
@@ -336,6 +348,33 @@ class ImmersiveJEPAEngine:
         s_pred = self._predict(s_ctx, mask_results, fallback_indices=fallback_indices)
         s_tgt = self._target_encode(patch_tokens)
         energy_map = self._compute_energy(s_ctx, s_pred)
+        depth_strata = self._tpds.update(
+            energy_map_current=energy_map,
+            energy_map_previous=self._last_energy_map,
+            patch_tokens=s_ctx,
+        )
+        mask_patch_lists = []
+        if mask_results:
+            first_mask = mask_results[0]
+            if isinstance(first_mask, dict):
+                mask_patch_lists = [mask.get("patch_indices", []) for mask in mask_results]
+            else:
+                mask_patch_lists = [mask.to_dict().get("patch_indices", []) for mask in mask_results]
+        anchor_matches = self._sag.match(
+            patch_tokens=s_ctx,
+            depth_strata=depth_strata,
+            mask_regions=mask_patch_lists,
+        )
+        cwma_result = self._cwma.apply_alignment(
+            energy_map=energy_map,
+            anchor_matches=anchor_matches,
+            depth_strata=depth_strata,
+        )
+        if cwma_result[0] is not None:
+            energy_map = cwma_result[0]
+        alignment_loss = cwma_result[1]
+        self._last_energy_map = energy_map.copy()
+        self._last_depth_strata = depth_strata
         prediction_residual = s_tgt - s_pred
         sigreg_loss = self._sigreg(s_ctx)
         self._last_pred_loss = float(np.mean((s_pred - s_tgt) ** 2))
@@ -351,6 +390,20 @@ class ImmersiveJEPAEngine:
         )
         planning_time_ms = self._planning_speed_ms(current_state)
         fingerprint = self._update_fingerprint(energy_map, current_state)
+        setu_descriptions: list[dict] = []
+        for match in anchor_matches:
+            gate_result = self._ecgd.evaluate(
+                anchor_match=match,
+                depth_strata=depth_strata,
+                energy_history=list(self._energy_history),
+            )
+            description = self._setu2.describe_region(gate_result)
+            setu_descriptions.append(
+                {
+                    "gate": gate_result.to_dict(),
+                    "description": description.to_dict(),
+                }
+            )
         caption_score, retrieval_score = self._baselines(current_state)
         mean_energy = float(energy_map.mean())
         energy_std = float(energy_map.std())
@@ -376,6 +429,10 @@ class ImmersiveJEPAEngine:
             energy_std=energy_std,
             guard_active=self._last_guard_active,
             ema_tau=self._last_tau,
+            depth_strata=depth_strata.to_dict(),
+            anchor_matches=[match.to_dict() for match in anchor_matches],
+            setu_descriptions=setu_descriptions,
+            alignment_loss=float(alignment_loss),
         )
         self._last_state = current_state.copy()
         self._tick_count += 1

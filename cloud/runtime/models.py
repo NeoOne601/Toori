@@ -315,6 +315,10 @@ class JEPATick:
     energy_std: float
     guard_active: bool = False
     ema_tau: float = 0.996
+    depth_strata: Optional[dict] = None
+    anchor_matches: Optional[list[dict]] = None
+    setu_descriptions: Optional[list[dict]] = None
+    alignment_loss: float = 0.0
 
     def to_payload(self) -> "JEPATickPayload":
         return JEPATickPayload(
@@ -334,6 +338,10 @@ class JEPATick:
             energy_std=float(self.energy_std),
             guard_active=bool(self.guard_active),
             ema_tau=float(self.ema_tau),
+            depth_strata=self.depth_strata,
+            anchor_matches=self.anchor_matches,
+            setu_descriptions=self.setu_descriptions,
+            alignment_loss=float(self.alignment_loss),
         )
 
 
@@ -354,6 +362,10 @@ class JEPATickPayload(BaseModel):
     energy_std: float = 0.0
     guard_active: bool = False
     ema_tau: float = 0.996
+    depth_strata: Optional[dict] = None
+    anchor_matches: Optional[list[dict]] = None
+    setu_descriptions: Optional[list[dict]] = None
+    alignment_loss: float = 0.0
 
 
 class AtlasNode(BaseModel):
@@ -376,6 +388,60 @@ class AtlasEdge(BaseModel):
     co_occurrence_count: int = 0
     last_seen_together: datetime = Field(default_factory=utc_now)
     status: Literal["active", "stale", "broken"] = "active"
+
+
+class SmritiIngestRequest(BaseModel):
+    folder_path: Optional[str] = None
+    file_path: Optional[str] = None
+
+
+class SmritiIngestResponse(BaseModel):
+    queued: int
+    status: str
+
+
+class SmritiRecallRequest(BaseModel):
+    query: str
+    session_id: str = "default"
+    top_k: int = Field(default=20, ge=1, le=100)
+    person_filter: Optional[str] = None
+    location_filter: Optional[str] = None
+    time_start: Optional[datetime] = None
+    time_end: Optional[datetime] = None
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class SmritiRecallItem(BaseModel):
+    media_id: str
+    file_path: str
+    thumbnail_path: str
+    setu_score: float
+    hybrid_score: float
+    primary_description: str
+    anchor_basis: str
+    depth_stratum: str
+    hallucination_risk: float
+    created_at: datetime
+    person_names: list[str] = Field(default_factory=list)
+    location_name: Optional[str] = None
+
+
+class SmritiRecallResponse(BaseModel):
+    query: str
+    results: list[SmritiRecallItem]
+    total_searched: int
+    setu_ms: float
+
+
+class SmritiTagPersonRequest(BaseModel):
+    media_id: str
+    person_name: str
+    confirmed: bool = True
+
+
+class SmritiTagPersonResponse(BaseModel):
+    person_id: str
+    propagated_to: int
 
 
 class LivingLensTickResponse(AnalyzeResponse):
