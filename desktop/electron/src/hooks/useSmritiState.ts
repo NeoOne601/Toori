@@ -90,7 +90,12 @@ export function useSmritiState({ runtimeRequest, sessionId }: UseSmritiStateOpti
         );
         setPersonJournal(journal);
       } catch {
-        setPersonJournal({ person_name: name, entries: [], count: 0 });
+        setPersonJournal({
+          person_name: name,
+          entries: [],
+          count: 0,
+          atlas: { nodes: [], edges: [] },
+        });
       }
     },
     [runtimeRequest],

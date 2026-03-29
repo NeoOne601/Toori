@@ -1,7 +1,0 @@
-(index):1 Access to image at 'http://127.0.0.1:7777/v1/file?path=%2FUsers%2Fmacuser%2Ftoori%2F.toori%2Fthumbs%2Fobs_0ff66456b8dcab85_5d7618d3.png' from origin 'http://localhost:5173' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.Understand this error
-127.0.0.1:7777/v1/file?path=%2FUsers%2Fmacuser%2Ftoori%2F.toori%2Fthumbs%2Fobs_0ff66456b8dcab85_5d7618d3.png:1  Failed to load resource: net::ERR_FAILEDUnderstand this error
-(index):1 Access to image at 'http://127.0.0.1:7777/v1/file?path=%2FUsers%2Fmacuser%2Ftoori%2F.toori%2Fthumbs%2Fobs_0ff66456b8dcab85_5d7618d3.png' from origin 'http://localhost:5173' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.Understand this error
-127.0.0.1:7777/v1/file?path=%2FUsers%2Fmacuser%2Ftoori%2F.toori%2Fthumbs%2Fobs_0ff66456b8dcab85_5d7618d3.png:1  Failed to load resource: net::ERR_FAILEDUnderstand this error
-(index):1 Access to image at 'http://127.0.0.1:7777/v1/file?path=%2FUsers%2Fmacuser%2Ftoori%2F.toori%2Fthumbs%2Fobs_0ff66456b8dcab85_5d7618d3.png' from origin 'http://localhost:5173' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.Understand this error
-127.0.0.1:7777/v1/file?path=%2FUsers%2Fmacuser%2Ftoori%2F.toori%2Fthumbs%2Fobs_0ff66456b8dcab85_5d7618d3.png:1  Failed to load resource: net::ERR_FAILEDUnderstand this error
-VM6:63 THREE.WebGLRenderer: Context Lost.

@@ -34,6 +34,12 @@ export default function SmritiTab() {
 
   return (
     <section className="smriti-shell">
+      <a href="#smriti-main" className="skip-link">
+        Skip to Smriti content
+      </a>
+      <div className="sr-live-region" aria-live="polite" aria-atomic="true">
+        {smriti.ingestionStatus || smriti.status?.status || "Smriti ready"}
+      </div>
       <div className="smriti-command-bar">
         <div>
           <p className="eyebrow">Smriti</p>
@@ -54,7 +60,7 @@ export default function SmritiTab() {
       </div>
 
       <div className="smriti-layout">
-        <div className="smriti-main">
+        <div className="smriti-main" id="smriti-main">
           {visibleSection === "mandala" ? (
             <section className="panel panel--memory smriti-surface">
               <div className="smriti-panel-header">
@@ -71,7 +77,8 @@ export default function SmritiTab() {
               <MandalaView
                 data={smriti.mandalaData}
                 selectedClusterId={selectedClusterId}
-                onNodeClick={openCluster}
+                onNodeSelect={(clusterId) => setSelectedClusterId(clusterId)}
+                onNodeExpand={openCluster}
               />
             </section>
           ) : null}
@@ -93,6 +100,7 @@ export default function SmritiTab() {
               totalSearched={smriti.totalIndexed}
               onOpenMedia={smriti.openDeepdive}
               assetUrl={app.assetUrl}
+              runtimeRequest={app.runtimeRequest}
             />
           ) : null}
 
@@ -212,6 +220,8 @@ export default function SmritiTab() {
         <DeepdiveView
           media={smriti.selectedMedia}
           assetUrl={app.assetUrl}
+          runtimeRequest={app.runtimeRequest}
+          sessionId={app.sessionId}
           onClose={smriti.closeDeepdive}
           onTagPerson={async (name) => {
             await smriti.tagPerson(smriti.selectedMedia?.media_id || "", name);

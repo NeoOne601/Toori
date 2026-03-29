@@ -143,6 +143,44 @@ class SmritiPruneResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class SmritiMigrationRequest(BaseModel):
+    """Request to migrate Smriti data to a new directory."""
+
+    target_data_dir: str
+    target_frames_dir: Optional[str] = None
+    target_thumbs_dir: Optional[str] = None
+    target_templates_path: Optional[str] = None
+    dry_run: bool = False
+
+
+class SmritiMigrationProgress(BaseModel):
+    """Real-time migration progress."""
+
+    status: str
+    files_moved: int = 0
+    files_total: int = 0
+    bytes_moved: int = 0
+    bytes_total: int = 0
+    bytes_moved_human: str = "0 B"
+    bytes_total_human: str = "0 B"
+    current_file: Optional[str] = None
+    error: Optional[str] = None
+    dry_run: bool = False
+
+
+class SmritiMigrationResult(BaseModel):
+    """Final result of a completed migration."""
+
+    success: bool
+    dry_run: bool
+    files_moved: int
+    bytes_moved: int
+    bytes_moved_human: str
+    new_data_dir: str
+    errors: list[str] = Field(default_factory=list)
+    rollback_available: bool = False
+
+
 class RuntimeSettings(BaseModel):
     runtime_profile: str = "hybrid"
     camera_device: str = "default"
@@ -516,6 +554,9 @@ class SmritiRecallItem(BaseModel):
     created_at: datetime
     person_names: list[str] = Field(default_factory=list)
     location_name: Optional[str] = None
+    depth_strata_data: Optional[dict[str, Any]] = None
+    anchor_matches: list[dict[str, Any]] = Field(default_factory=list)
+    setu_descriptions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SmritiRecallResponse(BaseModel):
@@ -523,6 +564,36 @@ class SmritiRecallResponse(BaseModel):
     results: list[SmritiRecallItem]
     total_searched: int
     setu_ms: float
+
+
+class SmritiRecallFeedback(BaseModel):
+    """User feedback on a recall result."""
+
+    query: str
+    media_id: str
+    confirmed: bool
+    session_id: str = "default"
+
+
+class SmritiRecallFeedbackResult(BaseModel):
+    updated: bool
+    w_mean: float
+    message: str
+
+
+class SmritiRecallFeedback(BaseModel):
+    """User feedback on a recall result for Setu-2 personalization."""
+
+    query: str
+    media_id: str
+    confirmed: bool
+    session_id: str = "default"
+
+
+class SmritiRecallFeedbackResult(BaseModel):
+    updated: bool
+    w_mean: float
+    message: str
 
 
 class SmritiTagPersonRequest(BaseModel):

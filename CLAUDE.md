@@ -76,7 +76,11 @@ flowchart TB
 - [cloud/runtime/smriti_ingestion.py](/Users/macuser/toori/cloud/runtime/smriti_ingestion.py): ingestion daemon and folder watch queue
 - [cloud/runtime/jepa_worker.py](/Users/macuser/toori/cloud/runtime/jepa_worker.py): isolated JEPA worker pool
 - [cloud/runtime/setu2.py](/Users/macuser/toori/cloud/runtime/setu2.py): grounded Setu-2 query bridge
+- [cloud/runtime/smriti_migration.py](/Users/macuser/toori/cloud/runtime/smriti_migration.py): copy-first Smriti data migration service
+- [cloud/api/tests/test_smriti_production.py](/Users/macuser/toori/cloud/api/tests/test_smriti_production.py): authoritative production gate for Smriti regressions
+- [desktop/electron/src/components/smriti/mandala-force-worker.ts](/Users/macuser/toori/desktop/electron/src/components/smriti/mandala-force-worker.ts): Web Worker for Mandala force layout
 - [desktop/electron/src/components/smriti/SmritiStorageSettings.tsx](/Users/macuser/toori/desktop/electron/src/components/smriti/SmritiStorageSettings.tsx): Smriti storage configuration surface
+- [desktop/electron/src/components/smriti/DeepdiveView.tsx](/Users/macuser/toori/desktop/electron/src/components/smriti/DeepdiveView.tsx): accessible Smriti deepdive modal with patch overlay and neighbors
 - [desktop/electron/main.js](/Users/macuser/toori/desktop/electron/main.js): Electron shell entrypoint
 - [desktop/electron/src/App.tsx](/Users/macuser/toori/desktop/electron/src/App.tsx): desktop product UI
 - [desktop/electron/src/tabs/SmritiTab.tsx](/Users/macuser/toori/desktop/electron/src/tabs/SmritiTab.tsx): Smriti desktop surface
@@ -119,6 +123,22 @@ flowchart TB
   - `ECGD` epistemic gating and uncertainty output
   - `Setu-2` grounded query scoring and template descriptions
 - FastAPI lifecycle must use the lifespan context manager. Do not reintroduce `@app.on_event`.
+
+### Sprint 5 Smriti Additions
+
+- `cloud/runtime/smriti_migration.py` must preserve this order: copy first, verify destination second, update config last.
+- Migration is non-destructive. Never delete source data as part of the migration flow.
+- `dry_run=True` must not create directories, copy files, or mutate runtime settings.
+- `desktop/electron/src/components/smriti/mandala-force-worker.ts` is Worker-only code. It uses `setTimeout(..., 33)` rather than `requestAnimationFrame`, imports no npm packages, and communicates with `postMessage`.
+- `cloud/api/tests/test_smriti_production.py` is the hard production gate. It currently contains 12 tests; the original Sprint 5 contract required 11 and the extra coverage is intentional. The telescope regression remains the permanent sentinel.
+
+### SETU-2 W-MATRIX FEEDBACK
+
+- Feedback endpoint: `POST /v1/smriti/recall/feedback`
+- `confirmed=True` is treated as a positive pair; `confirmed=False` is treated as a negative pair.
+- Learning rate for Setu-2 W-matrix updates must never exceed `0.005`.
+- The W-matrix is runtime-local in Sprint 5. It is not persisted to disk yet.
+- Feedback is best-effort. Missing `media_id` returns `updated=False` rather than raising an HTTP error.
 
 ### Provider Policy
 
@@ -178,6 +198,30 @@ flowchart TB
 - Perception stays backbone-agnostic at the engine boundary; see `CONTRIBUTING.md`.
 - If a provider is unhealthy, the runtime must degrade gracefully instead of blocking capture/search.
 - macOS Camera privacy depends on a real app bundle identity; stock Electron CLI launches should not be treated as proof of permission support.
+
+### DEEPDIVE FOCUS CONTRACT (WCAG 2.1 AA)
+
+- On open, focus moves to the deepdive modal container.
+- While open, focus is trapped inside the modal with Tab and Shift+Tab cycling.
+- On close, focus returns to the element that launched the modal.
+- Escape closes the modal from anywhere inside it.
+- Every interactive control inside the modal must expose an accessible name.
+
+### ALL CANVAS ELEMENTS IN SMRITI
+
+- All Smriti canvases use `getContext("2d")` only. WebGL, THREE.js, and WebGPU are prohibited in Smriti components.
+- Every draw loop must call `ctx.clearRect(...)` before painting a new frame.
+- Use `ctx.save()` and `ctx.restore()` around transformed drawing code.
+- Resize handling must update `canvas.width` and `canvas.height`, then apply `devicePixelRatio` scaling.
+- Person journal co-occurrence layout stays circular and static. Do not introduce a force simulation there.
+
+### test_smriti_production.py GOVERNANCE
+
+- `cloud/api/tests/test_smriti_production.py` must pass before merging any Smriti pipeline change.
+- All production-gate tests must pass in CI before merge. The current file contains 12 tests.
+- Adding tests to that file is encouraged when real regressions are found.
+- Removing, weakening, or renaming production-gate tests requires explicit sign-off.
+- If `test_telescope_behind_person_not_described_as_body_part` fails, all feature work stops until it passes again.
 
 ## Recommended Work Areas
 

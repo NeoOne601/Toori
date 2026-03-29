@@ -1,5 +1,7 @@
 # Toori
 
+![Tests](https://img.shields.io/badge/tests-195%2B-brightgreen)
+
 Toori is a JEPA proof surface for live camera understanding and grounded memory recall. It demonstrates, in a practical desktop product, how a latent world model can maintain continuity across time, detect surprise, preserve scene identity through occlusion, compare itself against simpler baselines, and index media into a structured semantic memory layer called Smriti.
 
 ## Mission
@@ -85,6 +87,23 @@ This is not a claim that Toori is a full research-grade JEPA implementation. It 
 - [sdk](/Users/macuser/toori/sdk): Python, TypeScript, Swift, and Kotlin plugin SDKs
 - [docs/system-design.md](/Users/macuser/toori/docs/system-design.md): world-model and architecture overview
 - [docs/user-manual.md](/Users/macuser/toori/docs/user-manual.md): operator walkthrough
+
+## Feature Matrix
+
+| Feature | Sprint | Status |
+| --- | --- | --- |
+| JEPA pipeline (TPDS/SAG/CWMA/ECGD/Setu-2) | 1 | ✓ |
+| Live Lens camera + tick API | 1 | ✓ |
+| Smriti ingestion daemon | 2+3 | ✓ |
+| Smriti UI (Mandala/Recall/Deepdive) | 2+3 | ✓ |
+| Storage configuration | 4 | ✓ |
+| Watch folder management | 4 | ✓ |
+| Data migration | 5 | ✓ |
+| Setu-2 W-matrix feedback | 5 | ✓ |
+| Mandala Web Worker | 5 | ✓ |
+| Deepdive interactive patches | 5 | ✓ |
+| Person co-occurrence graph | 5 | ✓ |
+| WCAG 2.1 AA accessibility | 5 | ✓ |
 
 ## Architecture diagram
 
@@ -188,6 +207,32 @@ The same Settings surface now includes **Smriti Storage**, where operators can:
 - add or remove watched folders
 - inspect disk usage by category
 - prune missing, failed, or all Smriti-managed data
+- run a verified copy-first migration to a new storage location without deleting the source data
+
+## Smriti Quick Start
+
+1. Start the runtime:
+
+```bash
+TOORI_DATA_DIR=.toori uvicorn cloud.api.main:app --port 7777
+```
+
+2. Start the frontend:
+
+```bash
+cd /Users/macuser/toori/desktop/electron
+npm run web
+```
+
+3. Open [http://127.0.0.1:4173](http://127.0.0.1:4173)
+4. Open `Settings -> Smriti Storage` and configure the data directory.
+   On an M1 iMac with a 256 GB SSD, point Smriti at an external drive before indexing a large photo/video corpus.
+5. In `Settings -> Smriti Storage`, use `+ Add Folder` to watch your media folders.
+6. Wait for ingestion. `Smriti -> HUD` shows queue depth, workers, and pending media.
+7. Open `Smriti -> Recall` and run a natural-language query such as `red jacket`, `beach sunset`, or `my cat`.
+8. Click a result to open Deepdive, then press `E` for the JEPA patch overlay, `F` for fullscreen, and `Esc` to close.
+9. Use the `✓` and `✗` buttons on recall cards to feed Setu-2 relevance feedback back into the current runtime session.
+10. Open `Smriti -> Journals` after tagging a person to inspect their timeline and co-occurrence graph.
 
 ## Smriti Pipeline
 
@@ -251,26 +296,34 @@ The live world-model outputs are written for humans, not for a paper:
 - `POST /v1/query`
 - `POST /v1/living-lens/tick`
 - `POST /v1/challenges/evaluate`
-- `POST /v1/smriti/ingest`
-- `GET /v1/smriti/status`
-- `POST /v1/smriti/recall`
-- `POST /v1/smriti/tag/person`
-- `GET /v1/smriti/person/{person_name}/journal`
-- `GET /v1/smriti/clusters`
-- `GET /v1/smriti/metrics`
-- `GET /v1/smriti/storage`
-- `PUT /v1/smriti/storage`
-- `GET /v1/smriti/storage/usage`
-- `GET /v1/smriti/watch-folders`
-- `POST /v1/smriti/watch-folders`
-- `DELETE /v1/smriti/watch-folders`
-- `POST /v1/smriti/storage/prune`
 - `GET /v1/world-state`
 - `GET /v1/settings`
 - `PUT /v1/settings`
 - `GET /v1/providers/health`
 - `GET /v1/observations`
 - `WS /v1/events`
+
+### Smriti Routes
+
+| Method | Route | Description |
+| --- | --- | --- |
+| POST | `/v1/smriti/ingest` | Ingest a media file or watch a folder |
+| POST | `/v1/smriti/recall` | Semantic query recall |
+| GET | `/v1/smriti/status` | Ingestion status |
+| GET | `/v1/smriti/clusters` | Cluster list for Mandala |
+| GET | `/v1/smriti/metrics` | Performance metrics |
+| POST | `/v1/smriti/tag/person` | Tag a person in media |
+| GET | `/v1/smriti/person/{name}/journal` | Person journal |
+| GET | `/v1/smriti/storage` | Storage configuration |
+| PUT | `/v1/smriti/storage` | Update storage config |
+| GET | `/v1/smriti/storage/usage` | Disk usage report |
+| GET | `/v1/smriti/watch-folders` | List watched folders |
+| POST | `/v1/smriti/watch-folders` | Add watch folder |
+| DELETE | `/v1/smriti/watch-folders` | Remove watch folder |
+| POST | `/v1/smriti/storage/prune` | Prune storage |
+| POST | `/v1/smriti/storage/migrate` | Migrate to a new storage location |
+| POST | `/v1/smriti/recall/feedback` | Setu-2 W-matrix feedback |
+| GET | `/v1/smriti/media/{id}/neighbors` | Semantic neighbors |
 
 ## Tests
 
@@ -301,6 +354,7 @@ See [CONTRIBUTING.md](/Users/macuser/toori/CONTRIBUTING.md) for the current cont
 
 - Observation data is stored in `.toori/` by default in the repository root.
 - Smriti stores schema-managed memory data and learned anchor templates alongside the runtime data directory.
+- Smriti storage migration is copy-first and non-destructive: it verifies the destination and updates config last, while preserving the original source data.
 - Video ingestion uses PyAV when available; folder watching uses `watchdog` when available and degrades gracefully when those packages are absent.
 - `ollama` and MLX are optional desktop-only reasoning backends and are health-checked before use.
 - The runtime will still function in local observation-memory mode if cloud reasoning is unavailable.

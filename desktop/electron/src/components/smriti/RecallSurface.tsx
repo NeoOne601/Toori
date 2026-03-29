@@ -1,4 +1,5 @@
-import type { SmritiRecallResult } from "../../types";
+import { useMemo, useState } from "react";
+import type { SmritiRecallFeedbackResult, SmritiRecallResult } from "../../types";
 
 type RecallSurfaceProps = {
   query: string;
@@ -16,6 +17,7 @@ type RecallSurfaceProps = {
   totalSearched: number;
   onOpenMedia: (media: SmritiRecallResult) => void;
   assetUrl: (filePath: string) => string;
+  runtimeRequest: <T>(path: string, method?: string, body?: unknown) => Promise<T>;
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -48,9 +50,16 @@ export default function RecallSurface({
   totalSearched,
   onOpenMedia,
   assetUrl,
+  runtimeRequest,
 }: RecallSurfaceProps) {
-  const orderedResults = [...results].sort(
-    (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+  const [feedbackSent, setFeedbackSent] = useState<Record<string, boolean | null>>({});
+
+  const orderedResults = useMemo(
+    () =>
+      [...results].sort(
+        (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+      ),
+    [results],
   );
   const earliest = orderedResults[0] ? new Date(orderedResults[0].created_at).getTime() : Date.now();
   const latest = orderedResults[orderedResults.length - 1]
@@ -58,8 +67,32 @@ export default function RecallSurface({
     : earliest + 1;
   const range = Math.max(latest - earliest, 1);
 
+  async function sendFeedback(mediaId: string, confirmed: boolean) {
+    try {
+      await runtimeRequest<SmritiRecallFeedbackResult>("/v1/smriti/recall/feedback", "POST", {
+        query,
+        media_id: mediaId,
+        confirmed,
+        session_id: "smriti",
+      });
+      setFeedbackSent((current) => ({ ...current, [mediaId]: confirmed }));
+    } catch {
+      // Best-effort only. Do not disrupt the main recall interaction path.
+    }
+  }
+
   return (
     <div className="smriti-stack">
+      <div className="sr-live-region" aria-live="polite" aria-atomic="true">
+        {busy
+          ? "Searching memories"
+          : results.length > 0
+            ? `${results.length} recall results available`
+            : query.trim()
+              ? "No recall results found"
+              : "Recall ready"}
+      </div>
+
       <section className="panel panel--memory">
         <div className="smriti-panel-header">
           <div>
@@ -127,12 +160,6 @@ export default function RecallSurface({
           role="img"
           aria-label="Temporal constellation of recall results"
         >
-          <defs>
-            <linearGradient id="smriti-constellation-line" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="rgba(255, 140, 66, 0.25)" />
-              <stop offset="100%" stopColor="rgba(67, 216, 201, 0.35)" />
-            </linearGradient>
-          </defs>
           <line x1="60" y1="220" x2="900" y2="220" stroke="rgba(255,255,255,0.18)" strokeDasharray="6 6" />
           {orderedResults.map((result, index) => {
             const createdAt = new Date(result.created_at).getTime();
@@ -141,14 +168,6 @@ export default function RecallSurface({
             const radius = 7 + clamp((1 - result.hallucination_risk) * 9, 1.5, 10);
             return (
               <g key={result.media_id}>
-                <circle
-                  cx={x}
-                  cy={y}
-                  r={radius}
-                  fill={result.hallucination_risk < 0.25 ? "rgba(67, 216, 201, 0.82)" : "rgba(255, 140, 66, 0.78)"}
-                  stroke="rgba(255, 255, 255, 0.75)"
-                  strokeWidth="1.5"
-                />
                 {index > 0 ? (
                   <line
                     x1={60 + ((new Date(orderedResults[index - 1].created_at).getTime() - earliest) / range) * 840}
@@ -159,29 +178,41 @@ export default function RecallSurface({
                     strokeWidth="1"
                   />
                 ) : null}
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={radius}
+                  fill={result.hallucination_risk < 0.25 ? "rgba(67, 216, 201, 0.82)" : "rgba(255, 140, 66, 0.78)"}
+                  stroke="rgba(255, 255, 255, 0.75)"
+                  strokeWidth="1.5"
+                />
               </g>
             );
           })}
         </svg>
       </section>
 
-      <section className="smriti-results-grid">
+      <section className="smriti-results-grid" aria-label="Recall results">
         {results.map((result) => {
           const tone = scoreTone(1 - result.hallucination_risk);
+          const feedback = feedbackSent[result.media_id];
           return (
-            <button
+            <article
               key={result.media_id}
-              type="button"
-              className={`panel smriti-recall-card smriti-recall-card--${tone}`}
-              onClick={() => onOpenMedia(result)}
+              className={`panel smriti-recall-card smriti-recall-card--${tone} recall-card`}
             >
-              <div className="smriti-recall-card__media">
+              <button
+                type="button"
+                className="smriti-recall-card__media"
+                onClick={() => onOpenMedia(result)}
+                aria-label={`Open deepdive for ${result.primary_description}`}
+              >
                 <img
                   src={assetUrl(result.thumbnail_path || result.file_path)}
                   alt=""
                   loading="lazy"
                 />
-              </div>
+              </button>
               <div className="smriti-recall-card__body">
                 <div className="smriti-recall-card__header">
                   <p className="eyebrow">{new Date(result.created_at).toLocaleString()}</p>
@@ -189,7 +220,15 @@ export default function RecallSurface({
                     risk {(result.hallucination_risk * 100).toFixed(0)}%
                   </span>
                 </div>
-                <h4>{result.primary_description}</h4>
+                <button
+                  type="button"
+                  className="smriti-list-button"
+                  onClick={() => onOpenMedia(result)}
+                  aria-label={`Open ${result.primary_description}`}
+                >
+                  <span>{result.primary_description}</span>
+                  <strong>{(result.hybrid_score * 100).toFixed(0)}</strong>
+                </button>
                 <p className="muted">
                   {result.anchor_basis} in {result.depth_stratum}
                 </p>
@@ -205,15 +244,49 @@ export default function RecallSurface({
                   ))}
                   {result.location_name ? <span className="smriti-chip">{result.location_name}</span> : null}
                 </div>
+                {feedback === undefined ? (
+                  <div className="recall-feedback-row">
+                    <button
+                      type="button"
+                      className="recall-feedback-btn confirmed"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void sendFeedback(result.media_id, true);
+                      }}
+                      title="This result is correct"
+                      aria-label="Confirm this result is relevant"
+                    >
+                      ✓
+                    </button>
+                    <button
+                      type="button"
+                      className="recall-feedback-btn rejected"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void sendFeedback(result.media_id, false);
+                      }}
+                      title="This result is not relevant"
+                      aria-label="Mark this result as not relevant"
+                    >
+                      ✗
+                    </button>
+                  </div>
+                ) : feedback ? (
+                  <span style={{ fontSize: "0.75rem", color: "var(--kpi-healthy)" }}>✓ Confirmed</span>
+                ) : (
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Noted</span>
+                )}
               </div>
-            </button>
+            </article>
           );
         })}
         {!busy && results.length === 0 ? (
           <div className="panel smriti-empty-state">
             <p className="eyebrow">No Results Yet</p>
             <h4>Start with a natural-language query</h4>
-            <p className="muted">The recall surface fills as soon as the Smriti index contains media and the query text is specific enough to rank it.</p>
+            <p className="muted">
+              The recall surface fills as soon as the Smriti index contains media and the query text is specific enough to rank it.
+            </p>
           </div>
         ) : null}
       </section>

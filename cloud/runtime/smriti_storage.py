@@ -991,6 +991,43 @@ class SmetiDB(ObservationStore):
             ).fetchall()
         return [self._row_to_media(row) for row in rows]
 
+    def get_all_embeddings(self, limit: int = 500) -> dict[str, Any]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM smriti_media
+                WHERE ingestion_status = 'complete'
+                ORDER BY COALESCE(original_created_at, ingested_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        media_ids: list[str] = []
+        vectors: list[np.ndarray] = []
+        thumbnails: dict[str, str] = {}
+        for row in rows:
+            media = self._row_to_media(row)
+            vector = self._media_embedding_vector(media)
+            if vector is None:
+                continue
+            media_ids.append(media.id)
+            vectors.append(vector.astype(np.float32))
+            thumbnails[media.id] = self._media_thumbnail_path(media.id, media.file_path)
+
+        if vectors:
+            embeddings = np.stack(vectors, axis=0).astype(np.float32)
+        else:
+            dim = self._faiss_vector_dim or 128
+            embeddings = np.zeros((0, dim), dtype=np.float32)
+
+        return {
+            "media_ids": media_ids,
+            "embeddings": embeddings,
+            "thumbnails": thumbnails,
+        }
+
     def create_person(self, name: str, embedding: np.ndarray) -> SmritiPerson:
         person_id = f"person_{uuid4().hex[:12]}"
         now = _utc_now()
@@ -1351,6 +1388,30 @@ class SmetiDB(ObservationStore):
             for _, media, vector_score, fts_score in scored[:top_k]
         ]
 
+    def get_all_embeddings(self, limit: int = 500) -> dict[str, Any]:
+        rows = self._candidate_media_rows()[: max(limit, 1)]
+        media_ids: list[str] = []
+        embeddings: list[np.ndarray] = []
+        thumbnails: dict[str, str] = {}
+        for row in rows:
+            media = self._row_to_media(row)
+            media_vector = self._media_embedding_vector(media)
+            if media_vector is None:
+                continue
+            media_ids.append(media.id)
+            embeddings.append(media_vector.astype(np.float32))
+            thumbnails[media.id] = self._media_thumbnail_path(media.id, media.file_path)
+        if embeddings:
+            matrix = np.stack(embeddings, axis=0).astype(np.float32)
+        else:
+            vector_dim = self._faiss_vector_dim or 128
+            matrix = np.zeros((0, vector_dim), dtype=np.float32)
+        return {
+            "media_ids": media_ids,
+            "embeddings": matrix,
+            "thumbnails": thumbnails,
+        }
+
     def faiss_search(
         self,
         query_embedding: np.ndarray,
@@ -1657,6 +1718,42 @@ class SmetiDB(ObservationStore):
         self._mandala_cache = data
         self._mandala_cache_at = now
         return json.loads(json.dumps(data, default=_json_default))
+
+    def get_all_embeddings(self, limit: int = 500) -> dict[str, Any]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM smriti_media
+                WHERE ingestion_status = 'complete'
+                ORDER BY COALESCE(original_created_at, ingested_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        media_ids: list[str] = []
+        embeddings: list[np.ndarray] = []
+        thumbnails: dict[str, str] = {}
+        for row in rows:
+            media = self._row_to_media(row)
+            vector = self._media_embedding_vector(media)
+            if vector is None:
+                continue
+            media_ids.append(media.id)
+            embeddings.append(vector.astype(np.float32))
+            thumbnails[media.id] = self._media_thumbnail_path(media.id, media.file_path)
+
+        matrix = (
+            np.stack(embeddings, axis=0).astype(np.float32)
+            if embeddings
+            else np.zeros((0, self._faiss_vector_dim or 128), dtype=np.float32)
+        )
+        return {
+            "media_ids": media_ids,
+            "embeddings": matrix,
+            "thumbnails": thumbnails,
+        }
 
     def _candidate_media_by_ids(self, media_ids: list[str]) -> list[SmritiMedia]:
         if not media_ids:

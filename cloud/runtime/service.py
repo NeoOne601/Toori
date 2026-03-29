@@ -33,11 +33,15 @@ from .models import (
     ObservationsResponse,
     ProofReportResponse,
     ProviderHealthResponse,
+    SmritiMigrationRequest,
+    SmritiMigrationResult,
     QueryRequest,
     QueryResponse,
     ReasoningTraceEntry,
     RuntimeSettings,
     SceneState,
+    SmritiRecallFeedback,
+    SmritiRecallFeedbackResult,
     SmritiRecallItem,
     SmritiPruneRequest,
     SmritiPruneResult,
@@ -144,6 +148,7 @@ class RuntimeContainer:
         self._jepa_energy_ema: dict[str, float] = defaultdict(float)
         self.smriti_daemon = None
         self._sag_templates_path = self._smriti_storage.templates_path or str(Path(self._smriti_storage.data_dir or self.data_dir) / "sag_templates.json")
+        self._setu2_bridge = None
 
     def _create_smriti_db(self, storage_config: SmritiStorageConfig) -> SmetiDB:
         data_dir = Path(storage_config.data_dir or self.data_dir).expanduser().resolve()
@@ -393,6 +398,39 @@ class RuntimeContainer:
             errors=errors,
         )
 
+    def migrate_smriti_data(self, request: SmritiMigrationRequest) -> SmritiMigrationResult:
+        """
+        Migrate Smriti data to a new directory.
+        Config is updated after a verified migration succeeds.
+        """
+        from cloud.runtime.smriti_migration import migrate_smriti_data as _migrate
+
+        settings = self.get_settings()
+        current_config = settings.smriti_storage
+
+        def _progress(progress) -> None:
+            self.events.publish("smriti.migration_progress", progress.model_dump(mode="json"))
+
+        result = _migrate(
+            request=request,
+            current_config=current_config,
+            base_data_dir=str(self.data_dir),
+            on_progress=_progress,
+        )
+
+        if result.success and not result.dry_run:
+            new_storage = current_config.model_copy(
+                update={
+                    "data_dir": request.target_data_dir,
+                    "frames_dir": request.target_frames_dir,
+                    "thumbs_dir": request.target_thumbs_dir,
+                    "templates_path": request.target_templates_path,
+                }
+            )
+            self.update_smriti_storage_config(new_storage)
+
+        return result
+
     async def smriti_recall(self, payload: SmritiRecallRequest) -> SmritiRecallResponse:
         started = perf_counter()
         query_embedding = self._embed_smriti_query(payload.query)
@@ -400,8 +438,9 @@ class RuntimeContainer:
             self.smriti_db.hybrid_search,
             query_embedding,
             payload.query,
-            payload.top_k,
+            max(payload.top_k * 4, payload.top_k),
         )
+        results = self._personalize_smriti_results(payload.query, results)
         filtered = [
             result
             for result in results
@@ -428,6 +467,27 @@ class RuntimeContainer:
                 created_at=result.created_at,
                 person_names=result.person_names,
                 location_name=result.location_name,
+                depth_strata_data=(self.smriti_db.get_smriti_media(result.media_id).depth_strata if self.smriti_db.get_smriti_media(result.media_id) else None),
+                anchor_matches=[
+                    {
+                        "template_name": match.name,
+                        "confidence": match.confidence,
+                        "patch_indices": match.patch_indices,
+                        "depth_stratum": result.depth_stratum,
+                    }
+                    for match in (self.smriti_db.get_smriti_media(result.media_id).anchor_matches if self.smriti_db.get_smriti_media(result.media_id) else [])
+                ],
+                setu_descriptions=[
+                    {
+                        "description": {
+                            "text": description.text,
+                            "confidence": description.confidence,
+                            "anchor_basis": description.anchor_basis,
+                            "hallucination_risk": max(0.0, min(1.0, float(self.smriti_db.get_smriti_media(result.media_id).hallucination_risk if self.smriti_db.get_smriti_media(result.media_id) else 0.5))),
+                        }
+                    }
+                    for description in (self.smriti_db.get_smriti_media(result.media_id).setu_descriptions if self.smriti_db.get_smriti_media(result.media_id) else [])
+                ],
             )
             for result in filtered
         ]
@@ -436,6 +496,68 @@ class RuntimeContainer:
             results=items,
             total_searched=len(results),
             setu_ms=round((perf_counter() - started) * 1000.0, 3),
+        )
+
+    def smriti_recall_feedback(
+        self,
+        feedback: SmritiRecallFeedback,
+    ) -> SmritiRecallFeedbackResult:
+        """
+        Update Setu-2 W-matrix based on user confirmation or rejection.
+        """
+        from cloud.runtime.setu2 import Setu2Bridge
+
+        query_embedding = self._embed_smriti_query(feedback.query, dim=384)
+
+        media_embedding: np.ndarray | None = None
+        try:
+            media = self.smriti_db.get_smriti_media(feedback.media_id)
+        except Exception:
+            media = None
+
+        if media is not None and media.embedding is not None:
+            media_embedding = self._normalize_setu2_media_embedding(media.embedding)
+        elif media is not None and media.observation_id:
+            observation = self.store.get_observation(media.observation_id)
+            if observation is not None:
+                media_embedding = self._normalize_setu2_media_embedding(observation.embedding)
+        else:
+            observation = self.store.get_observation(feedback.media_id)
+            if observation is not None:
+                media_embedding = self._normalize_setu2_media_embedding(observation.embedding)
+
+        if media_embedding is None:
+            return SmritiRecallFeedbackResult(
+                updated=False,
+                w_mean=0.0,
+                message="Media embedding not found — feedback ignored",
+            )
+
+        if self._setu2_bridge is None:
+            self._setu2_bridge = Setu2Bridge()
+        bridge = self._setu2_bridge
+
+        if feedback.confirmed:
+            bridge.update_metric_w(
+                positive_pairs=[(query_embedding, media_embedding)],
+                negative_pairs=[],
+                learning_rate=0.005,
+            )
+        else:
+            bridge.update_metric_w(
+                positive_pairs=[],
+                negative_pairs=[(query_embedding, media_embedding)],
+                learning_rate=0.005,
+            )
+
+        return SmritiRecallFeedbackResult(
+            updated=True,
+            w_mean=float(bridge._W.mean()),
+            message=(
+                f"W-matrix updated. Mean metric weight: {bridge._W.mean():.4f}. "
+                f"{'Confirmed' if feedback.confirmed else 'Rejected'} result "
+                "will influence future recall ordering."
+            ),
         )
 
     async def smriti_tag_person(self, payload: SmritiTagPersonRequest) -> SmritiTagPersonResponse:
@@ -452,7 +574,7 @@ class RuntimeContainer:
     def smriti_person_journal(self, person_name: str) -> dict[str, Any]:
         person = self.smriti_db.get_person_by_name(person_name)
         if person is None:
-            return {"person_name": person_name, "entries": [], "count": 0}
+            return {"person_name": person_name, "entries": [], "count": 0, "atlas": self.atlas.to_dict()}
         with self.smriti_db._connect() as connection:
             rows = connection.execute(
                 """
@@ -464,6 +586,20 @@ class RuntimeContainer:
                 """,
                 (person.id,),
             ).fetchall()
+            co_rows = connection.execute(
+                """
+                SELECT p.id, p.name, COUNT(*) AS shared_count
+                FROM smriti_person_media target_pm
+                JOIN smriti_person_media other_pm
+                    ON other_pm.media_id = target_pm.media_id
+                   AND other_pm.person_id != target_pm.person_id
+                JOIN smriti_persons p ON p.id = other_pm.person_id
+                WHERE target_pm.person_id = ?
+                GROUP BY p.id, p.name
+                ORDER BY shared_count DESC, p.name ASC
+                """,
+                (person.id,),
+            ).fetchall()
         entries = [
             {
                 "media_id": row["id"],
@@ -472,7 +608,102 @@ class RuntimeContainer:
             }
             for row in rows
         ]
-        return {"person_name": person_name, "entries": entries, "count": len(entries)}
+        atlas = self.atlas.to_dict()
+        if not atlas.get("nodes") and co_rows:
+            atlas = {
+                "nodes": [
+                    {"entity_id": person.id, "label": person.name, "track_length": max(len(entries), 1)},
+                    *[
+                        {
+                            "entity_id": str(row["id"]),
+                            "label": str(row["name"]),
+                            "track_length": int(row["shared_count"] or 0),
+                        }
+                        for row in co_rows
+                    ],
+                ],
+                "edges": [
+                    {
+                        "source_id": person.id,
+                        "target_id": str(row["id"]),
+                        "co_occurrence_count": int(row["shared_count"] or 0),
+                        "spatial_proximity": min(int(row["shared_count"] or 0) / max(len(entries), 1), 1.0),
+                        "status": "active",
+                    }
+                    for row in co_rows
+                ],
+            }
+        return {
+            "person_name": person_name,
+            "entries": entries,
+            "count": len(entries),
+            "atlas": atlas,
+        }
+
+    def smriti_media_detail(self, media_id: str) -> dict[str, Any] | None:
+        media = self.smriti_db.get_smriti_media(media_id)
+        if media is None:
+            return None
+        return {
+            "id": media.id,
+            "observation_id": media.observation_id,
+            "file_path": media.file_path,
+            "file_hash": media.file_hash,
+            "media_type": media.media_type,
+            "depth_strata": media.depth_strata,
+            "anchor_matches": [match.to_dict() for match in media.anchor_matches],
+            "setu_descriptions": [description.to_dict() for description in media.setu_descriptions],
+            "hallucination_risk": media.hallucination_risk,
+            "ingestion_status": media.ingestion_status,
+            "visual_cluster_id": media.visual_cluster_id,
+            "location_id": media.location_id,
+            "original_created_at": media.original_created_at.isoformat() if media.original_created_at else None,
+            "ingested_at": media.ingested_at.isoformat() if media.ingested_at else None,
+            "alignment_loss": media.alignment_loss,
+            "error_message": media.error_message,
+            "embedding": media.embedding,
+        }
+
+    def smriti_media_neighbors(self, media_id: str, top_k: int = 6) -> dict[str, Any]:
+        media = self.smriti_db.get_smriti_media(media_id)
+        embedding = None
+        if media is not None and media.embedding is not None:
+            embedding = self._normalize_setu2_media_embedding(media.embedding)
+        elif media is not None and media.observation_id:
+            observation = self.store.get_observation(media.observation_id)
+            if observation is not None:
+                embedding = self._normalize_setu2_media_embedding(observation.embedding)
+        elif self.store.get_observation(media_id) is not None:
+            embedding = self._normalize_setu2_media_embedding(self.store.get_observation(media_id).embedding)
+        if embedding is None:
+            return {"neighbors": []}
+
+        from cloud.runtime.setu2 import Setu2Bridge
+
+        if self._setu2_bridge is None:
+            self._setu2_bridge = Setu2Bridge()
+        corpus = self.smriti_db.get_all_embeddings(limit=500)
+        matrix = np.asarray(corpus["embeddings"], dtype=np.float32)
+        if matrix.shape[0] <= 1:
+            return {"neighbors": []}
+
+        energies = self._setu2_bridge.project_query(embedding, matrix)
+        ranked = np.argsort(energies)
+        neighbors: list[dict[str, Any]] = []
+        for index in ranked:
+            candidate_id = corpus["media_ids"][int(index)]
+            if candidate_id == media_id:
+                continue
+            neighbors.append(
+                {
+                    "media_id": candidate_id,
+                    "setu_score": float(1.0 / (1.0 + max(float(energies[int(index)]), 0.0))),
+                    "thumbnail_path": corpus.get("thumbnails", {}).get(candidate_id, ""),
+                }
+            )
+            if len(neighbors) >= top_k:
+                break
+        return {"neighbors": neighbors}
 
     def smriti_clusters(self) -> dict[str, Any]:
         return self.smriti_db.get_mandala_data()
@@ -1044,6 +1275,69 @@ class RuntimeContainer:
         vector = rng.standard_normal(dim).astype(np.float32)
         norm = float(np.linalg.norm(vector)) or 1.0
         return (vector / norm).astype(np.float32)
+
+    def _normalize_setu2_media_embedding(self, embedding: list[float] | np.ndarray) -> np.ndarray:
+        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if vector.size > 128:
+            vector = vector[:128]
+        elif vector.size < 128:
+            vector = np.pad(vector, (0, 128 - vector.size))
+        norm = float(np.linalg.norm(vector)) or 1.0
+        return (vector / norm).astype(np.float32)
+
+    def _embed_setu2_query(self, query: str) -> np.ndarray:
+        return self._embed_smriti_query(query, dim=384)
+
+    def _lookup_setu2_media_embedding(self, media_id: str) -> np.ndarray | None:
+        media = self.smriti_db.get_smriti_media(media_id)
+        if media is not None and media.embedding is not None:
+            return self._normalize_setu2_media_embedding(media.embedding)
+        if media is not None and media.observation_id:
+            observation = self.store.get_observation(media.observation_id)
+            if observation is not None:
+                return self._normalize_setu2_media_embedding(observation.embedding)
+        observation = self.store.get_observation(media_id)
+        if observation is not None:
+            return self._normalize_setu2_media_embedding(observation.embedding)
+        return None
+
+    def _personalize_smriti_results(self, query: str, results: list[Any]) -> list[Any]:
+        if not results:
+            return results
+        from dataclasses import replace
+        from cloud.runtime.setu2 import Setu2Bridge
+
+        if self._setu2_bridge is None:
+            self._setu2_bridge = Setu2Bridge()
+
+        candidate_pairs: list[tuple[Any, np.ndarray]] = []
+        for result in results:
+            embedding = self._lookup_setu2_media_embedding(result.media_id)
+            if embedding is None:
+                continue
+            candidate_pairs.append((result, embedding))
+
+        if not candidate_pairs:
+            return results
+
+        corpus = np.stack([embedding for _, embedding in candidate_pairs], axis=0)
+        energies = self._setu2_bridge.project_query(self._embed_setu2_query(query), corpus)
+        updated_results = []
+        for (result, _), energy in zip(candidate_pairs, energies):
+            personalized_setu = float(1.0 / (1.0 + max(float(energy), 0.0)))
+            personalized_hybrid = float((0.6 * float(result.hybrid_score)) + (0.4 * personalized_setu))
+            updated_results.append(
+                replace(
+                    result,
+                    setu_score=round(personalized_setu, 6),
+                    hybrid_score=round(personalized_hybrid, 6),
+                )
+            )
+
+        untouched = [result for result in results if all(result.media_id != updated.media_id for updated in updated_results)]
+        reranked = updated_results + untouched
+        reranked.sort(key=lambda item: item.hybrid_score, reverse=True)
+        return reranked
 
     def _smriti_result_matches_filters(
         self,

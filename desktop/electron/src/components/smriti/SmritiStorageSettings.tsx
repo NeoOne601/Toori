@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { runtimeRequest } from "../../hooks/useRuntimeBridge";
+import { pickFolderPath, runtimeRequest } from "../../hooks/useRuntimeBridge";
 import type {
+  SmritiMigrationRequest,
+  SmritiMigrationResult,
   SmritiPruneRequest,
   SmritiPruneResult,
   SmritiStorageConfig,
@@ -24,19 +26,6 @@ function bytesHuman(bytes: number): string {
 
 function watchPathToString(value: string | null): string {
   return value || "";
-}
-
-async function pickFolderPath(): Promise<string | null> {
-  const bridge = window.tooriDesktop as
-    | {
-        pickFolder?: () => Promise<string | null>;
-      }
-    | undefined;
-  if (bridge?.pickFolder) {
-    return await bridge.pickFolder();
-  }
-  const result = window.prompt("Enter a folder path", "/Users");
-  return result?.trim() ? result.trim() : null;
 }
 
 function UsageBar({
@@ -65,6 +54,9 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
   const [refreshing, setRefreshing] = useState(false);
   const [pruning, setPruning] = useState(false);
   const [confirmClearAll, setConfirmClearAll] = useState("");
+  const [migrationTarget, setMigrationTarget] = useState("");
+  const [migrating, setMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<SmritiMigrationResult | null>(null);
 
   const loadAll = useCallback(async () => {
     setRefreshing(true);
@@ -157,6 +149,37 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
       onStatusChange?.((error as Error).message);
     } finally {
       setPruning(false);
+    }
+  };
+
+  const runMigration = async (dryRun: boolean) => {
+    if (!migrationTarget.trim()) {
+      onStatusChange?.("Choose a target directory before running migration");
+      return;
+    }
+    setMigrating(true);
+    try {
+      const payload: SmritiMigrationRequest = {
+        target_data_dir: migrationTarget.trim(),
+        dry_run: dryRun,
+      };
+      const result = await runtimeRequest<SmritiMigrationResult>("/v1/smriti/storage/migrate", "POST", payload);
+      setMigrationResult(result);
+      onStatusChange?.(
+        result.success
+          ? dryRun
+            ? `Dry run complete: ${result.files_moved} files would be copied`
+            : `Migration complete: ${result.bytes_moved_human} copied`
+          : `Migration failed: ${result.errors[0] || "unknown error"}`,
+      );
+      if (result.success && !dryRun) {
+        await loadAll();
+      }
+    } catch (error) {
+      setMigrationResult(null);
+      onStatusChange?.((error as Error).message);
+    } finally {
+      setMigrating(false);
     }
   };
 
@@ -295,6 +318,60 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
               Refresh
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="panel migration-panel">
+        <div className="panel-head">
+          <h4>Data Migration</h4>
+          <span>Copy Smriti data to a new location without deleting the source</span>
+        </div>
+        <div style={{ display: "grid", gap: "0.8rem" }}>
+          <label className="field">
+            <span>Target directory</span>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                value={migrationTarget}
+                onChange={(event) => setMigrationTarget(event.target.value)}
+                placeholder="Choose a new Smriti data directory"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  void pickFolderPath().then((path) => {
+                    if (path) {
+                      setMigrationTarget(path);
+                    }
+                  })
+                }
+              >
+                Browse
+              </button>
+            </div>
+            <small className="field-hint">
+              Migration preserves the original data. Delete the old location manually after you verify the new one.
+            </small>
+          </label>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            <button type="button" onClick={() => void runMigration(true)} disabled={migrating}>
+              {migrating ? "Running…" : "Dry Run"}
+            </button>
+            <button type="button" className="primary" onClick={() => void runMigration(false)} disabled={migrating}>
+              {migrating ? "Migrating…" : "Run Migration"}
+            </button>
+          </div>
+          {migrationResult ? (
+            <div className={migrationResult.success ? "migration-result success" : "migration-result failed"}>
+              <strong>{migrationResult.success ? "Migration finished" : "Migration failed"}</strong>
+              <span>
+                {migrationResult.files_moved} files · {migrationResult.bytes_moved_human} · {migrationResult.dry_run ? "dry run" : "live"}
+              </span>
+              <span>Target: {migrationResult.new_data_dir}</span>
+              {migrationResult.errors.length > 0 ? (
+                <code style={{ whiteSpace: "pre-wrap" }}>{migrationResult.errors.join("\n")}</code>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </section>
 

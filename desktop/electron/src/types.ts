@@ -392,6 +392,9 @@ export type SmritiRecallResult = {
   created_at: string;
   person_names: string[];
   location_name: string | null;
+  depth_strata_data?: SmritiDepthStrata | null;
+  anchor_matches?: SmritiAnchorMatch[] | null;
+  setu_descriptions?: SmritiSetuRecord[] | null;
 };
 
 export type SmritiRecallResponse = {
@@ -432,6 +435,10 @@ export type SmritiPersonJournal = {
   person_name: string;
   entries: SmritiPersonJournalEntry[];
   count: number;
+  atlas?: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+  } | null;
 };
 
 export type SmritiWorkerStats = {
@@ -567,4 +574,42 @@ export type SmritiPruneResult = {
   removed_bytes: number;
   removed_bytes_human: string;
   errors: string[];
+};
+
+export type SmritiMigrationRequest = {
+  target_data_dir: string;
+  target_frames_dir?: string | null;
+  target_thumbs_dir?: string | null;
+  target_templates_path?: string | null;
+  dry_run: boolean;
+};
+
+export type SmritiMigrationResult = {
+  success: boolean;
+  dry_run: boolean;
+  files_moved: number;
+  bytes_moved: number;
+  bytes_moved_human: string;
+  new_data_dir: string;
+  errors: string[];
+  rollback_available: boolean;
+};
+
+export type SmritiRecallFeedback = {
+  query: string;
+  media_id: string;
+  confirmed: boolean;
+  session_id?: string;
+};
+
+export type SmritiRecallFeedbackResult = {
+  updated: boolean;
+  w_mean: number;
+  message: string;
+};
+
+export type SmritiMediaNeighbor = {
+  media_id: string;
+  setu_score: number;
+  thumbnail_path: string;
 };

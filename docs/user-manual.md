@@ -171,7 +171,29 @@ If Electron does not appear under macOS Camera privacy:
 - that means the stock CLI launch still does not have a stable bundle identity
 - use browser mode until the app is packaged as a real signed bundle
 
-## 10. Search, Replay, And Integrations
+## 10. Smriti Memory Workflow
+
+Use **Smriti** after you have live observations or imported media to build a grounded semantic memory corpus.
+
+Recommended flow:
+
+1. Open **Settings -> Smriti Storage**.
+2. Choose a storage location with enough free space. On smaller M1 iMac SSDs, prefer an external drive before large ingestions.
+3. Add one or more watch folders.
+4. Open **Smriti -> HUD** to monitor queue depth, worker state, and pending media.
+5. Open **Smriti -> Recall** and run a natural-language query.
+6. Click a result to open **Deepdive**.
+7. Press `E` inside Deepdive to inspect the JEPA patch overlay.
+8. Use the `✓` and `✗` buttons on recall cards to give Setu-2 relevance feedback for the current runtime session.
+9. Use **Person Journal** to inspect tagged people and their co-occurrence graph.
+
+Storage safety:
+
+- migration is copy-first and non-destructive
+- source Smriti data is preserved after migration until you delete it manually
+- prune actions affect Smriti-managed storage only, not your original media files
+
+## 11. Search, Replay, And Integrations
 
 ### Memory Search
 
@@ -196,7 +218,7 @@ The world-model proof endpoints are:
 
 These are the routes that matter for the JEPA proof surface. `Living Lens` uses them to show prediction consistency, temporal continuity, surprise, and persistence over time.
 
-## 11. How To Read The Proof Signals
+## 12. How To Read The Proof Signals
 
 The proof surface uses these ideas:
 
@@ -210,7 +232,7 @@ The proof surface uses these ideas:
 
 If the model says an object is still there after occlusion, and the entity track reconnects after the object returns, that is evidence for persistence.
 
-## 12. What To Expect Today
+## 13. What To Expect Today
 
 Toori is already useful as a live observation memory system, but the JEPA proof is the main narrative now.
 

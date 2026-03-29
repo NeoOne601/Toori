@@ -31,8 +31,12 @@ from .models import (
     RuntimeSettings,
     SmritiIngestRequest,
     SmritiIngestResponse,
+    SmritiMigrationRequest,
+    SmritiMigrationResult,
     SmritiPruneRequest,
     SmritiPruneResult,
+    SmritiRecallFeedback,
+    SmritiRecallFeedbackResult,
     SmritiRecallRequest,
     SmritiRecallResponse,
     SmritiStorageConfig,
@@ -385,6 +389,24 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             raise SmritiRateLimitError(endpoint="/v1/smriti/recall", retry_after_s=1.0)
         return await app.state.runtime.smriti_recall(payload)
 
+    @app.post("/v1/smriti/recall/feedback", dependencies=[Depends(require_auth)])
+    async def recall_feedback(payload: SmritiRecallFeedback) -> SmritiRecallFeedbackResult:
+        return app.state.runtime.smriti_recall_feedback(payload)
+
+    @app.get("/v1/smriti/media/{media_id}/neighbors", dependencies=[Depends(require_auth)])
+    async def smriti_neighbors(
+        media_id: str,
+        top_k: int = Query(default=6, ge=1, le=20),
+    ) -> dict:
+        return app.state.runtime.smriti_media_neighbors(media_id, top_k=top_k)
+
+    @app.get("/v1/smriti/media/{media_id}", dependencies=[Depends(require_auth)])
+    async def smriti_media_detail(media_id: str) -> dict:
+        detail = app.state.runtime.smriti_media_detail(media_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Media not found")
+        return detail
+
     @app.post("/v1/smriti/tag/person", dependencies=[Depends(require_auth)])
     async def smriti_tag_person(payload: SmritiTagPersonRequest) -> SmritiTagPersonResponse:
         return await app.state.runtime.smriti_tag_person(payload)
@@ -436,5 +458,10 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     @app.post("/v1/smriti/storage/prune", dependencies=[Depends(require_auth)])
     async def prune_storage(payload: SmritiPruneRequest) -> SmritiPruneResult:
         return app.state.runtime.prune_smriti_storage(payload)
+
+    @app.post("/v1/smriti/storage/migrate", dependencies=[Depends(require_auth)])
+    async def migrate_smriti_storage(payload: SmritiMigrationRequest) -> SmritiMigrationResult:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, app.state.runtime.migrate_smriti_data, payload)
 
     return app
