@@ -193,6 +193,10 @@ export type JEPATickPayload = {
   energy_std: number;
   guard_active?: boolean;
   ema_tau?: number;
+  depth_strata?: Record<string, unknown> | null;
+  anchor_matches?: Array<Record<string, unknown>> | null;
+  setu_descriptions?: Array<Record<string, unknown>> | null;
+  alignment_loss?: number;
 };
 
 export type LivingLensTickResponse = AnalyzeResponse & {
@@ -301,4 +305,266 @@ export type OcclusionTrackView = {
   status: string;
   confidence: number;
   note: string;
+};
+
+export type SmritiDepthStrata = {
+  depth_proxy?: number[][];
+  foreground_mask?: boolean[][];
+  midground_mask?: boolean[][];
+  background_mask?: boolean[][];
+  confidence?: number;
+  strata_entropy?: number;
+};
+
+export type SmritiAnchorMatch = {
+  template_name: string;
+  confidence: number;
+  patch_indices: number[];
+  depth_stratum: string;
+  centroid_patch: number;
+  embedding_centroid?: number[];
+  is_novel?: boolean;
+  bbox_normalized?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+};
+
+export type SmritiGateResult = {
+  passes: boolean;
+  consistency_score: number;
+  failure_reasons: string[];
+  anchor_name: string;
+  depth_stratum: string;
+  estimated_hallucination_risk: number;
+  uncertainty_map: number[][];
+};
+
+export type SmritiSetuDescription = {
+  text: string;
+  confidence: number;
+  anchor_basis: string;
+  depth_stratum: string;
+  is_uncertain?: boolean;
+  hallucination_risk?: number;
+  uncertainty_map?: number[][] | null;
+};
+
+export type SmritiSetuRecord = {
+  gate?: SmritiGateResult;
+  description: SmritiSetuDescription;
+};
+
+export type SmritiMedia = {
+  id: string;
+  observation_id: string | null;
+  file_path: string;
+  file_hash: string;
+  media_type: "image" | "video" | "screenshot" | "burst" | "live_photo";
+  depth_strata: SmritiDepthStrata | null;
+  anchor_matches: SmritiAnchorMatch[];
+  setu_descriptions: SmritiSetuRecord[];
+  hallucination_risk: number;
+  ingestion_status: "pending" | "processing" | "complete" | "failed";
+  visual_cluster_id: number | null;
+  location_id: string | null;
+  original_created_at: string | null;
+  ingested_at: string | null;
+  alignment_loss: number | null;
+  error_message: string | null;
+  embedding: number[] | null;
+};
+
+export type SmritiRecallResult = {
+  media_id: string;
+  file_path: string;
+  thumbnail_path: string;
+  setu_score: number;
+  vector_score?: number;
+  fts_score?: number;
+  hybrid_score: number;
+  primary_description: string;
+  anchor_basis: string;
+  depth_stratum: string;
+  hallucination_risk: number;
+  created_at: string;
+  person_names: string[];
+  location_name: string | null;
+};
+
+export type SmritiRecallResponse = {
+  query: string;
+  results: SmritiRecallResult[];
+  total_searched: number;
+  setu_ms: number;
+};
+
+export type SmritiClusterNode = {
+  id: number;
+  label: string;
+  media_count: number;
+  centroid: number[];
+  dominant_depth_stratum: string | null;
+  temporal_span_days: number | null;
+};
+
+export type SmritiClusterEdge = {
+  source: number;
+  target: number;
+  similarity: number;
+};
+
+export type SmritiMandalaData = {
+  nodes: SmritiClusterNode[];
+  edges: SmritiClusterEdge[];
+  generated_at: string;
+};
+
+export type SmritiPersonJournalEntry = {
+  media_id: string;
+  file_path: string;
+  ingested_at: string;
+};
+
+export type SmritiPersonJournal = {
+  person_name: string;
+  entries: SmritiPersonJournalEntry[];
+  count: number;
+};
+
+export type SmritiWorkerStats = {
+  worker_id: number;
+  pid: number;
+  alive: boolean;
+  queue_size: number;
+  pending: number;
+  submitted: number;
+  completed: number;
+  sessions: string[];
+};
+
+export type SmritiMetrics = {
+  workers: SmritiWorkerStats[];
+  pending_media: number;
+  recent_sessions: string[];
+  energy_ema: Record<string, number>;
+};
+
+export type SmritiStatus = {
+  ingestion: {
+    queued: number;
+    processed: number;
+    failed: number;
+    skipped_duplicate: number;
+    queue_depth: number;
+    queue_utilization: number;
+    watched_folders: string[];
+  };
+  status: string;
+};
+
+export type SmritiIngestRequest = {
+  folder_path?: string;
+  file_path?: string;
+};
+
+export type SmritiTagPersonRequest = {
+  media_id: string;
+  person_name: string;
+  confirmed: boolean;
+};
+
+export type SmritiRecallRequest = {
+  query: string;
+  session_id?: string;
+  top_k?: number;
+  person_filter?: string | null;
+  location_filter?: string | null;
+  time_start?: string | null;
+  time_end?: string | null;
+  min_confidence?: number;
+};
+
+export type SmritiSection = "mandala" | "recall" | "deepdive" | "journals" | "hud";
+
+export type SmritiState = {
+  section: SmritiSection;
+  mandalaData: SmritiMandalaData | null;
+  recallResults: SmritiRecallResult[];
+  recallQuery: string;
+  recallBusy: boolean;
+  selectedMedia: SmritiRecallResult | null;
+  personFilter: string;
+  locationFilter: string;
+  minConfidence: number;
+  timeRangeDays: number;
+  personName: string;
+  personJournal: SmritiPersonJournal | null;
+  metrics: SmritiMetrics | null;
+  status: SmritiStatus | null;
+  ingestionFolder: string;
+  ingestionBusy: boolean;
+  ingestionStatus: string;
+  totalIndexed: number;
+};
+
+export type SmritiStorageConfig = {
+  data_dir: string | null;
+  frames_dir: string | null;
+  thumbs_dir: string | null;
+  templates_path: string | null;
+  max_storage_gb: number;
+  watch_folders: string[];
+  store_full_frames: boolean;
+  thumbnail_max_dim: number;
+  auto_prune_missing: boolean;
+};
+
+export type WatchFolderStatus = {
+  path: string;
+  exists: boolean;
+  is_accessible: boolean;
+  media_count_total: number;
+  media_count_indexed: number;
+  media_count_pending: number;
+  watchdog_active: boolean;
+  last_event_at: string | null;
+  error: string | null;
+};
+
+export type StorageUsageReport = {
+  smriti_data_dir: string;
+  total_media_count: number;
+  indexed_count: number;
+  pending_count: number;
+  failed_count: number;
+  frames_bytes: number;
+  thumbs_bytes: number;
+  smriti_db_bytes: number;
+  faiss_index_bytes: number;
+  templates_bytes: number;
+  total_bytes: number;
+  total_human: string;
+  max_storage_gb: number;
+  budget_pct: number;
+  budget_warning: boolean;
+  budget_critical: boolean;
+  watch_folder_stats: WatchFolderStatus[];
+};
+
+export type SmritiPruneRequest = {
+  older_than_days?: number | null;
+  remove_missing_files: boolean;
+  remove_failed: boolean;
+  clear_all: boolean;
+  confirm_clear_all: string;
+};
+
+export type SmritiPruneResult = {
+  removed_media_records: number;
+  removed_bytes: number;
+  removed_bytes_human: string;
+  errors: string[];
 };

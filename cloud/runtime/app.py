@@ -31,10 +31,15 @@ from .models import (
     RuntimeSettings,
     SmritiIngestRequest,
     SmritiIngestResponse,
+    SmritiPruneRequest,
+    SmritiPruneResult,
     SmritiRecallRequest,
     SmritiRecallResponse,
+    SmritiStorageConfig,
     SmritiTagPersonRequest,
     SmritiTagPersonResponse,
+    StorageUsageReport,
+    WatchFolderStatus,
 )
 
 
@@ -43,14 +48,21 @@ async def _runtime_lifespan(app: FastAPI):
     runtime = getattr(app.state, "runtime", None)
     smriti_daemon = getattr(app.state, "smriti_daemon", None)
     try:
+        if runtime is not None and hasattr(runtime, "_load_sag_templates"):
+            runtime._load_sag_templates()
         if smriti_daemon is not None:
             await smriti_daemon.start()
+        if runtime is not None and hasattr(runtime, "restore_smriti_watch_folders"):
+            await runtime.restore_smriti_watch_folders()
         yield
     finally:
         if smriti_daemon is not None:
             await smriti_daemon.stop()
-        if runtime is not None and hasattr(runtime, "shutdown"):
-            await runtime.shutdown()
+        if runtime is not None:
+            if hasattr(runtime, "_save_sag_templates"):
+                runtime._save_sag_templates()
+            if hasattr(runtime, "shutdown"):
+                await runtime.shutdown()
 
 
 def create_app(data_dir: str | None = None) -> FastAPI:
@@ -82,6 +94,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         app.state.runtime.smriti_db,
         app.state.runtime._ensure_jepa_pool,
     )
+    app.state.runtime.smriti_daemon = app.state.smriti_daemon
 
     def rate_limit_dependency(endpoint: str):
         def dependency(request: Request) -> None:
@@ -387,5 +400,41 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     @app.get("/v1/smriti/metrics", dependencies=[Depends(require_auth)])
     async def smriti_metrics() -> dict:
         return app.state.runtime.smriti_metrics()
+
+    @app.get("/v1/smriti/storage", dependencies=[Depends(require_auth)])
+    async def get_smriti_storage() -> SmritiStorageConfig:
+        return app.state.runtime.get_smriti_storage_config()
+
+    @app.put("/v1/smriti/storage", dependencies=[Depends(require_auth)])
+    async def update_smriti_storage(config: SmritiStorageConfig) -> SmritiStorageConfig:
+        return app.state.runtime.update_smriti_storage_config(config)
+
+    @app.get("/v1/smriti/storage/usage", dependencies=[Depends(require_auth)])
+    async def get_storage_usage() -> StorageUsageReport:
+        return app.state.runtime.get_storage_usage()
+
+    @app.get("/v1/smriti/watch-folders", dependencies=[Depends(require_auth)])
+    async def list_watch_folders() -> list[WatchFolderStatus]:
+        resolved = app.state.runtime.get_smriti_storage_config()
+        return [
+            app.state.runtime.get_watch_folder_status(folder_path)
+            for folder_path in resolved.watch_folders
+        ]
+
+    @app.post("/v1/smriti/watch-folders", dependencies=[Depends(require_auth)])
+    async def add_watch_folder(payload: dict) -> WatchFolderStatus:
+        folder_path = payload.get("path", "")
+        if not folder_path:
+            raise HTTPException(status_code=422, detail="path is required")
+        return app.state.runtime.add_watch_folder(folder_path)
+
+    @app.delete("/v1/smriti/watch-folders", dependencies=[Depends(require_auth)])
+    async def remove_watch_folder(path: str = Query(...)) -> dict[str, str]:
+        app.state.runtime.remove_watch_folder(path)
+        return {"removed": path}
+
+    @app.post("/v1/smriti/storage/prune", dependencies=[Depends(require_auth)])
+    async def prune_storage(payload: SmritiPruneRequest) -> SmritiPruneResult:
+        return app.state.runtime.prune_smriti_storage(payload)
 
     return app

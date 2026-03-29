@@ -13,8 +13,8 @@ import numpy as np
 from PIL import Image
 
 from .atlas import EpistemicAtlas
-from .error_types import SmritiPipelineError
-from .config import resolve_data_dir
+from .config import resolve_data_dir, resolve_smriti_storage
+from .error_types import SmritiError, SmritiPipelineError
 from .events import EventBus
 from .jepa_worker import JEPAWorkItem, JEPAWorkerPool
 from .models import (
@@ -39,14 +39,19 @@ from .models import (
     RuntimeSettings,
     SceneState,
     SmritiRecallItem,
+    SmritiPruneRequest,
+    SmritiPruneResult,
     SmritiRecallRequest,
     SmritiRecallResponse,
+    SmritiStorageConfig,
     SmritiTagPersonRequest,
     SmritiTagPersonResponse,
+    StorageUsageReport,
     TalkerEvent,
+    WatchFolderStatus,
     WorldStateResponse,
 )
-from .observability import CorrelationContext
+from .observability import CorrelationContext, get_logger
 from .providers import ProviderRegistry
 from .smriti_storage import SmetiDB
 from .storage import ObservationStore
@@ -121,7 +126,9 @@ class RuntimeContainer:
 
         self.data_dir = resolve_data_dir(data_dir)
         self.store = ObservationStore(self.data_dir)
-        self.smriti_db = SmetiDB(self.data_dir)
+        settings = self.store.load_settings() or RuntimeSettings()
+        self._smriti_storage = resolve_smriti_storage(settings, str(self.data_dir))
+        self.smriti_db = self._create_smriti_db(self._smriti_storage)
         self.providers = ProviderRegistry()
         self.events = EventBus()
         self.engine = JEPAEngine()
@@ -135,6 +142,256 @@ class RuntimeContainer:
         self._previous_tracks: list = []
         self._progressive_scheduler = ProgressiveComputationScheduler()
         self._jepa_energy_ema: dict[str, float] = defaultdict(float)
+        self.smriti_daemon = None
+        self._sag_templates_path = self._smriti_storage.templates_path or str(Path(self._smriti_storage.data_dir or self.data_dir) / "sag_templates.json")
+
+    def _create_smriti_db(self, storage_config: SmritiStorageConfig) -> SmetiDB:
+        data_dir = Path(storage_config.data_dir or self.data_dir).expanduser().resolve()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        smriti_db = SmetiDB(data_dir)
+        if storage_config.frames_dir:
+            smriti_db.frames_dir = Path(storage_config.frames_dir).expanduser().resolve()
+            smriti_db.frames_dir.mkdir(parents=True, exist_ok=True)
+        if storage_config.thumbs_dir:
+            smriti_db.thumbs_dir = Path(storage_config.thumbs_dir).expanduser().resolve()
+            smriti_db.thumbs_dir.mkdir(parents=True, exist_ok=True)
+        if storage_config.templates_path:
+            Path(storage_config.templates_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        return smriti_db
+
+    def _configure_smriti_storage(self, storage_config: SmritiStorageConfig) -> SmritiStorageConfig:
+        resolved = storage_config.resolve_paths(str(self.data_dir))
+        for dir_path in (resolved.data_dir, resolved.frames_dir, resolved.thumbs_dir):
+            if dir_path:
+                Path(dir_path).expanduser().resolve().mkdir(parents=True, exist_ok=True)
+        if resolved.templates_path:
+            Path(resolved.templates_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        self._smriti_storage = resolved
+        self.smriti_db = self._create_smriti_db(resolved)
+        self._sag_templates_path = resolved.templates_path or str(Path(resolved.data_dir or self.data_dir) / "sag_templates.json")
+        daemon = getattr(self, "smriti_daemon", None)
+        if daemon is not None:
+            daemon._db = self.smriti_db
+        return resolved
+
+    @staticmethod
+    def _human_readable_bytes(num_bytes: int) -> str:
+        value = float(max(num_bytes, 0))
+        for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+            if value < 1024.0:
+                return f"{value:.1f} {unit}"
+            value /= 1024.0
+        return f"{value:.1f} PB"
+
+    def get_smriti_storage_config(self) -> SmritiStorageConfig:
+        settings = self.get_settings()
+        resolved = resolve_smriti_storage(settings, str(self.data_dir))
+        self._smriti_storage = resolved
+        return resolved
+
+    async def restore_smriti_watch_folders(self) -> None:
+        daemon = getattr(self, "smriti_daemon", None)
+        if daemon is None:
+            return
+        resolved = self.get_smriti_storage_config()
+        for folder_path in resolved.watch_folders:
+            try:
+                await daemon.watch_folder(folder_path)
+            except Exception as exc:
+                get_logger("runtime").warning("watch_folder_restore_failed", path=folder_path, error=str(exc))
+
+    def update_smriti_storage_config(self, new_config: SmritiStorageConfig) -> SmritiStorageConfig:
+        settings = self.get_settings()
+        normalized_updates: dict[str, Any] = {}
+        for field_name in ("data_dir", "frames_dir", "thumbs_dir", "templates_path"):
+            value = getattr(new_config, field_name, None)
+            if value is None:
+                continue
+            path_value = Path(value).expanduser().resolve()
+            if not path_value.parent.exists():
+                raise SmritiError(f"Parent directory does not exist for {field_name}: {path_value.parent}")
+            normalized_updates[field_name] = str(path_value)
+
+        normalized_watch_folders: list[str] = []
+        for folder_path in new_config.watch_folders:
+            normalized_watch_folders.append(str(Path(folder_path).expanduser().resolve()))
+        normalized_updates["watch_folders"] = normalized_watch_folders
+
+        normalized_config = new_config.model_copy(update=normalized_updates)
+        updated_settings = settings.model_copy(update={"smriti_storage": normalized_config})
+        self.update_settings(updated_settings)
+        resolved = resolve_smriti_storage(updated_settings, str(self.data_dir))
+        return self._configure_smriti_storage(resolved)
+
+    def get_storage_usage(self) -> StorageUsageReport:
+        resolved = self.get_smriti_storage_config()
+
+        def _dir_size_bytes(path: str) -> int:
+            target = Path(path)
+            if not target.exists():
+                return 0
+            total = 0
+            for item in target.rglob("*"):
+                if item.is_file():
+                    try:
+                        total += item.stat().st_size
+                    except OSError:
+                        continue
+            return total
+
+        def _file_size_bytes(path: Path) -> int:
+            try:
+                return path.stat().st_size if path.exists() else 0
+            except OSError:
+                return 0
+
+        stats = self.smriti_db.get_ingestion_stats()
+        frames_bytes = _dir_size_bytes(resolved.frames_dir or "")
+        thumbs_bytes = _dir_size_bytes(resolved.thumbs_dir or "")
+        db_path = Path(getattr(self.smriti_db, "db_path", Path(resolved.data_dir or self.data_dir) / "runtime.sqlite3"))
+        faiss_path = Path(getattr(self.smriti_db, "_faiss_index_path", Path(resolved.data_dir or self.data_dir) / "smriti_faiss.index"))
+        templates_path = Path(resolved.templates_path) if resolved.templates_path else Path()
+        smriti_db_bytes = _file_size_bytes(db_path)
+        faiss_index_bytes = _file_size_bytes(faiss_path)
+        templates_bytes = _file_size_bytes(templates_path)
+        total_bytes = frames_bytes + thumbs_bytes + smriti_db_bytes + faiss_index_bytes + templates_bytes
+        budget_bytes = resolved.max_storage_gb * (1024 ** 3)
+        budget_pct = (total_bytes / budget_bytes * 100.0) if budget_bytes > 0 else 0.0
+        watch_folder_stats = [
+            self.get_watch_folder_status(folder_path).model_dump(mode="json")
+            for folder_path in resolved.watch_folders
+        ]
+
+        return StorageUsageReport(
+            smriti_data_dir=resolved.data_dir or str(self.data_dir),
+            total_media_count=int(stats.get("total", 0)),
+            indexed_count=int(stats.get("complete", 0)),
+            pending_count=int(stats.get("pending", 0) + stats.get("processing", 0)),
+            failed_count=int(stats.get("failed", 0)),
+            frames_bytes=frames_bytes,
+            thumbs_bytes=thumbs_bytes,
+            smriti_db_bytes=smriti_db_bytes,
+            faiss_index_bytes=faiss_index_bytes,
+            templates_bytes=templates_bytes,
+            total_bytes=total_bytes,
+            total_human=self._human_readable_bytes(total_bytes),
+            max_storage_gb=resolved.max_storage_gb,
+            budget_pct=round(budget_pct, 1),
+            budget_warning=budget_pct > 85.0,
+            budget_critical=budget_pct > 95.0,
+            watch_folder_stats=watch_folder_stats,
+        )
+
+    def get_watch_folder_status(self, folder_path: str) -> WatchFolderStatus:
+        folder = Path(folder_path).expanduser().resolve()
+        exists = folder.exists()
+        accessible = False
+        media_total = 0
+        media_indexed = 0
+        supported_extensions = {
+            ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
+            ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".gif",
+        }
+
+        if exists and folder.is_dir():
+            try:
+                media_total = sum(
+                    1 for item in folder.rglob("*")
+                    if item.is_file() and item.suffix.lower() in supported_extensions
+                )
+                accessible = True
+            except PermissionError:
+                accessible = False
+
+        try:
+            media_indexed = self.smriti_db.count_media_in_folder(str(folder))
+        except Exception:
+            media_indexed = 0
+
+        daemon = getattr(self, "smriti_daemon", None)
+        watchdog_active = bool(daemon and daemon.is_watch_active(str(folder)))
+        last_event_at = daemon.get_last_event_at(str(folder)) if daemon else None
+        error = daemon.get_watch_error(str(folder)) if daemon else None
+
+        return WatchFolderStatus(
+            path=str(folder),
+            exists=exists,
+            is_accessible=accessible,
+            media_count_total=media_total,
+            media_count_indexed=media_indexed,
+            media_count_pending=max(0, media_total - media_indexed),
+            watchdog_active=watchdog_active,
+            last_event_at=last_event_at,
+            error=error,
+        )
+
+    def add_watch_folder(self, folder_path: str) -> WatchFolderStatus:
+        folder = Path(folder_path).expanduser().resolve()
+        if not folder.is_dir():
+            raise SmritiError(f"Not a directory: {folder_path}")
+
+        settings = self.get_settings()
+        current_folders = [str(Path(item).expanduser().resolve()) for item in settings.smriti_storage.watch_folders]
+        if str(folder) not in current_folders:
+            current_folders.append(str(folder))
+            updated_storage = settings.smriti_storage.model_copy(update={"watch_folders": current_folders})
+            self.update_settings(settings.model_copy(update={"smriti_storage": updated_storage}))
+
+        daemon = getattr(self, "smriti_daemon", None)
+        if daemon is not None:
+            daemon.schedule_watch_folder(str(folder))
+
+        return self.get_watch_folder_status(str(folder))
+
+    def remove_watch_folder(self, folder_path: str) -> None:
+        folder = Path(folder_path).expanduser().resolve()
+        settings = self.get_settings()
+        current_folders = [
+            str(Path(item).expanduser().resolve())
+            for item in settings.smriti_storage.watch_folders
+            if Path(item).expanduser().resolve() != folder
+        ]
+        updated_storage = settings.smriti_storage.model_copy(update={"watch_folders": current_folders})
+        self.update_settings(settings.model_copy(update={"smriti_storage": updated_storage}))
+        daemon = getattr(self, "smriti_daemon", None)
+        if daemon is not None:
+            daemon.schedule_unwatch_folder(str(folder))
+
+    def prune_smriti_storage(self, request: SmritiPruneRequest) -> SmritiPruneResult:
+        if request.clear_all and request.confirm_clear_all != "CONFIRM_CLEAR_ALL":
+            raise SmritiError("clear_all requires confirm_clear_all='CONFIRM_CLEAR_ALL'")
+
+        removed_records = 0
+        removed_bytes = 0
+        errors: list[str] = []
+
+        try:
+            if request.clear_all:
+                removed_records, removed_bytes = self.smriti_db.clear_all_smriti_data()
+            else:
+                if request.older_than_days is not None:
+                    records, bytes_removed = self.smriti_db.prune_older_than(request.older_than_days)
+                    removed_records += records
+                    removed_bytes += bytes_removed
+                if request.remove_missing_files:
+                    records, bytes_removed = self.smriti_db.prune_missing_files()
+                    removed_records += records
+                    removed_bytes += bytes_removed
+                if request.remove_failed:
+                    records, bytes_removed = self.smriti_db.prune_failed()
+                    removed_records += records
+                    removed_bytes += bytes_removed
+        except Exception as exc:
+            errors.append(str(exc))
+            if not removed_records and not removed_bytes:
+                raise
+
+        return SmritiPruneResult(
+            removed_media_records=removed_records,
+            removed_bytes=removed_bytes,
+            removed_bytes_human=self._human_readable_bytes(removed_bytes),
+            errors=errors,
+        )
 
     async def smriti_recall(self, payload: SmritiRecallRequest) -> SmritiRecallResponse:
         started = perf_counter()
@@ -373,8 +630,34 @@ class RuntimeContainer:
 
     def _engine_for_session(self, session_id: str):
         if session_id not in self._immersive_engines:
-            self._immersive_engines[session_id] = self._immersive_engine_factory()
+            engine = self._immersive_engine_factory()
+            self._load_sag_templates_into_engine(engine)
+            self._immersive_engines[session_id] = engine
         return self._immersive_engines[session_id]
+
+    def _load_sag_templates_into_engine(self, engine: Any) -> None:
+        from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
+
+        if not hasattr(engine, "_sag") or not isinstance(engine._sag, SemanticAnchorGraph):
+            return
+        try:
+            engine._sag.load_learned_templates(self._sag_templates_path)
+        except Exception as exc:
+            get_logger("runtime").warning("sag_template_load_failed", error=str(exc))
+
+    def _load_sag_templates(self) -> None:
+        for engine in self._immersive_engines.values():
+            self._load_sag_templates_into_engine(engine)
+
+    def _save_sag_templates(self) -> None:
+        from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
+
+        for engine in self._immersive_engines.values():
+            if hasattr(engine, "_sag") and isinstance(engine._sag, SemanticAnchorGraph):
+                try:
+                    engine._sag.save_learned_templates(self._sag_templates_path)
+                except Exception as exc:
+                    get_logger("runtime").warning("sag_template_save_failed", error=str(exc))
 
     def _prime_forecast_engine(
         self,

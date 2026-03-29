@@ -10,7 +10,7 @@ Toori is a JEPA proof surface with three client surfaces:
 - SwiftUI iOS client source tree
 - Jetpack Compose Android client source tree
 
-The working runtime lives in Python and exposes a loopback-first API on `127.0.0.1:7777`. It stores real observations from camera input, computes local embeddings, maintains world-model state, searches prior observations, and optionally calls reasoning backends.
+The working runtime lives in Python and exposes a loopback-first API on `127.0.0.1:7777`. It stores real observations from camera input, computes local embeddings, maintains world-model state, runs guarded Smriti memory ingestion and recall, and optionally calls reasoning backends.
 
 ## Mission And Vision
 
@@ -47,11 +47,14 @@ flowchart TB
   Perception --> JEPA["JEPA Engine"]
   JEPA --> EpistemicAtlas["Epistemic Atlas"]
   JEPA --> Talker["Selective Talker"]
+  JEPA --> SmritiPipeline["TPDS → SAG → CWMA → ECGD → Setu-2"]
   Talker --> Events["WebSocket Events"]
   Perception --> Store["Observation Store"]
+  Store --> SmritiDB["SmritiDB"]
   Store --> World["World Model Layer"]
   World --> Metrics["Prediction / Continuity / Surprise / Persistence"]
   World --> Living["Living Lens"]
+  SmritiDB --> SmritiUI["Smriti Tab / Recall / Journals / HUD"]
   World --> Challenge["Challenge Evaluation"]
   Challenge --> Baselines["Captioning + Retrieval Baselines"]
   Runtime --> Reasoning["Optional Ollama / MLX / Cloud Reasoning"]
@@ -69,8 +72,14 @@ flowchart TB
 - [cloud/runtime/atlas.py](/Users/macuser/toori/cloud/runtime/atlas.py): epistemic atlas for entity tracking
 - [cloud/runtime/app.py](/Users/macuser/toori/cloud/runtime/app.py): app factory and routes
 - [cloud/runtime/service.py](/Users/macuser/toori/cloud/runtime/service.py): core analyze/query/settings logic
+- [cloud/runtime/smriti_storage.py](/Users/macuser/toori/cloud/runtime/smriti_storage.py): Smriti schema, recall index, and cluster export
+- [cloud/runtime/smriti_ingestion.py](/Users/macuser/toori/cloud/runtime/smriti_ingestion.py): ingestion daemon and folder watch queue
+- [cloud/runtime/jepa_worker.py](/Users/macuser/toori/cloud/runtime/jepa_worker.py): isolated JEPA worker pool
+- [cloud/runtime/setu2.py](/Users/macuser/toori/cloud/runtime/setu2.py): grounded Setu-2 query bridge
+- [desktop/electron/src/components/smriti/SmritiStorageSettings.tsx](/Users/macuser/toori/desktop/electron/src/components/smriti/SmritiStorageSettings.tsx): Smriti storage configuration surface
 - [desktop/electron/main.js](/Users/macuser/toori/desktop/electron/main.js): Electron shell entrypoint
 - [desktop/electron/src/App.tsx](/Users/macuser/toori/desktop/electron/src/App.tsx): desktop product UI
+- [desktop/electron/src/tabs/SmritiTab.tsx](/Users/macuser/toori/desktop/electron/src/tabs/SmritiTab.tsx): Smriti desktop surface
 - [mobile/ios/TooriApp/TooriLensApp.swift](/Users/macuser/toori/mobile/ios/TooriApp/TooriLensApp.swift): iOS app root
 - [mobile/android/app/src/main/java/com/toori/app/MainActivity.kt](/Users/macuser/toori/mobile/android/app/src/main/java/com/toori/app/MainActivity.kt): Android app root
 
@@ -80,6 +89,10 @@ flowchart TB
   `TOORI_DATA_DIR=.toori python3 -m uvicorn cloud.api.main:app --host 127.0.0.1 --port 7777`
 - Verified Python tests:
   `pytest -q cloud/api/tests cloud/jepa_service/tests cloud/search_service/tests cloud/monitoring/tests tests/test_readme.py`
+- Focused backend regression gate while iterating on Smriti:
+  `pytest -q cloud/api/tests cloud/jepa_service/tests`
+- Desktop typecheck:
+  `cd desktop/electron && npm run typecheck`
 - Desktop install and build:
   `cd desktop/electron && npm install && npm run build`
 - Desktop launch:
@@ -91,11 +104,21 @@ flowchart TB
 
 - `RuntimeContainer` coordinates settings, provider health, observation storage, local similarity search, and event publication.
 - `JEPAEngine` computes purely numerical latent predictions (`||s - ŝ||²`) and spatial energy maps natively.
+- `JEPAWorkerPool` keeps JEPA work off the FastAPI event loop and exposes bounded queue/back-pressure metrics.
 - `SelectiveTalker` uses adaptive energy thresholds to gate logic without wasting LLM cycles.
 - `EpistemicAtlas` maintains in-memory entity relationship graphs tracking co-occurrence and persistence.
 - `ObservationStore` persists observations and settings in SQLite under `.toori/`.
+- `SmetiDB` extends observation storage with schema migrations, hybrid recall, cluster export, and person/location linking.
+- Smriti storage paths are user-configurable through runtime settings and are resolved via `resolve_smriti_storage(...)`.
 - `ProviderRegistry` selects perception and reasoning providers and enforces circuit-breaker fallback.
 - The proof-surface layer adds scene state, entity tracks, prediction windows, and challenge runs on top of observations.
+- The Smriti pipeline layers are:
+  - `TPDS` depth strata from JEPA energy deltas
+  - `SAG` topology-aware anchor matching
+  - `CWMA` spatial prior alignment
+  - `ECGD` epistemic gating and uncertainty output
+  - `Setu-2` grounded query scoring and template descriptions
+- FastAPI lifecycle must use the lifespan context manager. Do not reintroduce `@app.on_event`.
 
 ### Provider Policy
 
@@ -115,6 +138,7 @@ flowchart TB
 
 - `Live Lens` is the operator/debug surface.
 - `Living Lens` is the scientific proof surface and should be treated as the primary demo path.
+- `Smriti` is the semantic memory surface for ingestion, recall, journals, cluster browsing, and pipeline transparency.
 - The proof surface must be understandable without reading research papers. Favor plain language, structured evidence, and guided interaction over jargon-heavy dashboards.
 - The proof surface must expose:
   - prediction consistency
@@ -135,8 +159,11 @@ flowchart TB
 
 - Never reintroduce placeholder zero-vector behavior in user-facing flows.
 - Search results must always refer to actual stored observations.
+- Smriti recall and journals must stay backed by real stored media; never fall back to invented results or placeholder memories.
+- Storage pruning must never delete original source media outside Smriti-managed storage directories.
 - Reasoning providers (Ollama/MLX) are selectively triggered or operate in query-only mode. Live tick paths must not invoke reasoners autonomously.
 - The JEPA engine must remain pure numy-compatible (`float32`) without CUDA or PyTorch to ensure identical paths for M1/MPS users.
+- `torch` imports are forbidden in Smriti pipeline modules such as TPDS, SAG, CWMA, ECGD, and Setu-2.
 - `ollama` and MLX must remain optional and health-checked.
 - DINOv2 is the perception backbone for the desktop/runtime path; ONNX is compatibility-only.
 - `torch` imports are allowed only inside `cloud/perception/`.
@@ -147,6 +174,7 @@ flowchart TB
 - Talker firing is gated by `Ē > μ_E + 2·σ_E`.
 - EMA updates happen before predictor forward with no exceptions.
 - Forecast horizons `FE(k)` are expected to increase with `k`; flag non-monotonic behavior.
+- The Smriti telescope regression is a hard contract: a cylindrical background object must not be described as a body part.
 - Perception stays backbone-agnostic at the engine boundary; see `CONTRIBUTING.md`.
 - If a provider is unhealthy, the runtime must degrade gracefully instead of blocking capture/search.
 - macOS Camera privacy depends on a real app bundle identity; stock Electron CLI launches should not be treated as proof of permission support.
@@ -155,6 +183,7 @@ flowchart TB
 
 - Improve the Python runtime before adding more UI complexity.
 - Keep client models aligned with [cloud/runtime/models.py](/Users/macuser/toori/cloud/runtime/models.py).
+- Keep desktop Smriti types aligned with the `/v1/smriti/*` route payloads and [cloud/runtime/models.py](/Users/macuser/toori/cloud/runtime/models.py).
 - Extend SDKs in [sdk](/Users/macuser/toori/sdk) when public API changes.
 - Update [docs/system-design.md](/Users/macuser/toori/docs/system-design.md), [docs/user-manual.md](/Users/macuser/toori/docs/user-manual.md), and [docs/plugin-guide.md](/Users/macuser/toori/docs/plugin-guide.md) whenever interfaces or workflows move.
 - When proof surfaces change, update the README and user manual so the browser-first workflow and packaged-macOS caveat stay explicit.

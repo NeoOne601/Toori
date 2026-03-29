@@ -8,6 +8,7 @@ export type DesktopBridge = {
     },
   ) => Promise<{ ok: boolean; status: number; data: any }>;
   pickFile?: () => Promise<string | null>;
+  pickFolder?: () => Promise<string | null>;
   getCameraAccess?: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
   requestCameraAccess?: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
   openCameraSettings?: () => Promise<boolean>;
@@ -89,6 +90,15 @@ export async function pickImagePayload(): Promise<{ filePath?: string; imageBase
     };
     input.click();
   });
+}
+
+export async function pickFolderPath(): Promise<string | null> {
+  const bridge = getDesktopBridge();
+  if (bridge.pickFolder) {
+    return await bridge.pickFolder();
+  }
+  const path = window.prompt("Enter the full path to the folder:", "/Users");
+  return path && path.trim() ? path.trim() : null;
 }
 
 export async function runtimeRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {

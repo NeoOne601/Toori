@@ -406,6 +406,193 @@ class SmetiDB(ObservationStore):
             )
         return result
 
+    @staticmethod
+    def _safe_size(path: Path) -> int:
+        try:
+            return path.stat().st_size if path.exists() else 0
+        except OSError:
+            return 0
+
+    def _owned_paths_for_media(self, media: SmritiMedia) -> list[Path]:
+        owned_paths: list[Path] = []
+        for candidate in (
+            Path(media.file_path),
+            self.frames_dir / f"{media.id}.png",
+            self.frames_dir / f"{media.id}.jpg",
+            self.thumbs_dir / f"{media.id}.png",
+            self.thumbs_dir / f"{media.id}.jpg",
+        ):
+            try:
+                resolved = candidate.expanduser().resolve()
+            except OSError:
+                continue
+            for root in (self.frames_dir, self.thumbs_dir):
+                try:
+                    resolved.relative_to(root.resolve())
+                    owned_paths.append(resolved)
+                    break
+                except ValueError:
+                    continue
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for item in owned_paths:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return deduped
+
+    def get_ingestion_stats(self) -> dict[str, int]:
+        stats = {"total": 0, "pending": 0, "processing": 0, "complete": 0, "failed": 0}
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT ingestion_status, COUNT(*) AS count
+                FROM smriti_media
+                GROUP BY ingestion_status
+                """
+            ).fetchall()
+        for row in rows:
+            status = str(row["ingestion_status"])
+            count = int(row["count"])
+            stats["total"] += count
+            stats[status] = count
+        return stats
+
+    def count_media_in_folder(self, folder_path: str) -> int:
+        folder = Path(folder_path).expanduser().resolve()
+        count = 0
+        with self._connect() as connection:
+            rows = connection.execute("SELECT file_path FROM smriti_media").fetchall()
+        for row in rows:
+            file_path = row["file_path"]
+            if not file_path:
+                continue
+            try:
+                Path(file_path).expanduser().resolve().relative_to(folder)
+            except (OSError, ValueError):
+                continue
+            count += 1
+        return count
+
+    def _delete_media_records(self, media_ids: list[str]) -> tuple[int, int]:
+        if not media_ids:
+            return 0, 0
+        placeholders = ", ".join("?" for _ in media_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM smriti_media WHERE id IN ({placeholders})",
+                tuple(media_ids),
+            ).fetchall()
+        medias = [self._row_to_media(row) for row in rows]
+        removed_bytes = 0
+        for media in medias:
+            for owned_path in self._owned_paths_for_media(media):
+                removed_bytes += self._safe_size(owned_path)
+                try:
+                    owned_path.unlink(missing_ok=True)
+                except OSError:
+                    continue
+
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                f"DELETE FROM smriti_descriptions_fts WHERE media_id IN ({placeholders})",
+                tuple(media_ids),
+            )
+            connection.execute(
+                f"DELETE FROM smriti_person_media WHERE media_id IN ({placeholders})",
+                tuple(media_ids),
+            )
+            connection.execute(
+                f"DELETE FROM smriti_media WHERE id IN ({placeholders})",
+                tuple(media_ids),
+            )
+            connection.commit()
+
+        self.faiss_rebuild()
+        self._mandala_cache = None
+        return len(medias), removed_bytes
+
+    def prune_older_than(self, older_than_days: int) -> tuple[int, int]:
+        cutoff = (_utc_now() - timedelta(days=int(older_than_days))).isoformat()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM smriti_media
+                WHERE COALESCE(original_created_at, ingested_at) < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+        media_ids = [str(row["id"]) for row in rows]
+        return self._delete_media_records(media_ids)
+
+    def prune_missing_files(self) -> tuple[int, int]:
+        missing_ids: list[str] = []
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id, file_path FROM smriti_media").fetchall()
+        for row in rows:
+            file_path = row["file_path"]
+            if not file_path:
+                missing_ids.append(str(row["id"]))
+                continue
+            try:
+                exists = Path(file_path).expanduser().resolve().exists()
+            except OSError:
+                exists = False
+            if not exists:
+                missing_ids.append(str(row["id"]))
+        return self._delete_media_records(missing_ids)
+
+    def prune_failed(self) -> tuple[int, int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM smriti_media WHERE ingestion_status = 'failed'"
+            ).fetchall()
+        media_ids = [str(row["id"]) for row in rows]
+        return self._delete_media_records(media_ids)
+
+    def clear_all_smriti_data(self) -> tuple[int, int]:
+        with self._connect() as connection:
+            total_records = int(
+                connection.execute("SELECT COUNT(*) AS count FROM smriti_media").fetchone()["count"]
+            )
+
+        removed_bytes = 0
+        for root in (self.frames_dir, self.thumbs_dir):
+            if not root.exists():
+                continue
+            for item in root.rglob("*"):
+                if not item.is_file():
+                    continue
+                removed_bytes += self._safe_size(item)
+                try:
+                    item.unlink()
+                except OSError:
+                    continue
+        removed_bytes += self._safe_size(self._faiss_index_path)
+        try:
+            self._faiss_index_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM smriti_person_media")
+            connection.execute("DELETE FROM smriti_persons")
+            connection.execute("DELETE FROM smriti_locations")
+            connection.execute("DELETE FROM smriti_clusters")
+            connection.execute("DELETE FROM smriti_descriptions_fts")
+            connection.execute("DELETE FROM smriti_media")
+            connection.commit()
+
+        self._faiss_media_ids = []
+        self._faiss_vectors = []
+        self._faiss_index_ids = []
+        self._faiss_index_by_media_id = {}
+        self._faiss_next_index_id = 0
+        self._mandala_cache = None
+        return total_records, removed_bytes
+
     def _media_embedding_vector(self, media: SmritiMedia) -> np.ndarray | None:
         if media.embedding is not None:
             return _normalize_vector(media.embedding, target_dim=self._faiss_vector_dim)

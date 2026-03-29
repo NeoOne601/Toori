@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 import numpy as np
@@ -52,6 +53,96 @@ class ProviderHealth(BaseModel):
     latency_ms: Optional[float] = None
 
 
+class SmritiStorageConfig(BaseModel):
+    """
+    User-configurable storage settings for Smriti.
+    All paths are absolute, expanded, resolved strings.
+    These override TOORI_DATA_DIR when set.
+    """
+
+    data_dir: Optional[str] = None
+    frames_dir: Optional[str] = None
+    thumbs_dir: Optional[str] = None
+    templates_path: Optional[str] = None
+    max_storage_gb: float = 0.0
+    watch_folders: list[str] = Field(default_factory=list)
+    store_full_frames: bool = True
+    thumbnail_max_dim: int = 320
+    auto_prune_missing: bool = False
+
+    def resolve_paths(self, base_data_dir: str) -> "SmritiStorageConfig":
+        base = Path(base_data_dir).expanduser().resolve()
+        smriti_base = (
+            Path(self.data_dir).expanduser().resolve()
+            if self.data_dir
+            else (base / "smriti").resolve()
+        )
+        return SmritiStorageConfig(
+            data_dir=str(smriti_base),
+            frames_dir=self.frames_dir or str(smriti_base / "frames"),
+            thumbs_dir=self.thumbs_dir or str(smriti_base / "thumbs"),
+            templates_path=self.templates_path or str(smriti_base / "sag_templates.json"),
+            max_storage_gb=self.max_storage_gb,
+            watch_folders=list(self.watch_folders),
+            store_full_frames=self.store_full_frames,
+            thumbnail_max_dim=self.thumbnail_max_dim,
+            auto_prune_missing=self.auto_prune_missing,
+        )
+
+
+class StorageUsageReport(BaseModel):
+    """Disk usage report for the Smriti data directory."""
+
+    smriti_data_dir: str
+    total_media_count: int
+    indexed_count: int
+    pending_count: int
+    failed_count: int
+    frames_bytes: int = 0
+    thumbs_bytes: int = 0
+    smriti_db_bytes: int = 0
+    faiss_index_bytes: int = 0
+    templates_bytes: int = 0
+    total_bytes: int = 0
+    total_human: str = "0 B"
+    max_storage_gb: float = 0.0
+    budget_pct: float = 0.0
+    budget_warning: bool = False
+    budget_critical: bool = False
+    watch_folder_stats: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WatchFolderStatus(BaseModel):
+    """Status of a single watched folder."""
+
+    path: str
+    exists: bool
+    is_accessible: bool
+    media_count_total: int
+    media_count_indexed: int
+    media_count_pending: int
+    watchdog_active: bool
+    last_event_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+
+class SmritiPruneRequest(BaseModel):
+    """Request to prune Smriti storage."""
+
+    older_than_days: Optional[int] = None
+    remove_missing_files: bool = False
+    remove_failed: bool = False
+    clear_all: bool = False
+    confirm_clear_all: str = ""
+
+
+class SmritiPruneResult(BaseModel):
+    removed_media_records: int = 0
+    removed_bytes: int = 0
+    removed_bytes_human: str = "0 B"
+    errors: list[str] = Field(default_factory=list)
+
+
 class RuntimeSettings(BaseModel):
     runtime_profile: str = "hybrid"
     camera_device: str = "default"
@@ -71,6 +162,7 @@ class RuntimeSettings(BaseModel):
     observability_enabled: bool = True
     sync_enabled: bool = False
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    smriti_storage: SmritiStorageConfig = Field(default_factory=SmritiStorageConfig)
 
 
 class BoundingBox(BaseModel):

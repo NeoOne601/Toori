@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .models import ProviderConfig, RuntimeSettings
+from .models import ProviderConfig, RuntimeSettings, SmritiStorageConfig
 
 
 def repo_root() -> Path:
@@ -17,6 +17,28 @@ def resolve_data_dir(explicit: str | Path | None = None) -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return (Path.cwd() / ".toori").resolve()
+
+
+def resolve_smriti_storage(
+    settings: RuntimeSettings,
+    base_data_dir: str,
+) -> SmritiStorageConfig:
+    """
+    Returns fully resolved SmritiStorageConfig.
+    Applies environment variable overrides last.
+    Priority: settings > env vars > defaults
+    """
+
+    resolved = settings.smriti_storage.resolve_paths(base_data_dir)
+
+    if env_dir := os.getenv("TOORI_SMRITI_DATA_DIR"):
+        resolved = resolved.model_copy(update={"data_dir": env_dir})
+    if env_frames := os.getenv("TOORI_SMRITI_FRAMES_DIR"):
+        resolved = resolved.model_copy(update={"frames_dir": env_frames})
+    if env_thumbs := os.getenv("TOORI_SMRITI_THUMBS_DIR"):
+        resolved = resolved.model_copy(update={"thumbs_dir": env_thumbs})
+
+    return resolved
 
 
 def default_settings() -> RuntimeSettings:

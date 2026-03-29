@@ -1,4 +1,5 @@
 import type { FormEvent } from "react";
+import SmritiStorageSettings from "../components/smriti/SmritiStorageSettings";
 import { useDesktopApp } from "../state/DesktopAppContext";
 
 export default function SettingsTab() {
@@ -264,6 +265,14 @@ export default function SettingsTab() {
         <button className="primary" type="submit" disabled={app.world.savingSettings}>
           {app.world.savingSettings ? "Saving" : "Save Settings"}
         </button>
+      </article>
+
+      <article className="panel">
+        <div className="panel-head">
+          <h3>Smriti Storage</h3>
+          <span>Media indexing, watch folders, and disk usage</span>
+        </div>
+        <SmritiStorageSettings onStatusChange={(msg) => app.world.setStatus(msg)} />
       </article>
     </form>
   );

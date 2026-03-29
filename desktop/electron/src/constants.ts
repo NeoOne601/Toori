@@ -2,6 +2,7 @@ export const TABS = [
   "Living Lens",
   "Live Lens",
   "Memory Search",
+  "Smriti",
   "Session Replay",
   "Integrations",
   "Settings",

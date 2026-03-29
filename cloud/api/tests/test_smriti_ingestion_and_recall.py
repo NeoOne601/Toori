@@ -1,7 +1,9 @@
 """Integration tests for ingestion daemon and recall API."""
+import asyncio
 import base64
 import io
 
+import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -103,3 +105,68 @@ def test_media_type_classification():
     assert _classify_media_type("/home/user/photo.jpg") == "image"
     assert _classify_media_type("/home/user/video.mp4") == "video"
     assert _classify_media_type("/home/user/Screenshot 2024.png") == "screenshot"
+
+
+def test_video_media_type_classification():
+    from cloud.runtime.smriti_ingestion import _classify_media_type
+
+    assert _classify_media_type("/home/user/video.mp4") == "video"
+    assert _classify_media_type("/home/user/video.mov") == "video"
+    assert _classify_media_type("/home/user/video.m4v") == "video"
+
+
+def test_pyav_import_graceful_failure(monkeypatch, tmp_path):
+    import importlib
+
+    from cloud.runtime.smriti_ingestion import SmritiIngestionDaemon
+    from cloud.runtime.smriti_storage import SmetiDB
+
+    original_import_module = importlib.import_module
+
+    def fake_import(name: str, package=None):
+        if name == "av":
+            raise ImportError("av missing")
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    daemon = SmritiIngestionDaemon(SmetiDB(tmp_path), lambda: None)
+    result = asyncio.run(daemon._extract_video_keyframe(str(tmp_path / "missing.mp4")))
+    assert result is None
+
+
+def test_watchdog_degrades_gracefully_when_unavailable(monkeypatch, tmp_path):
+    import sys
+
+    from cloud.runtime.smriti_ingestion import SmritiIngestionDaemon
+    from cloud.runtime.smriti_storage import SmetiDB
+
+    watchdog_backup = {key: value for key, value in sys.modules.items() if "watchdog" in key}
+    for key in list(sys.modules.keys()):
+        if "watchdog" in key:
+            del sys.modules[key]
+    monkeypatch.setitem(sys.modules, "watchdog", None)
+    monkeypatch.setitem(sys.modules, "watchdog.events", None)
+    monkeypatch.setitem(sys.modules, "watchdog.observers", None)
+    try:
+        daemon = SmritiIngestionDaemon(SmetiDB(tmp_path), lambda: None)
+        daemon._start_watchdog(str(tmp_path))
+    finally:
+        sys.modules.update(watchdog_backup)
+
+
+def test_sag_templates_persist_across_runtime_instances(tmp_path):
+    from cloud.runtime.service import RuntimeContainer
+
+    runtime = RuntimeContainer(data_dir=str(tmp_path))
+    engine = runtime._engine_for_session("persist-session")
+    engine._sag.learn_template_from_confirmation(
+        region_patches=[0, 1, 14, 15],
+        confirmed_label="persisted_anchor",
+        patch_tokens=np.ones((196, 384), dtype=np.float32),
+    )
+    runtime._save_sag_templates()
+
+    runtime2 = RuntimeContainer(data_dir=str(tmp_path))
+    runtime2._load_sag_templates()
+    engine2 = runtime2._engine_for_session("persist-session")
+    assert any(template.name == "persisted_anchor" for template in engine2._sag._learned_templates)

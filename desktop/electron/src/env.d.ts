@@ -12,6 +12,7 @@ declare global {
         },
       ) => Promise<{ ok: boolean; status: number; data: any }>;
       pickFile: () => Promise<string | null>;
+      pickFolder: () => Promise<string | null>;
       getCameraAccess: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
       requestCameraAccess: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
       openCameraSettings: () => Promise<boolean>;

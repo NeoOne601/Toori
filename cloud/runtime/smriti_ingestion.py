@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -77,6 +79,9 @@ class SmritiIngestionDaemon:
         self._worker_task: Optional[asyncio.Task] = None
         self._watcher = None
         self._watched_folders: list[str] = []
+        self._watch_handles: dict[str, object] = {}
+        self._last_event_at: dict[str, datetime] = {}
+        self._watch_errors: dict[str, str] = {}
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stats = {
@@ -112,11 +117,13 @@ class SmritiIngestionDaemon:
     async def watch_folder(self, folder_path: str) -> int:
         folder = Path(folder_path).expanduser().resolve()
         if not folder.is_dir():
+            self._watch_errors[str(folder)] = "Not a directory"
             raise SmritiIngestionError(folder_path, "Not a directory")
 
         if str(folder) not in self._watched_folders:
             self._watched_folders.append(str(folder))
             self._start_watchdog(str(folder))
+        self._watch_errors.pop(str(folder), None)
 
         queued = 0
         for root, _, files in os.walk(str(folder)):
@@ -128,6 +135,37 @@ class SmritiIngestionDaemon:
 
         log.info("folder_watch_started", folder=str(folder), queued=queued)
         return queued
+
+    async def unwatch_folder(self, folder_path: str) -> bool:
+        folder = str(Path(folder_path).expanduser().resolve())
+        if folder in self._watched_folders:
+            self._watched_folders.remove(folder)
+        handle = self._watch_handles.pop(folder, None)
+        if handle is not None and self._watcher is not None:
+            try:
+                self._watcher.unschedule(handle)
+            except Exception:
+                pass
+        self._last_event_at.pop(folder, None)
+        self._watch_errors.pop(folder, None)
+        return True
+
+    def schedule_watch_folder(self, folder_path: str) -> None:
+        if self._loop is not None and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.watch_folder(folder_path), self._loop)
+
+    def schedule_unwatch_folder(self, folder_path: str) -> None:
+        if self._loop is not None and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.unwatch_folder(folder_path), self._loop)
+
+    def is_watch_active(self, folder_path: str) -> bool:
+        return str(Path(folder_path).expanduser().resolve()) in self._watched_folders
+
+    def get_last_event_at(self, folder_path: str) -> Optional[datetime]:
+        return self._last_event_at.get(str(Path(folder_path).expanduser().resolve()))
+
+    def get_watch_error(self, folder_path: str) -> Optional[str]:
+        return self._watch_errors.get(str(Path(folder_path).expanduser().resolve()))
 
     async def ingest_file(self, file_path: str) -> bool:
         return await self._enqueue_file(file_path, priority=1)
@@ -252,10 +290,45 @@ class SmritiIngestionDaemon:
         import numpy as np
         from PIL import Image
 
+        av = None
+        try:
+            av = importlib.import_module("av")
+        except ImportError:
+            log.warning(
+                "pyav_not_installed",
+                message="Install av>=12.0.0 for video support: pip install av",
+            )
+
+        if av is not None:
+            try:
+                loop = asyncio.get_running_loop()
+
+                def _decode():
+                    container = av.open(file_path)
+                    try:
+                        video_stream = next((stream for stream in container.streams if stream.type == "video"), None)
+                        if video_stream is None:
+                            return None
+                        video_stream.codec_context.skip_frame = "NONKEY"
+                        for packet in container.demux(video_stream):
+                            for frame in packet.decode():
+                                image = frame.to_image().convert("RGB")
+                                return np.asarray(image, dtype=np.uint8)
+                        return None
+                    finally:
+                        container.close()
+
+                frame = await loop.run_in_executor(None, _decode)
+                if frame is not None:
+                    return frame
+            except Exception as exc:
+                log.warning("pyav_decode_failed", file=file_path, error=str(exc))
+
         try:
             image = Image.open(file_path).convert("RGB")
             return np.asarray(image)
-        except Exception:
+        except Exception as exc:
+            log.warning("pil_video_fallback_failed", file=file_path, error=str(exc))
             return None
 
     def _resolve_pool(self):
@@ -265,7 +338,8 @@ class SmritiIngestionDaemon:
         try:
             from watchdog.events import FileSystemEventHandler
             from watchdog.observers import Observer
-        except ImportError:
+        except Exception:
+            self._watch_errors[folder] = "watchdog not installed"
             log.warning("watchdog_not_installed", message="File watching disabled")
             return
 
@@ -278,6 +352,7 @@ class SmritiIngestionDaemon:
                 path = event.src_path
                 if Path(path).suffix.lower() not in SUPPORTED_EXTENSIONS:
                     return
+                daemon_ref._last_event_at[folder] = datetime.now(timezone.utc)
                 if daemon_ref._loop is not None and daemon_ref._loop.is_running():
                     asyncio.run_coroutine_threadsafe(
                         daemon_ref._enqueue_file(path, priority=2),
@@ -286,6 +361,7 @@ class SmritiIngestionDaemon:
 
         if self._watcher is None:
             self._watcher = Observer()
-        self._watcher.schedule(SmritiHandler(), folder, recursive=True)
+        handle = self._watcher.schedule(SmritiHandler(), folder, recursive=True)
+        self._watch_handles[folder] = handle
         if not self._watcher.is_alive():
             self._watcher.start()

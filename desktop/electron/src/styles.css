@@ -2780,3 +2780,403 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+/* Smriti */
+
+.smriti-shell {
+  display: grid;
+  gap: 1rem;
+  min-height: 0;
+}
+
+.smriti-command-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(255, 140, 66, 0.12), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(67, 216, 201, 0.1), transparent 28%),
+    var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.smriti-command-bar__actions {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.smriti-section-button {
+  border-radius: 999px;
+  padding: 0.55rem 0.95rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+}
+
+.smriti-section-button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: linear-gradient(120deg, rgba(255, 140, 66, 0.16), rgba(67, 216, 201, 0.14));
+}
+
+.smriti-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.85fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.smriti-main,
+.smriti-sidebar,
+.smriti-stack,
+.smriti-side-stack {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.smriti-surface {
+  min-height: 600px;
+}
+
+.smriti-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+  margin-bottom: 0.95rem;
+}
+
+.smriti-inline-metrics,
+.smriti-score-row,
+.smriti-chip-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.smriti-inline-metrics span,
+.smriti-score-row span,
+.smriti-chip,
+.smriti-pill {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  padding: 0.24rem 0.58rem;
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.smriti-pill--safe {
+  border-color: color-mix(in srgb, var(--kpi-healthy) 40%, var(--line));
+  color: var(--kpi-healthy);
+}
+
+.smriti-pill--watch {
+  border-color: color-mix(in srgb, var(--kpi-watch) 40%, var(--line));
+  color: var(--kpi-watch);
+}
+
+.smriti-pill--risk {
+  border-color: color-mix(in srgb, var(--kpi-danger) 40%, var(--line));
+  color: var(--kpi-danger);
+}
+
+.smriti-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.smriti-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.smriti-field span,
+.smriti-field small {
+  color: var(--muted);
+}
+
+.smriti-recall-input,
+.smriti-field input,
+.smriti-field select,
+.smriti-search-form input,
+.smriti-tag-form input {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  padding: 0.8rem 0.9rem;
+}
+
+.smriti-mandala-container {
+  position: relative;
+  min-height: 500px;
+  border-radius: 24px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(255, 140, 66, 0.1), transparent 28%),
+    radial-gradient(circle at 80% 15%, rgba(67, 216, 201, 0.09), transparent 25%),
+    rgba(6, 12, 18, 0.72);
+}
+
+.smriti-mandala-container--loading {
+  display: grid;
+  place-items: center;
+}
+
+.smriti-mandala-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.smriti-cluster-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(8, 17, 27, 0.84);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.smriti-cluster-node.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 46%, white 12%);
+  background: rgba(255, 140, 66, 0.14);
+}
+
+.smriti-cluster-node strong {
+  color: var(--accent-2);
+}
+
+.smriti-cluster-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 18px));
+  max-width: 240px;
+  pointer-events: none;
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(8, 17, 27, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.smriti-sr-list {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.smriti-constellation {
+  width: 100%;
+  height: 260px;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at center, rgba(67, 216, 201, 0.08), transparent 50%),
+    rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+}
+
+.smriti-results-grid,
+.smriti-journal-grid,
+.smriti-hud-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.smriti-recall-card,
+.smriti-journal-entry,
+.smriti-hud-card {
+  text-align: left;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.smriti-recall-card--safe {
+  border-color: color-mix(in srgb, var(--kpi-healthy) 36%, var(--line));
+}
+
+.smriti-recall-card--watch {
+  border-color: color-mix(in srgb, var(--kpi-watch) 36%, var(--line));
+}
+
+.smriti-recall-card--risk {
+  border-color: color-mix(in srgb, var(--kpi-danger) 36%, var(--line));
+}
+
+.smriti-recall-card__media {
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  aspect-ratio: 16 / 9;
+}
+
+.smriti-recall-card__media img,
+.smriti-deepdive__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.smriti-recall-card__body {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.smriti-recall-card__header,
+.smriti-deepdive__header,
+.smriti-worker-row,
+.smriti-energy-row,
+.smriti-list-button,
+.smriti-search-form,
+.smriti-tag-form {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.smriti-list-button {
+  width: 100%;
+  border-radius: 18px;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+}
+
+.smriti-empty-state {
+  min-height: 220px;
+  display: grid;
+  align-content: center;
+  gap: 0.45rem;
+}
+
+.smriti-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.smriti-kpi-grid--compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.smriti-kpi-card,
+.smriti-detail-card {
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.smriti-kpi-card span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.smriti-kpi-card strong {
+  font-size: 1.15rem;
+}
+
+.smriti-deepdive {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+  background: rgba(4, 9, 15, 0.9);
+  backdrop-filter: blur(22px);
+}
+
+.smriti-deepdive__media {
+  padding: 1.5rem;
+}
+
+.smriti-deepdive__media img {
+  border-radius: 28px;
+  box-shadow: var(--shadow);
+}
+
+.smriti-deepdive__panel {
+  padding: 1.5rem 1.5rem 1.8rem 0;
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.smriti-detail-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.smriti-search-form,
+.smriti-tag-form {
+  align-items: stretch;
+}
+
+.smriti-search-form input,
+.smriti-tag-form input {
+  flex: 1;
+}
+
+.smriti-worker-metrics {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+.smriti-hud-card,
+.smriti-journal-entry {
+  align-content: start;
+}
+
+@media (max-width: 1180px) {
+  .smriti-layout,
+  .smriti-deepdive {
+    grid-template-columns: 1fr;
+  }
+
+  .smriti-sidebar {
+    order: -1;
+  }
+
+  .smriti-deepdive__panel {
+    padding: 0 1.5rem 1.5rem;
+  }
+}
+
+@media (max-width: 900px) {
+  .smriti-filter-grid,
+  .smriti-kpi-grid,
+  .smriti-results-grid,
+  .smriti-journal-grid,
+  .smriti-hud-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .smriti-cluster-node {
+    max-width: 180px;
+    white-space: normal;
+  }
+}

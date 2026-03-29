@@ -222,6 +222,19 @@ ipcMain.handle("runtime:pick-file", async () => {
   return result.filePaths[0];
 });
 
+ipcMain.handle("runtime:pick-folder", async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory", "createDirectory"],
+    title: "Choose Smriti Storage Location",
+    buttonLabel: "Select Folder",
+    message: "Choose where Smriti should store media indexes, embeddings, and thumbnails.",
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0];
+});
+
 ipcMain.handle("runtime:camera-access", async () => getCameraAccessState());
 ipcMain.handle("runtime:request-camera-access", async () => requestCameraAccess());
 

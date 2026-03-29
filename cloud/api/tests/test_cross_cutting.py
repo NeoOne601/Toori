@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unittest.mock as mock
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -265,3 +266,41 @@ def test_memory_ceiling_manager_reports_current_rss():
     manager = MemoryCeilingManager()
 
     assert manager.current_rss_mb() > 0.0
+
+
+def test_token_bucket_allows_burst_exactly():
+    clock = [0.0]
+    with mock.patch("cloud.runtime.observability.time.monotonic", side_effect=lambda: clock[0]):
+        limiter = TokenBucketRateLimiter(rate_per_second=1.0, burst=3)
+        results = [limiter.allow("test") for _ in range(4)]
+        assert results == [True, True, True, False]
+
+
+def test_memory_ceiling_manager_triggers_gc_near_ceiling():
+    manager = MemoryCeilingManager(ceiling_mb=99999)
+    rss = manager.current_rss_mb()
+    assert rss > 0.0
+    result = manager.check_and_gc()
+    assert result is False
+
+
+def test_setu2_describe_region_uncertainty_map_shape():
+    from cloud.jepa_service.confidence_gate import GateResult
+    from cloud.runtime.setu2 import Setu2Bridge
+
+    bridge = Setu2Bridge()
+    gate_result = GateResult(
+        passes=False,
+        consistency_score=0.1,
+        failure_reasons=["anchor_confidence=0.10 < τ=0.55"],
+        safe_embedding=None,
+        uncertainty_map=np.ones((14, 14), dtype=np.float32),
+        anchor_name="unknown",
+        depth_stratum="midground",
+        estimated_hallucination_risk=0.9,
+    )
+    desc = bridge.describe_region(gate_result)
+    assert desc.is_uncertain is True
+    assert desc.uncertainty_map is not None
+    assert len(desc.uncertainty_map) == 14
+    assert len(desc.uncertainty_map[0]) == 14
