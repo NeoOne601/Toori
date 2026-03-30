@@ -271,10 +271,11 @@ The practical workflow is:
 
 1. Open the browser UI first.
 2. Use **Live Lens** for manual capture and debugging.
-3. Use **Living Lens** for continuous monitoring and proof evidence.
-4. Open **Smriti** after you have captured or ingested media to inspect semantic clusters and run guarded recall queries.
-5. Run an occlusion/change challenge in the live camera feed.
-6. Compare the same sequence against the baselines.
+3. Use **Copy Share Text** in the latest observation card when you want a paste-ready recap with grounded proof signals and the repo link.
+4. Use **Living Lens** for continuous monitoring and proof evidence.
+5. Open **Smriti** after you have captured or ingested media to inspect semantic clusters and run guarded recall queries.
+6. Run an occlusion/change challenge in the live camera feed.
+7. Compare the same sequence against the baselines.
 
 The proof is strongest when the runtime shows prediction consistency, continuity, surprise, and persistence on the same real sequence.
 
@@ -296,6 +297,8 @@ The live world-model outputs are written for humans, not for a paper:
 - `POST /v1/query`
 - `POST /v1/living-lens/tick`
 - `POST /v1/challenges/evaluate`
+- `POST /v1/share/observation`
+- `POST /v1/share/observation/event`
 - `GET /v1/world-state`
 - `GET /v1/settings`
 - `PUT /v1/settings`

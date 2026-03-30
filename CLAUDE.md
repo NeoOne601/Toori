@@ -160,6 +160,7 @@ flowchart TB
 - `Living Lens` is the scientific proof surface and should be treated as the primary demo path.
 - `Smriti` is the semantic memory surface for ingestion, recall, journals, cluster browsing, and pipeline transparency.
 - The proof surface must be understandable without reading research papers. Favor plain language, structured evidence, and guided interaction over jargon-heavy dashboards.
+- Latest observation sharing is copy-first: any share recap must stay grounded to a real stored observation, real world-state metrics, and the public repo URL.
 - The proof surface must expose:
   - prediction consistency
   - temporal continuity

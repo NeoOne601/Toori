@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell, systemPreferences } = require("electron");
 
 const RUNTIME_URL = process.env.TOORI_RUNTIME_URL || "http://127.0.0.1:7777";
 
@@ -251,4 +251,9 @@ ipcMain.handle("runtime:open-path", async (_event, targetPath) => {
     return "Missing path";
   }
   return await shell.openPath(targetPath);
+});
+
+ipcMain.handle("runtime:clipboard-write", async (_event, text) => {
+  clipboard.writeText(String(text || ""));
+  return true;
 });

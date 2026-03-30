@@ -40,6 +40,7 @@ from .models import (
     ReasoningTraceEntry,
     RuntimeSettings,
     SceneState,
+    ShareObservationResponse,
     SmritiRecallFeedback,
     SmritiRecallFeedbackResult,
     SmritiRecallItem,
@@ -61,6 +62,9 @@ from .smriti_storage import SmetiDB
 from .storage import ObservationStore
 from .talker import SelectiveTalker
 from .world_model import build_baseline_comparison, build_challenge_run, build_object_summary, build_scene_state
+
+
+TOORI_SHARE_URL = "https://github.com/NeoOne601/Toori"
 
 
 class ProgressiveComputationScheduler:
@@ -855,6 +859,91 @@ class RuntimeContainer:
         path = generate_proof_report(ticks=ticks, session_id=session_id, chart_b64=chart_b64)
         self._latest_proof_report = Path(path)
         return ProofReportResponse(session_id=session_id, path=str(path), generated=True)
+
+    def build_observation_share(self, session_id: str, observation_id: str | None = None) -> ShareObservationResponse:
+        observation = self.store.get_observation(observation_id) if observation_id else None
+        if observation is None:
+            recent = self.store.recent_observations(session_id=session_id, limit=1)
+            observation = recent[0] if recent else None
+        if observation is None or observation.session_id != session_id:
+            raise KeyError(observation_id or session_id)
+
+        scene_state: SceneState | None = None
+        if observation.world_state_id:
+            scene_state = self.store.get_scene_state(observation.world_state_id)
+        else:
+            latest_state = self.store.latest_scene_state(session_id)
+            if latest_state is not None and latest_state.observation_id == observation.id:
+                scene_state = latest_state
+
+        nearest_memory = self.store.search_by_vector(
+            observation.embedding,
+            top_k=1,
+            session_id=session_id,
+            exclude_id=observation.id,
+        )
+        memory_match = nearest_memory[0] if nearest_memory else None
+        summary_source = (
+            observation.summary
+            if observation.summary
+            else scene_state.observed_state_summary
+            if scene_state and scene_state.observed_state_summary
+            else "A live scene captured with continuity-aware memory."
+        )
+        summary = " ".join(str(summary_source).split())
+        if len(summary) > 180:
+            summary = f"{summary[:177].rsplit(' ', 1)[0]}..."
+
+        tracked_entities = len(scene_state.entity_track_ids) if scene_state else 0
+        persistence_confidence = scene_state.metrics.persistence_confidence if scene_state else None
+        memory_match_score = memory_match.score if memory_match else None
+
+        detail_clauses: list[str] = []
+        if tracked_entities > 0:
+            noun = "entity" if tracked_entities == 1 else "entities"
+            if persistence_confidence is not None:
+                detail_clauses.append(
+                    f"kept {tracked_entities} tracked {noun} active at {round(persistence_confidence * 100)}% persistence"
+                )
+            else:
+                detail_clauses.append(f"kept {tracked_entities} tracked {noun} active")
+        if memory_match_score is not None:
+            detail_clauses.append(f"found a {round(memory_match_score * 100)}% memory match")
+
+        share_text = f"I just used Toori to analyze a live scene: {summary.rstrip('.!?')}."
+        if detail_clauses:
+            share_text += f" It {' and '.join(detail_clauses)}."
+        share_text += f" Try it: {TOORI_SHARE_URL}"
+
+        if tracked_entities > 0:
+            title = f"Tracked {tracked_entities} live {'entity' if tracked_entities == 1 else 'entities'}"
+        elif memory_match_score is not None:
+            title = "Matched this scene to memory"
+        else:
+            title = "Live scene analysis"
+
+        return ShareObservationResponse(
+            session_id=session_id,
+            observation_id=observation.id,
+            title=title,
+            summary=summary,
+            share_text=share_text,
+            share_url=TOORI_SHARE_URL,
+            tracked_entities=tracked_entities,
+            persistence_confidence=persistence_confidence,
+            memory_match_score=memory_match_score,
+        )
+
+    def record_observation_share_event(self, session_id: str, observation_id: str, event_type: str) -> None:
+        observation = self.store.get_observation(observation_id)
+        if observation is None or observation.session_id != session_id:
+            raise KeyError(observation_id)
+        get_logger("runtime").info(
+            "observation_share_event",
+            session_id=session_id,
+            observation_id=observation_id,
+            event_type=event_type,
+        )
 
     def latest_proof_report(self) -> Optional[Path]:
         return self._latest_proof_report

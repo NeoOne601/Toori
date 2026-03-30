@@ -13,6 +13,7 @@ export type DesktopBridge = {
   requestCameraAccess?: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
   openCameraSettings?: () => Promise<boolean>;
   openPath?: (targetPath: string) => Promise<string>;
+  writeClipboardText?: (text: string) => Promise<boolean>;
 };
 
 export const BROWSER_RUNTIME_URL = "http://127.0.0.1:7777";
@@ -111,6 +112,35 @@ export async function runtimeRequest<T>(path: string, method = "GET", body?: unk
     throw new Error(message);
   }
   return response.data as T;
+}
+
+export async function copyTextToClipboard(text: string): Promise<void> {
+  const bridge = getDesktopBridge();
+  if (bridge.writeClipboardText) {
+    const copied = await bridge.writeClipboardText(text);
+    if (copied) {
+      return;
+    }
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  input.style.pointerEvents = "none";
+  document.body.appendChild(input);
+  input.focus();
+  input.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(input);
+  if (!copied) {
+    throw new Error("Clipboard is unavailable in this runtime");
+  }
 }
 
 export function useRuntimeBridge() {

@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("tooriDesktop", {
   requestCameraAccess: () => ipcRenderer.invoke("runtime:request-camera-access"),
   openCameraSettings: () => ipcRenderer.invoke("runtime:open-camera-settings"),
   openPath: (targetPath) => ipcRenderer.invoke("runtime:open-path", targetPath),
+  writeClipboardText: (text) => ipcRenderer.invoke("runtime:clipboard-write", text),
 });
 
 const _origWarn = console.warn.bind(console);

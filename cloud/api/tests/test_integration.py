@@ -377,6 +377,53 @@ def test_living_lens_tick_exposes_scene_state_and_tracks(tmp_path):
     assert world_body["entity_tracks"], "world-state endpoint should return persisted tracks"
 
 
+def test_observation_share_endpoint_returns_grounded_copy_and_metrics(tmp_path):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+
+    captured = client.post(
+        "/v1/analyze",
+        json={"image_base64": _encoded_png((220, 40, 40)), "session_id": "share-demo", "decode_mode": "off"},
+    )
+    assert captured.status_code == 200
+    body = captured.json()
+
+    runtime = app.state.runtime
+    runtime.store.update_observation(
+        body["observation"]["id"],
+        summary="red mug on desk",
+        providers=["basic"],
+        metadata={"summary_source": "test"},
+    )
+
+    share = client.post(
+        "/v1/share/observation",
+        json={"session_id": "share-demo", "observation_id": body["observation"]["id"]},
+    )
+    assert share.status_code == 200
+    share_body = share.json()
+    assert share_body["observation_id"] == body["observation"]["id"]
+    assert share_body["summary"] == "red mug on desk"
+    assert "red mug on desk" in share_body["share_text"]
+    assert share_body["share_url"] == "https://github.com/NeoOne601/Toori"
+
+    recorded = client.post(
+        "/v1/share/observation/event",
+        json={
+            "session_id": "share-demo",
+            "observation_id": body["observation"]["id"],
+            "event_type": "share_copied",
+        },
+    )
+    assert recorded.status_code == 200
+    assert recorded.json()["recorded"] is True
+
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert 'toori_share_events_total{event_type="share_clicked"} 1.0' in metrics.text
+    assert 'toori_share_events_total{event_type="share_copied"} 1.0' in metrics.text
+
+
 def test_challenge_evaluate_returns_baseline_comparison(tmp_path):
     app = create_app(data_dir=str(tmp_path))
     client = TestClient(app)

@@ -176,6 +176,18 @@ export type AnalyzeResponse = {
   reasoning_trace: ReasoningTraceEntry[];
 };
 
+export type ObservationSharePayload = {
+  session_id: string;
+  observation_id: string;
+  title: string;
+  summary: string;
+  share_text: string;
+  share_url: string;
+  tracked_entities: number;
+  persistence_confidence?: number | null;
+  memory_match_score?: number | null;
+};
+
 export type JEPATickPayload = {
   energy_map: number[][];
   entity_tracks: Array<Record<string, unknown>>;

@@ -29,6 +29,9 @@ from .models import (
     ProofReportGenerateRequest,
     QueryRequest,
     RuntimeSettings,
+    ShareObservationEventRequest,
+    ShareObservationRequest,
+    ShareObservationResponse,
     SmritiIngestRequest,
     SmritiIngestResponse,
     SmritiMigrationRequest,
@@ -81,6 +84,12 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     analyze_latency = Histogram(
         "toori_analyze_latency_seconds",
         "Analyze latency",
+        registry=registry,
+    )
+    share_events = Counter(
+        "toori_share_events_total",
+        "Observation share events",
+        ["event_type"],
         registry=registry,
     )
     app = FastAPI(title="Toori Runtime", version="1.0.0", lifespan=_runtime_lifespan)
@@ -329,6 +338,40 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     )
     def generate_proof_report(payload: ProofReportGenerateRequest):
         return app.state.runtime.generate_proof_report(payload.session_id, payload.chart_b64)
+
+    @app.post(
+        "/v1/share/observation",
+        response_model=ShareObservationResponse,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("share.observation"))],
+    )
+    def share_observation(payload: ShareObservationRequest):
+        try:
+            response = app.state.runtime.build_observation_share(payload.session_id, payload.observation_id)
+            app.state.runtime.record_observation_share_event(
+                response.session_id,
+                response.observation_id,
+                "share_clicked",
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Observation not found") from exc
+        share_events.labels(event_type="share_clicked").inc()
+        return response
+
+    @app.post(
+        "/v1/share/observation/event",
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("share.observation.event"))],
+    )
+    def share_observation_event(payload: ShareObservationEventRequest):
+        try:
+            app.state.runtime.record_observation_share_event(
+                payload.session_id,
+                payload.observation_id,
+                payload.event_type,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Observation not found") from exc
+        share_events.labels(event_type=payload.event_type).inc()
+        return {"recorded": True}
 
     @app.get(
         "/v1/proof-report/latest",

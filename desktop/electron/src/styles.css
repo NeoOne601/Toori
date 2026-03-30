@@ -1072,6 +1072,31 @@ textarea {
   height: 120px;
 }
 
+.observation-card__body {
+  min-width: 0;
+}
+
+.observation-share {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+}
+
+.observation-share__status {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.observation-share__status[data-state="copied"] {
+  color: var(--accent-2);
+}
+
+.observation-share__status[data-state="error"] {
+  color: var(--danger);
+}
+
 .timeline {
   display: flex;
   flex-direction: column;

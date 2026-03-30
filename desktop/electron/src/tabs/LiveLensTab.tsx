@@ -182,6 +182,7 @@ export default function LiveLensTab() {
         summary={app.latestObservationSummary}
         assetUrl={app.assetUrl}
         trace={world.analysis?.reasoning_trace || []}
+        onShareObservation={app.world.copyObservationShare}
         chips={
           app.latestObservation
             ? [

@@ -16,6 +16,8 @@ declare global {
       getCameraAccess: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
       requestCameraAccess: () => Promise<{ status: string; granted: boolean; canPrompt: boolean }>;
       openCameraSettings: () => Promise<boolean>;
+      openPath?: (targetPath: string) => Promise<string>;
+      writeClipboardText?: (text: string) => Promise<boolean>;
     };
   }
 }

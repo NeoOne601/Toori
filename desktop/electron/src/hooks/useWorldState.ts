@@ -1,8 +1,9 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from "react";
-import { BROWSER_RUNTIME_URL, getDesktopBridge } from "./useRuntimeBridge";
+import { BROWSER_RUNTIME_URL, copyTextToClipboard, getDesktopBridge } from "./useRuntimeBridge";
 import type {
   AnalyzeResponse,
   ChallengeRun,
+  ObservationSharePayload,
   ProviderHealth,
   QueryResponse,
   Settings,
@@ -136,6 +137,32 @@ export function useWorldState({
     }
   }
 
+  async function copyObservationShare(observation: Observation) {
+    setStatus("Preparing share text");
+    try {
+      const payload = await runtimeRequest<ObservationSharePayload>("/v1/share/observation", "POST", {
+        session_id: observation.session_id,
+        observation_id: observation.id,
+      });
+      await copyTextToClipboard(payload.share_text);
+      await runtimeRequest<{ recorded: boolean }>("/v1/share/observation/event", "POST", {
+        session_id: observation.session_id,
+        observation_id: observation.id,
+        event_type: "share_copied",
+      });
+      const message =
+        payload.tracked_entities > 0
+          ? `Copied share text for ${payload.tracked_entities} tracked ${payload.tracked_entities === 1 ? "entity" : "entities"}.`
+          : "Copied share text.";
+      setStatus(message);
+      return message;
+    } catch (error) {
+      const message = (error as Error).message;
+      setStatus(message);
+      throw error;
+    }
+  }
+
   const scheduleRefresh = useCallback(() => {
     const now = Date.now();
     const elapsed = now - lastRefreshAtRef.current;
@@ -262,5 +289,6 @@ export function useWorldState({
     mutateProviderEnabled,
     runChallengeEvaluation,
     exportProofReport,
+    copyObservationShare,
   };
 }

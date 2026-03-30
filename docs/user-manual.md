@@ -71,6 +71,7 @@ Steps:
 What the result means:
 
 - the latest observation is the last stored frame
+- **Copy Share Text** copies a paste-ready recap with the grounded scene summary, any tracked-entity context, and the public Toori repo link
 - nearest memory shows the most similar past observations
 - provider badges show which backends were used
 
@@ -215,6 +216,8 @@ The world-model proof endpoints are:
 - `POST /v1/living-lens/tick`
 - `GET /v1/world-state`
 - `POST /v1/challenges/evaluate`
+- `POST /v1/share/observation`
+- `POST /v1/share/observation/event`
 
 These are the routes that matter for the JEPA proof surface. `Living Lens` uses them to show prediction consistency, temporal continuity, surprise, and persistence over time.
 

@@ -203,6 +203,7 @@ export default function LivingLensTab() {
                   observation={app.livingObservation}
                   summary={app.livingAnswer}
                   assetUrl={app.assetUrl}
+                  onShareObservation={app.world.copyObservationShare}
                   chips={
                     app.livingObservation
                       ? [

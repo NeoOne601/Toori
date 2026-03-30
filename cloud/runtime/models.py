@@ -656,6 +656,32 @@ class ProofReportResponse(BaseModel):
     generated: bool = True
 
 
+ShareObservationEventType = Literal["share_clicked", "share_copied"]
+
+
+class ShareObservationRequest(BaseModel):
+    session_id: str
+    observation_id: Optional[str] = None
+
+
+class ShareObservationResponse(BaseModel):
+    session_id: str
+    observation_id: str
+    title: str
+    summary: str
+    share_text: str
+    share_url: str
+    tracked_entities: int = 0
+    persistence_confidence: Optional[float] = None
+    memory_match_score: Optional[float] = None
+
+
+class ShareObservationEventRequest(BaseModel):
+    session_id: str
+    observation_id: str
+    event_type: ShareObservationEventType
+
+
 class ProviderHealthResponse(BaseModel):
     providers: list[ProviderHealth]
 
