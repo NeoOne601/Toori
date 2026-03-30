@@ -200,6 +200,7 @@ class RuntimeSettings(BaseModel):
     observability_enabled: bool = True
     sync_enabled: bool = False
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    public_url: str = "https://github.com/NeoOne601/Toori"
     smriti_storage: SmritiStorageConfig = Field(default_factory=SmritiStorageConfig)
 
 

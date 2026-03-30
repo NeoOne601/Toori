@@ -199,6 +199,21 @@ flowchart TB
 - Perception stays backbone-agnostic at the engine boundary; see `CONTRIBUTING.md`.
 - If a provider is unhealthy, the runtime must degrade gracefully instead of blocking capture/search.
 - macOS Camera privacy depends on a real app bundle identity; stock Electron CLI launches should not be treated as proof of permission support.
+- `TOORI_PUBLIC_URL` sets the public-facing URL used in share CTAs. Defaults to `https://github.com/NeoOne601/Toori`. Override for forks and enterprise deployments.
+
+### Torch Isolation Grep — Correct Pattern
+
+Always use anchored grep to check for torch imports:
+```bash
+# CORRECT — only matches actual import statements:
+grep -rn "^import torch\|^from torch" cloud/ --include="*.py" \
+  | grep -v "cloud/perception/"
+
+# WRONG — matches string literals in tests (false positives):
+grep -r "import torch" cloud/ --include="*.py" | grep -v "cloud/perception/"
+```
+The unanchored pattern matches `assert "torch" not in sys.modules`
+in test files, producing misleading "VIOLATION FOUND" output.
 
 ### DEEPDIVE FOCUS CONTRACT (WCAG 2.1 AA)
 

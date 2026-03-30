@@ -1,10 +1,10 @@
 {
-  "version": "5.0",
+  "version": "5.1",
   "sprint": "5",
   "build_complete": true,
   "baseline_tests_passing": 162,
   "target_tests_passing": 195,
-  "total_tests_passing": 196,
+  "total_tests_passing": 197,
   "met_target": true,
   "desktop_typecheck": "passed",
   "desktop_build": "passed",
@@ -21,10 +21,20 @@
     "smriti_styles_sprint5": "complete",
     "sprint5_validation": "complete"
   },
+  "post_sprint_fixes": {
+    "prometheus_label_fix": "not_needed — already clean",
+    "share_url_env_var": "complete",
+    "torch_grep_hardening": "complete"
+  },
+  "share_feature": "complete",
+  "torch_isolation_grep_pattern": "anchored — ^import torch",
+  "public_url_configurable": true,
   "new_routes": [
     "/v1/smriti/storage/migrate",
     "/v1/smriti/recall/feedback",
-    "/v1/smriti/media/{media_id}/neighbors"
+    "/v1/smriti/media/{media_id}/neighbors",
+    "/v1/share/observation",
+    "/v1/share/observation/event"
   ],
   "new_files": [
     "cloud/api/tests/test_smriti_production.py",

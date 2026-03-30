@@ -360,6 +360,7 @@ See [CONTRIBUTING.md](/Users/macuser/toori/CONTRIBUTING.md) for the current cont
 - Smriti storage migration is copy-first and non-destructive: it verifies the destination and updates config last, while preserving the original source data.
 - Video ingestion uses PyAV when available; folder watching uses `watchdog` when available and degrades gracefully when those packages are absent.
 - `ollama` and MLX are optional desktop-only reasoning backends and are health-checked before use.
+- `TOORI_PUBLIC_URL` overrides the public-facing URL used in share text and CTAs. Defaults to `https://github.com/NeoOne601/Toori`.
 - The runtime will still function in local observation-memory mode if cloud reasoning is unavailable.
 - Mobile source trees are present, but native project wiring remains a separate platform packaging step.
 - Browser mode is the default proof-development path until the Electron app is packaged as a real signed macOS bundle.

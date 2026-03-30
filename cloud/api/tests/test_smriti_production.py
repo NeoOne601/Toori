@@ -365,8 +365,30 @@ def test_existing_toori_functionality_not_broken():
 
 
 def test_no_torch_imports_outside_perception():
-    """torch must never be imported outside cloud/perception/."""
-    violating_modules = []
+    """torch must never be imported outside cloud/perception/.
+
+    Two-layer check:
+    1. Static anchored grep — catches literal import statements without
+       matching string literals like ``assert "torch" not in sys.modules``
+       that appear in test files.
+    2. Dynamic subprocess import — catches conditional or transitive imports.
+    """
+    # --- Layer 1: Static anchored grep ---
+    grep_result = subprocess.run(
+        ["grep", "-rn", r"^\(import torch\|from torch\)",
+         "cloud/", "--include=*.py"],
+        capture_output=True, text=True,
+    )
+    violations = [
+        line for line in grep_result.stdout.strip().splitlines()
+        if line and "cloud/perception/" not in line
+    ]
+    assert not violations, (
+        f"torch imported outside cloud/perception/ (static grep):\n"
+        + "\n".join(violations)
+    )
+
+    # --- Layer 2: Dynamic subprocess import ---
     modules_to_check = [
         "cloud.jepa_service.engine",
         "cloud.jepa_service.depth_separator",
@@ -376,8 +398,10 @@ def test_no_torch_imports_outside_perception():
         "cloud.runtime.setu2",
         "cloud.runtime.smriti_storage",
         "cloud.runtime.smriti_ingestion",
+        "cloud.runtime.smriti_migration",
         "cloud.runtime.service",
     ]
+    violating_modules = []
     for module in modules_to_check:
         result = subprocess.run(
             [
@@ -389,10 +413,10 @@ def test_no_torch_imports_outside_perception():
             text=True,
         )
         if result.returncode != 0:
-            violating_modules.append(module)
+            violating_modules.append(f"{module}: {result.stderr.strip()}")
 
     assert not violating_modules, (
-        f"torch imported outside cloud/perception/ by: {violating_modules}"
+        f"torch imported at runtime by:\n" + "\n".join(violating_modules)
     )
 
 

@@ -47,6 +47,7 @@ def default_settings() -> RuntimeSettings:
     default_onnx_labels = str(root / "models" / "vision" / "imagenet-simple-labels.json")
     default_mlx_command = os.getenv("TOORI_MLX_COMMAND") or f"python3.11 {root / 'scripts' / 'mlx_reasoner.py'}"
     return RuntimeSettings(
+        public_url=os.getenv("TOORI_PUBLIC_URL", "https://github.com/NeoOne601/Toori"),
         primary_perception_provider="dinov2",
         fallback_order=["dinov2", "onnx", "basic", "cloud"],
         providers={

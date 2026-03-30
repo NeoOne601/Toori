@@ -64,8 +64,6 @@ from .talker import SelectiveTalker
 from .world_model import build_baseline_comparison, build_challenge_run, build_object_summary, build_scene_state
 
 
-TOORI_SHARE_URL = "https://github.com/NeoOne601/Toori"
-
 
 class ProgressiveComputationScheduler:
     """
@@ -861,6 +859,8 @@ class RuntimeContainer:
         return ProofReportResponse(session_id=session_id, path=str(path), generated=True)
 
     def build_observation_share(self, session_id: str, observation_id: str | None = None) -> ShareObservationResponse:
+        settings = self.get_settings()
+        public_url = settings.public_url
         observation = self.store.get_observation(observation_id) if observation_id else None
         if observation is None:
             recent = self.store.recent_observations(session_id=session_id, limit=1)
@@ -913,7 +913,7 @@ class RuntimeContainer:
         share_text = f"I just used Toori to analyze a live scene: {summary.rstrip('.!?')}."
         if detail_clauses:
             share_text += f" It {' and '.join(detail_clauses)}."
-        share_text += f" Try it: {TOORI_SHARE_URL}"
+        share_text += f" Try it: {public_url}"
 
         if tracked_entities > 0:
             title = f"Tracked {tracked_entities} live {'entity' if tracked_entities == 1 else 'entities'}"
@@ -928,7 +928,7 @@ class RuntimeContainer:
             title=title,
             summary=summary,
             share_text=share_text,
-            share_url=TOORI_SHARE_URL,
+            share_url=public_url,
             tracked_entities=tracked_entities,
             persistence_confidence=persistence_confidence,
             memory_match_score=memory_match_score,
