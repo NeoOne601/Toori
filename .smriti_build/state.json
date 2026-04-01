@@ -4,7 +4,7 @@
   "build_complete": true,
   "baseline_tests_passing": 196,
   "target_tests_passing": 235,
-  "total_tests_passing": 239,
+  "total_tests_passing": 238,
   "met_target": true,
   "desktop_typecheck": "assumed_pass",
   "desktop_build": "assumed_pass",
@@ -15,7 +15,7 @@
   },
   "post_sprint_fixes": {},
   "share_feature": "complete",
-  "torch_isolation_grep_pattern": "anchored — ^import torch",
+  "torch_isolation_grep_pattern": "anchored \u2014 ^import torch",
   "public_url_configurable": true,
   "new_routes": [
     "/v1/smriti/storage/migrate",

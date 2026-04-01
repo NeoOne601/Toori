@@ -12,9 +12,7 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
-from cloud.runtime.observability import get_logger
 
-log = get_logger("audio_encoder")
 
 # Audio constants
 SAMPLE_RATE = 16000
@@ -97,6 +95,8 @@ class AudioEncoder:
     SILENCE_THRESHOLD = 0.01
 
     def __init__(self, seed: int = 42) -> None:
+        from cloud.runtime.observability import get_logger
+        self.log = get_logger("audio_encoder")
         rng = np.random.default_rng(seed)
         self._projection = rng.standard_normal(
             (N_MELS, TARGET_DIM)
