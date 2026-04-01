@@ -450,6 +450,16 @@ class JEPATick:
     anchor_matches: Optional[list[dict]] = None
     setu_descriptions: Optional[list[dict]] = None
     alignment_loss: float = 0.0
+    # Sprint 6 — World Model Foundation
+    l2_embedding: Optional[list[float]] = None
+    predicted_next_embedding: Optional[list[float]] = None
+    prediction_error: Optional[float] = None
+    epistemic_uncertainty: Optional[float] = None
+    aleatoric_uncertainty: Optional[float] = None
+    surprise_score: Optional[float] = None
+    audio_embedding: Optional[list[float]] = None
+    audio_energy: Optional[float] = None
+    world_model_version: str = "surrogate"
 
     def to_payload(self) -> "JEPATickPayload":
         return JEPATickPayload(
@@ -473,6 +483,15 @@ class JEPATick:
             anchor_matches=self.anchor_matches,
             setu_descriptions=self.setu_descriptions,
             alignment_loss=float(self.alignment_loss),
+            l2_embedding=self.l2_embedding,
+            predicted_next_embedding=self.predicted_next_embedding,
+            prediction_error=float(self.prediction_error) if self.prediction_error is not None else None,
+            epistemic_uncertainty=float(self.epistemic_uncertainty) if self.epistemic_uncertainty is not None else None,
+            aleatoric_uncertainty=float(self.aleatoric_uncertainty) if self.aleatoric_uncertainty is not None else None,
+            surprise_score=float(self.surprise_score) if self.surprise_score is not None else None,
+            audio_embedding=self.audio_embedding,
+            audio_energy=float(self.audio_energy) if self.audio_energy is not None else None,
+            world_model_version=self.world_model_version,
         )
 
 
@@ -497,6 +516,16 @@ class JEPATickPayload(BaseModel):
     anchor_matches: Optional[list[dict]] = None
     setu_descriptions: Optional[list[dict]] = None
     alignment_loss: float = 0.0
+    # Sprint 6 — World Model Foundation
+    l2_embedding: Optional[list[float]] = None
+    predicted_next_embedding: Optional[list[float]] = None
+    prediction_error: Optional[float] = None
+    epistemic_uncertainty: Optional[float] = None
+    aleatoric_uncertainty: Optional[float] = None
+    surprise_score: Optional[float] = None
+    audio_embedding: Optional[list[float]] = None
+    audio_energy: Optional[float] = None
+    world_model_version: str = "surrogate"
 
 
 class AtlasNode(BaseModel):

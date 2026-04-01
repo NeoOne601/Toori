@@ -12,6 +12,8 @@ from PIL import Image
 
 from .dinov2_encoder import DinoV2Embedding, Dinov2Encoder
 from .sam_segmenter import SamSegmentation, SamSegmenter
+from .vjepa2_encoder import VJepa2Encoder, get_vjepa2_encoder
+from .audio_encoder import AudioEncoder, AudioEmbedding
 
 
 DINOv2Encoder = Dinov2Encoder
@@ -115,4 +117,8 @@ __all__ = [
     "SAMSegmenter",
     "MaskResult",
     "PerceptionPipeline",
+    "VJepa2Encoder",
+    "get_vjepa2_encoder",
+    "AudioEncoder",
+    "AudioEmbedding",
 ]

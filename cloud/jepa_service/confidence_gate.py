@@ -32,6 +32,9 @@ class GateResult:
     anchor_name: str
     depth_stratum: str
     estimated_hallucination_risk: float
+    # Sprint 6: World Model Foundation
+    epistemic_uncertainty: float = 0.0
+    aleatoric_uncertainty: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +45,8 @@ class GateResult:
             "depth_stratum": self.depth_stratum,
             "estimated_hallucination_risk": round(float(self.estimated_hallucination_risk), 4),
             "uncertainty_map": self.uncertainty_map.tolist(),
+            "epistemic_uncertainty": round(float(self.epistemic_uncertainty), 4),
+            "aleatoric_uncertainty": round(float(self.aleatoric_uncertainty), 4),
         }
 
 
@@ -61,6 +66,9 @@ class EpistemicConfidenceGate:
         anchor_match: AnchorMatch,
         depth_strata: DepthStrataMap,
         energy_history: list[float],
+        *,
+        prediction_error: float | None = None,
+        surprise_score: float | None = None,
     ) -> GateResult:
         failures: list[str] = []
 
@@ -85,6 +93,20 @@ class EpistemicConfidenceGate:
         uncertainty_map = self._build_uncertainty_map(anchor_match, depth_strata)
         hallucination_risk = round(1.0 - consistency, 4)
 
+        # Sprint 6: Information-theoretic uncertainty from world model
+        epistemic = 0.0
+        aleatoric = 0.0
+        if prediction_error is not None:
+            # Epistemic: model's predictive uncertainty (how wrong was prediction)
+            epistemic = round(min(float(prediction_error), 1.0), 4)
+            # High prediction error lowers gate confidence
+            if prediction_error > 0.5:
+                failures.append(f"prediction_error={prediction_error:.3f} > 0.5")
+                passes = len(failures) == 0
+        if surprise_score is not None:
+            # Aleatoric: inherent scene variability (normalized surprise)
+            aleatoric = round(min(float(surprise_score), 1.0), 4)
+
         result = GateResult(
             passes=passes,
             consistency_score=consistency,
@@ -94,6 +116,8 @@ class EpistemicConfidenceGate:
             anchor_name=anchor_match.template_name,
             depth_stratum=anchor_match.depth_stratum,
             estimated_hallucination_risk=hallucination_risk,
+            epistemic_uncertainty=epistemic,
+            aleatoric_uncertainty=aleatoric,
         )
         log.debug(
             "ecgd_gate",

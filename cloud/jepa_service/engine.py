@@ -22,6 +22,7 @@ from uuid import uuid4
 import numpy as np
 
 from cloud.perception import MaskResult, PerceptionPipeline
+from cloud.perception.vjepa2_encoder import get_vjepa2_encoder
 from cloud.jepa_service.confidence_gate import EpistemicConfidenceGate
 from cloud.runtime.models import BoundingBox, EntityTrack, JEPATick
 from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
@@ -323,6 +324,16 @@ class ImmersiveJEPAEngine:
         self._setu2 = Setu2Bridge()
         self._last_energy_map: np.ndarray = np.zeros((14, 14), dtype=np.float32)
         self._last_depth_strata: DepthStrataMap = DepthStrataMap.cold_start()
+        # Sprint 6: V-JEPA 2 world model integration
+        self._vjepa2 = None
+        self._vjepa2_loaded = False
+        try:
+            self._vjepa2 = get_vjepa2_encoder()
+            self._vjepa2_loaded = self._vjepa2.is_loaded
+        except Exception:
+            self._vjepa2_loaded = False
+        self._prev_predictor_embs: dict[str, np.ndarray] = {}  # per-session
+        self._surprise_windows: dict[str, deque] = {}  # per-session running window
 
     def tick(
         self,
@@ -353,6 +364,65 @@ class ImmersiveJEPAEngine:
             energy_map_previous=self._last_energy_map,
             patch_tokens=s_ctx,
         )
+
+        # Sprint 6: V-JEPA 2 world model prediction
+        wm_encoder_emb = None
+        wm_predictor_emb = None
+        wm_prediction_error = None
+        wm_epistemic = None
+        wm_aleatoric = None
+        wm_surprise = None
+        wm_version = "surrogate"
+
+        if self._vjepa2_loaded and self._vjepa2 is not None:
+            try:
+                enc_emb, pred_emb = self._vjepa2.encode(frame)
+                wm_encoder_emb = enc_emb
+                wm_predictor_emb = pred_emb
+                wm_version = "vjepa2"
+
+                # Cross-tick prediction error: compare current encoder with previous predictor
+                if session_id in self._prev_predictor_embs:
+                    prev_pred = self._prev_predictor_embs[session_id]
+                    wm_prediction_error = float(np.sum((enc_emb - prev_pred) ** 2))
+                else:
+                    wm_prediction_error = 0.0  # first tick
+
+                # Store current predictor for next tick
+                self._prev_predictor_embs[session_id] = pred_emb.copy()
+
+                # Surprise normalization: z-score within session window
+                if session_id not in self._surprise_windows:
+                    self._surprise_windows[session_id] = deque(maxlen=128)
+                self._surprise_windows[session_id].append(wm_prediction_error)
+                window = list(self._surprise_windows[session_id])
+                if len(window) >= 3:
+                    mu = float(np.mean(window))
+                    std = float(np.std(window)) + 1e-8
+                    wm_surprise = float(np.clip((wm_prediction_error - mu) / std, -3.0, 3.0))
+                    wm_surprise = float((wm_surprise + 3.0) / 6.0)  # normalize to [0, 1]
+                else:
+                    wm_surprise = 0.5  # neutral during warmup
+
+                # Epistemic: based on prediction error magnitude
+                wm_epistemic = float(min(wm_prediction_error, 1.0))
+                # Aleatoric: based on energy variance
+                if len(self._energy_history) >= 3:
+                    wm_aleatoric = float(min(np.var(list(self._energy_history)[-8:]), 1.0))
+                else:
+                    wm_aleatoric = 0.5
+
+            except Exception:
+                pass  # Graceful degradation to surrogate
+
+        # Update TPDS with prediction error if available
+        if wm_prediction_error is not None:
+            depth_strata = self._tpds.update(
+                energy_map_current=energy_map,
+                energy_map_previous=self._last_energy_map,
+                patch_tokens=s_ctx,
+                prediction_error=wm_prediction_error,
+            )
         mask_patch_lists = []
         if mask_results:
             first_mask = mask_results[0]
@@ -396,6 +466,8 @@ class ImmersiveJEPAEngine:
                 anchor_match=match,
                 depth_strata=depth_strata,
                 energy_history=list(self._energy_history),
+                prediction_error=wm_prediction_error,
+                surprise_score=wm_surprise,
             )
             description = self._setu2.describe_region(gate_result)
             setu_descriptions.append(
@@ -433,6 +505,13 @@ class ImmersiveJEPAEngine:
             anchor_matches=[match.to_dict() for match in anchor_matches],
             setu_descriptions=setu_descriptions,
             alignment_loss=float(alignment_loss),
+            l2_embedding=wm_encoder_emb.tolist() if wm_encoder_emb is not None else None,
+            predicted_next_embedding=wm_predictor_emb.tolist() if wm_predictor_emb is not None else None,
+            prediction_error=wm_prediction_error,
+            epistemic_uncertainty=wm_epistemic,
+            aleatoric_uncertainty=wm_aleatoric,
+            surprise_score=wm_surprise,
+            world_model_version=wm_version,
         )
         self._last_state = current_state.copy()
         self._tick_count += 1

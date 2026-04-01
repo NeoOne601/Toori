@@ -86,13 +86,13 @@ def test_schema_migrations_are_idempotent(tmp_path):
         ).fetchone()
 
     assert row is not None
-    assert db._schema_manager.current_version() == 1
+    assert db._schema_manager.current_version() == 2
 
 
 def test_schema_version_increments_correctly(tmp_path):
     db = SmetiDB(tmp_path)
 
-    assert db._schema_manager.current_version() == 1
+    assert db._schema_manager.current_version() == 2
 
 
 def test_faiss_search_returns_correct_nearest_neighbor(tmp_path):

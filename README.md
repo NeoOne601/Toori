@@ -120,6 +120,8 @@ The **W-matrix** (384×384) personalizes the metric. When you use the ✓ and �
 
 ### High-Level Architecture
 
+Architecture diagram — data flow from capture through JEPA to proof surfaces:
+
 ```mermaid
 flowchart LR
   Camera["Live Camera / File Input"] --> Runtime["Toori Runtime"]

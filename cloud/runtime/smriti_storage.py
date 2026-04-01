@@ -110,6 +110,11 @@ class SmritiMedia:
     error_message: str | None = None
     faiss_index_id: int | None = None
     embedding: list[float] | None = None
+    # Sprint 6: World Model Foundation
+    l2_embedding: list[float] | None = None
+    prediction_error: float | None = None
+    surprise_score: float | None = None
+    world_model_version: str | None = None
 
 
 @dataclass(slots=True)
@@ -167,7 +172,7 @@ class RecallResult:
 
 
 class SmetiDB(ObservationStore):
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     MIGRATIONS: list[tuple[int, str]] = [
         (
@@ -270,6 +275,20 @@ class SmetiDB(ObservationStore):
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL
             );
+            """,
+        ),
+        (
+            2,
+            """
+            -- Sprint 6: World Model Foundation columns
+            ALTER TABLE smriti_media ADD COLUMN l2_embedding_json TEXT;
+            ALTER TABLE smriti_media ADD COLUMN prediction_error REAL;
+            ALTER TABLE smriti_media ADD COLUMN surprise_score REAL;
+            ALTER TABLE smriti_media ADD COLUMN world_model_version TEXT DEFAULT 'surrogate';
+            CREATE INDEX IF NOT EXISTS idx_smriti_media_surprise
+                ON smriti_media(surprise_score);
+            CREATE INDEX IF NOT EXISTS idx_smriti_media_world_model
+                ON smriti_media(world_model_version);
             """,
         ),
     ]
@@ -639,6 +658,10 @@ class SmetiDB(ObservationStore):
             error_message=row["error_message"],
             faiss_index_id=row["faiss_index_id"],
             embedding=_load_json(row["embedding_json"], None),
+            l2_embedding=_load_json(row["l2_embedding_json"], None) if "l2_embedding_json" in row.keys() else None,
+            prediction_error=float(row["prediction_error"]) if "prediction_error" in row.keys() and row["prediction_error"] is not None else None,
+            surprise_score=float(row["surprise_score"]) if "surprise_score" in row.keys() and row["surprise_score"] is not None else None,
+            world_model_version=row["world_model_version"] if "world_model_version" in row.keys() else None,
         )
 
     def _row_to_person(self, row: sqlite3.Row) -> SmritiPerson:
@@ -1785,6 +1808,78 @@ class SmetiDB(ObservationStore):
                     (int(count), location_id),
                 )
             connection.commit()
+
+
+    def get_surprising_media(
+        self,
+        threshold: float = 0.5,
+        limit: int = 20,
+    ) -> list[SmritiMedia]:
+        """Return media with surprise_score above threshold, ordered by surprise descending."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM smriti_media
+                WHERE surprise_score IS NOT NULL AND surprise_score >= ?
+                  AND ingestion_status = 'complete'
+                ORDER BY surprise_score DESC
+                LIMIT ?
+                """,
+                (float(threshold), int(limit)),
+            ).fetchall()
+        return [self._row_to_media(row) for row in rows]
+
+    def get_media_by_world_model_version(
+        self,
+        version: str = "vjepa2",
+        limit: int = 100,
+    ) -> list[SmritiMedia]:
+        """Return media indexed by a specific world model version."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM smriti_media
+                WHERE world_model_version = ?
+                  AND ingestion_status = 'complete'
+                ORDER BY ingested_at DESC
+                LIMIT ?
+                """,
+                (str(version), int(limit)),
+            ).fetchall()
+        return [self._row_to_media(row) for row in rows]
+
+    def update_media_world_model_fields(
+        self,
+        media_id: str,
+        *,
+        l2_embedding: list[float] | None = None,
+        prediction_error: float | None = None,
+        surprise_score: float | None = None,
+        world_model_version: str | None = None,
+    ) -> bool:
+        """Update world model specific fields on a media record."""
+        updates: list[str] = []
+        params: list[Any] = []
+        if l2_embedding is not None:
+            updates.append("l2_embedding_json = ?")
+            params.append(_dump_json(l2_embedding))
+        if prediction_error is not None:
+            updates.append("prediction_error = ?")
+            params.append(float(prediction_error))
+        if surprise_score is not None:
+            updates.append("surprise_score = ?")
+            params.append(float(surprise_score))
+        if world_model_version is not None:
+            updates.append("world_model_version = ?")
+            params.append(str(world_model_version))
+        if not updates:
+            return False
+        params.append(media_id)
+        sql = f"UPDATE smriti_media SET {', '.join(updates)} WHERE id = ?"
+        with self._lock, self._connect() as connection:
+            connection.execute(sql, tuple(params))
+            connection.commit()
+        return True
 
 
 __all__ = [

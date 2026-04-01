@@ -79,6 +79,8 @@ class TemporalParallaxDepthSeparator:
         energy_map_current: np.ndarray,
         energy_map_previous: np.ndarray,
         patch_tokens: np.ndarray,
+        *,
+        prediction_error: float | None = None,
     ) -> DepthStrataMap:
         current = np.asarray(energy_map_current, dtype=np.float32)
         previous = np.asarray(energy_map_previous, dtype=np.float32)
@@ -97,6 +99,11 @@ class TemporalParallaxDepthSeparator:
         spatial_norm = np.minimum(current, previous) + EPSILON
         raw_proxy = temporal_delta / spatial_norm
         raw_proxy = _box_filter(raw_proxy, SMOOTHING_KERNEL)
+
+        # Sprint 6: boost foreground sensitivity when world model prediction error is high
+        if prediction_error is not None and prediction_error > 0.3:
+            boost = 1.0 + min(float(prediction_error), 1.0) * 0.5
+            raw_proxy = raw_proxy * boost
 
         self._ema_proxy = ((1.0 - self._ema_alpha) * self._ema_proxy) + (self._ema_alpha * raw_proxy)
         proxy = self._ema_proxy.copy()

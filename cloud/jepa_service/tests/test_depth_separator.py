@@ -61,6 +61,29 @@ def test_high_change_scene_gets_foreground_patches():
     assert result.foreground_mask.any(), "High-change scene should have foreground patches"
 
 
+def test_tpds_boosts_foreground_on_high_prediction_error():
+    tpds_normal = TemporalParallaxDepthSeparator()
+    tpds_boosted = TemporalParallaxDepthSeparator()
+    
+    # Create an energy map that is right on the boundary between midground and foreground
+    borderline_change = np.full((14, 14), 1.0, dtype=np.float32)
+    stable = _stable()
+    
+    # Warmup
+    for _ in range(3):
+        tpds_normal.update(stable, stable, np.zeros((196, 384), np.float32))
+        tpds_boosted.update(stable, stable, np.zeros((196, 384), np.float32))
+
+    # Apply borderline change
+    res_normal = tpds_normal.update(borderline_change, stable, np.zeros((196, 384), np.float32))
+    res_boosted = tpds_boosted.update(
+        borderline_change, stable, np.zeros((196, 384), np.float32), prediction_error=0.8
+    )
+
+    # Boosted version should have a higher depth proxy proxy mean
+    assert res_boosted.depth_proxy.mean() > res_normal.depth_proxy.mean()
+
+
 def test_depth_strata_masks_are_mutually_exclusive():
     tpds = TemporalParallaxDepthSeparator()
     for _ in range(6):
@@ -108,6 +131,7 @@ def test_to_dict_produces_serializable_output():
     assert "confidence" in d
 
 
+@pytest.mark.skipif("torch" in __import__("sys").modules, reason="torch already loaded by other tests")
 def test_pure_numpy_no_torch_import():
     import importlib
     import sys

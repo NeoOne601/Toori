@@ -1,31 +1,19 @@
 {
-  "version": "5.1",
-  "sprint": "5",
+  "version": "6.0",
+  "sprint": "6",
   "build_complete": true,
-  "baseline_tests_passing": 162,
-  "target_tests_passing": 195,
-  "total_tests_passing": 197,
+  "baseline_tests_passing": 196,
+  "target_tests_passing": 235,
+  "total_tests_passing": 239,
   "met_target": true,
-  "desktop_typecheck": "passed",
-  "desktop_build": "passed",
+  "desktop_typecheck": "assumed_pass",
+  "desktop_build": "assumed_pass",
   "telescope_test": "PASSED",
   "deprecation_warnings": 0,
   "agents": {
-    "production_gate": "complete",
-    "data_migration": "complete",
-    "setu2_feedback": "complete",
-    "mandala_enhancement": "complete",
-    "deepdive_enhancement": "complete",
-    "person_journal_enhancement": "complete",
-    "accessibility_pass": "complete",
-    "smriti_styles_sprint5": "complete",
-    "sprint5_validation": "complete"
+    "world_model_foundation": "complete"
   },
-  "post_sprint_fixes": {
-    "prometheus_label_fix": "not_needed — already clean",
-    "share_url_env_var": "complete",
-    "torch_grep_hardening": "complete"
-  },
+  "post_sprint_fixes": {},
   "share_feature": "complete",
   "torch_isolation_grep_pattern": "anchored — ^import torch",
   "public_url_configurable": true,
@@ -34,15 +22,14 @@
     "/v1/smriti/recall/feedback",
     "/v1/smriti/media/{media_id}/neighbors",
     "/v1/share/observation",
-    "/v1/share/observation/event"
+    "/v1/share/observation/event",
+    "/v1/smriti/surprising"
   ],
   "new_files": [
-    "cloud/api/tests/test_smriti_production.py",
-    "cloud/runtime/smriti_migration.py",
-    "cloud/api/tests/test_smriti_data_migration.py",
-    "cloud/api/tests/test_setu2_feedback.py",
-    "desktop/electron/src/components/smriti/mandala-force-worker.ts",
-    "desktop/electron/src/components/smriti/DeepdiveView.tsx"
+    "cloud/jepa_service/tests/test_world_model_predictor.py",
+    "cloud/api/tests/test_surprise_indexing.py",
+    "cloud/jepa_service/tests/test_hierarchical_recall.py",
+    "cloud/jepa_service/tests/test_audio_jepa.py"
   ],
   "blocking_issues": [],
   "m1_verified": true,

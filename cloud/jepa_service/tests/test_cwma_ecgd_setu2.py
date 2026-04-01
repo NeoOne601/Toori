@@ -141,6 +141,48 @@ def test_uncertainty_map_has_correct_shape():
     assert result.uncertainty_map.shape == (14, 14)
 
 
+def test_gate_evaluates_epistemic_and_aleatoric_uncertainty():
+    gate = EpistemicConfidenceGate()
+    match = _make_match("desk_surface", list(range(10)), "foreground", confidence=0.85)
+
+    # High prediction error = high epistemic uncertainty
+    result = gate.evaluate(
+        match, _fg_bg_strata(), [0.1] * 10,
+        prediction_error=0.6,
+        surprise_score=0.2,
+    )
+    
+    assert result.epistemic_uncertainty == pytest.approx(0.6)
+    assert result.aleatoric_uncertainty == pytest.approx(0.2)
+    # prediction_error > 0.5 triggers a failure
+    assert result.passes is False
+    assert any("prediction_error" in reason for reason in result.failure_reasons)
+
+
+def test_gate_evaluates_low_uncertainty():
+    gate = EpistemicConfidenceGate()
+    match = _make_match("chair_seated", list(range(10)), "foreground", confidence=0.85)
+
+    result = gate.evaluate(
+        match, _fg_bg_strata(), [0.1] * 10,
+        prediction_error=0.1,
+        surprise_score=0.8,
+    )
+    
+    assert result.epistemic_uncertainty == pytest.approx(0.1)
+    assert result.aleatoric_uncertainty == pytest.approx(0.8)
+    assert result.passes is True
+
+
+def test_gate_handles_none_world_model_metrics():
+    gate = EpistemicConfidenceGate()
+    match = _make_match("person_torso", list(range(10)), "foreground", confidence=0.85)
+    result = gate.evaluate(match, _fg_bg_strata(), [0.1] * 10)
+
+    assert result.epistemic_uncertainty == 0.0
+    assert result.aleatoric_uncertainty == 0.0
+
+
 def test_setu2_project_query_returns_correct_shape():
     bridge = Setu2Bridge()
     query = np.random.rand(384).astype(np.float32)
