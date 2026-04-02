@@ -116,6 +116,11 @@ flowchart TB
 - Smriti storage paths are user-configurable through runtime settings and are resolved via `resolve_smriti_storage(...)`.
 - `ProviderRegistry` selects perception and reasoning providers and enforces circuit-breaker fallback.
 - The proof-surface layer adds scene state, entity tracks, prediction windows, and challenge runs on top of observations.
+- The hybrid proof layer now also supports:
+  - grounded tool-state observations through `/v1/tool-state/observe`
+  - action-conditioned planning rollouts through `/v1/planning/rollout`
+  - closed-loop recovery benchmarks through `/v1/benchmarks/recovery/run`
+- `WorldModelStatus` must stay truthful: it reports the configured encoder, the last tick encoder actually used, and explicit degradation reason/stage when V-JEPA2 falls back.
 - The Smriti pipeline layers are:
   - `TPDS` depth strata from JEPA energy deltas
   - `SAG` topology-aware anchor matching
@@ -158,6 +163,7 @@ flowchart TB
 
 - `Live Lens` is the operator/debug surface.
 - `Living Lens` is the scientific proof surface and should be treated as the primary demo path.
+- `Living Lens -> Recovery Lab` is where hybrid camera-plus-tool planning work should surface. Extend that workspace rather than creating a separate planner UI.
 - `Smriti` is the semantic memory surface for ingestion, recall, journals, cluster browsing, and pipeline transparency.
 - The proof surface must be understandable without reading research papers. Favor plain language, structured evidence, and guided interaction over jargon-heavy dashboards.
 - Latest observation sharing is copy-first: any share recap must stay grounded to a real stored observation, real world-state metrics, and the public repo URL.
@@ -186,6 +192,7 @@ flowchart TB
 - The JEPA engine must remain pure numy-compatible (`float32`) without CUDA or PyTorch to ensure identical paths for M1/MPS users.
 - `torch` imports are forbidden in Smriti pipeline modules such as TPDS, SAG, CWMA, ECGD, and Setu-2.
 - `ollama` and MLX must remain optional and health-checked.
+- `ollama` and MLX are explanatory sidecars only. They must not overwrite or redefine the authoritative world-model metrics, rollout ranking, or recovery benchmark winner.
 - DINOv2 is the perception backbone for the desktop/runtime path; ONNX is compatibility-only.
 - `torch` imports are allowed only inside `cloud/perception/`.
 - Consumer Mode is the default on first launch via `localStorage["toori_mode"]="consumer"`.

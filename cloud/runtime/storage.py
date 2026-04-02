@@ -19,6 +19,7 @@ from .models import (
     EntityTrack,
     Observation,
     ProviderConfig,
+    RecoveryBenchmarkRun,
     RuntimeSettings,
     SceneState,
     SearchHit,
@@ -102,6 +103,12 @@ class ObservationStore:
                     created_at TEXT NOT NULL,
                     data_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS recovery_benchmark_runs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    data_json TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_observations_session_created
                     ON observations(session_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_scene_states_session_created
@@ -110,6 +117,8 @@ class ObservationStore:
                     ON entity_tracks(session_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_challenge_runs_session_created
                     ON challenge_runs(session_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_recovery_benchmark_runs_session_created
+                    ON recovery_benchmark_runs(session_id, created_at DESC);
                 """
             )
             self._migrate_observations(connection)
@@ -215,6 +224,7 @@ class ObservationStore:
         providers: list[str],
         metadata: dict,
         world_state_id: Optional[str] = None,
+        observation_kind: str = "camera",
     ) -> Observation:
         digest = sha256(raw_bytes).hexdigest()[:16]
         observation_id = f"obs_{digest}_{uuid4().hex[:8]}"
@@ -233,6 +243,7 @@ class ObservationStore:
             session_id=session_id,
             created_at=created_at,
             world_state_id=world_state_id,
+            observation_kind=observation_kind,
             image_path=str(frame_path),
             thumbnail_path=str(thumb_path),
             width=image.width,
@@ -244,7 +255,7 @@ class ObservationStore:
             confidence=confidence,
             novelty=novelty,
             providers=providers,
-            metadata=metadata,
+            metadata={**metadata, "observation_kind": observation_kind},
         )
 
         with self._lock, self._connect() as connection:
@@ -562,6 +573,56 @@ class ObservationStore:
             connection.commit()
         return challenge
 
+    def save_recovery_benchmark_run(self, benchmark: RecoveryBenchmarkRun) -> RecoveryBenchmarkRun:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO recovery_benchmark_runs (id, session_id, created_at, data_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    created_at = excluded.created_at,
+                    data_json = excluded.data_json
+                """,
+                (
+                    benchmark.id,
+                    benchmark.session_id,
+                    benchmark.created_at.isoformat(),
+                    benchmark.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return benchmark
+
+    def get_recovery_benchmark_run(self, benchmark_id: str) -> Optional[RecoveryBenchmarkRun]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data_json FROM recovery_benchmark_runs WHERE id = ?",
+                (benchmark_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return RecoveryBenchmarkRun.model_validate_json(row["data_json"])
+
+    def recent_recovery_benchmark_runs(
+        self,
+        *,
+        session_id: str,
+        limit: int = 12,
+    ) -> list[RecoveryBenchmarkRun]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT data_json
+                FROM recovery_benchmark_runs
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [RecoveryBenchmarkRun.model_validate_json(row["data_json"]) for row in rows]
+
     def recent_challenge_runs(self, *, session_id: str, limit: int = 12) -> list[ChallengeRun]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -601,11 +662,13 @@ class ObservationStore:
         return [self._row_to_observation(row) for row in rows]
 
     def _row_to_observation(self, row: sqlite3.Row) -> Observation:
+        metadata = json.loads(row["metadata_json"])
         return Observation(
             id=row["id"],
             session_id=row["session_id"],
             created_at=_parse_dt(row["created_at"]),
             world_state_id=row["world_state_id"] if "world_state_id" in row.keys() else None,
+            observation_kind=str(metadata.get("observation_kind", "camera")),
             image_path=row["image_path"],
             thumbnail_path=row["thumbnail_path"],
             width=row["width"],
@@ -617,5 +680,5 @@ class ObservationStore:
             confidence=row["confidence"],
             novelty=row["novelty"],
             providers=json.loads(row["providers_json"]),
-            metadata=json.loads(row["metadata_json"]),
+            metadata=metadata,
         )

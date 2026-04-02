@@ -1,5 +1,6 @@
 import base64
 import io
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -47,6 +48,9 @@ def test_events_schema_remains_additive(tmp_path):
         assert jepa_payload is not None
         assert "energy_map" in jepa_payload
         assert "forecast_errors" in jepa_payload
+        assert "configured_encoder" in jepa_payload
+        assert "last_tick_encoder_type" in jepa_payload
+        assert "degraded" in jepa_payload
 
 
 def test_proof_report_endpoints_return_pdf(tmp_path):
@@ -69,6 +73,8 @@ def test_proof_report_endpoints_return_pdf(tmp_path):
         json={"session_id": "proof-report", "chart_b64": None},
     )
     assert generate.status_code == 200
+    generate_body = generate.json()
+    assert Path(generate_body["path"]).read_bytes().startswith(b"%PDF")
 
     latest = client.get("/v1/proof-report/latest")
     assert latest.status_code == 200

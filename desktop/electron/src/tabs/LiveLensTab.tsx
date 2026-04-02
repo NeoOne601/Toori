@@ -6,12 +6,19 @@ import SceneMonitor from "../panels/SceneMonitor";
 export default function LiveLensTab() {
   const app = useDesktopApp();
   const { camera, world } = app;
+  const configuredWorldModel = world.worldModelStatus?.configured_encoder || "vjepa2";
+  const worldModelLabel =
+    app.currentJepaTick?.degraded || world.worldModelStatus?.degraded
+      ? `${configuredWorldModel} degraded`
+      : (app.currentJepaTick?.last_tick_encoder_type || world.worldModelStatus?.last_tick_encoder_type) === "surrogate"
+        ? "surrogate fallback"
+        : `${configuredWorldModel} active`;
 
   return (
     <section className="panel-grid lens-grid">
       <SceneMonitor
         title="Camera"
-        subtitle={`${world.settings?.primary_perception_provider || "onnx"} -> ${world.settings?.reasoning_backend || "cloud"}`}
+        subtitle={`${world.settings?.primary_perception_provider || "onnx"} proposals · ${worldModelLabel} · ${world.settings?.reasoning_backend || "cloud"} reasoning`}
         videoRef={camera.liveVideoRef}
         captureCanvasRef={camera.liveCaptureCanvasRef}
         diagnosticsCanvasRef={camera.liveDiagnosticsCanvasRef}

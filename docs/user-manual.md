@@ -147,7 +147,8 @@ Open **Settings** and configure:
 - `providers.cloud.base_url`
 - `providers.cloud.model`
 - `providers.cloud.api_key`
-- theme mode: `dark`, `light`, or `system`
+- `vjepa2_model_path` and `vjepa2_n_frames`
+- theme mode: `system`, `dark`, `light`, `graphite`, `sepia`, `high_contrast_dark`, or `high_contrast_light`
 - camera device preference
 - decode mode and thresholds
 
@@ -155,7 +156,7 @@ Suggested defaults:
 
 - browser mode for proof work
 - `auto` reasoning backend for general use
-- `onnx` as the primary desktop perception path
+- DINOv2 or ONNX for proposal boxes, with V-JEPA2 as the world-model path
 - `ollama` before MLX before cloud for desktop reasoning
 
 ## 9. Camera Troubleshooting
@@ -214,12 +215,16 @@ Storage safety:
 The world-model proof endpoints are:
 
 - `POST /v1/living-lens/tick`
+- `GET /v1/world-model/status`
+- `POST /v1/tool-state/observe`
+- `POST /v1/planning/rollout`
+- `POST /v1/benchmarks/recovery/run`
 - `GET /v1/world-state`
 - `POST /v1/challenges/evaluate`
 - `POST /v1/share/observation`
 - `POST /v1/share/observation/event`
 
-These are the routes that matter for the JEPA proof surface. `Living Lens` uses them to show prediction consistency, temporal continuity, surprise, and persistence over time.
+These are the routes that matter for the JEPA proof surface. `Living Lens` uses them to show prediction consistency, temporal continuity, surprise, persistence, grounded tool-state evidence, and local Plan A / Plan B recovery branches over time.
 
 ## 12. How To Read The Proof Signals
 

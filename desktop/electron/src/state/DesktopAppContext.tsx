@@ -16,6 +16,7 @@ import {
   explainSummary,
   explainWorldModel,
   formatEntityBaseLabel,
+  humanizeLabel,
   normalizeBoxes,
   toEnergyAnchors,
   toForecastValue,
@@ -23,11 +24,143 @@ import {
 } from "../lib/formatting";
 import type {
   AnalyzeResponse,
+  BoundingBox,
   ChallengeRun,
   ConsumerGraphNode,
+  EntityTrack,
   Observation,
   SceneState,
 } from "../types";
+
+function isGenericEntityLabel(label: string | null | undefined) {
+  const normalized = humanizeLabel(String(label || ""));
+  return !normalized || normalized === "tracked region" || /^entity[-\s]?\d+$/i.test(normalized);
+}
+
+function sceneLabelCandidates(sceneState?: SceneState | null): string[] {
+  const metadata = (sceneState?.metadata || {}) as Record<string, unknown>;
+  const candidates = metadata.summary_candidates;
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
+  return candidates
+    .map((item) => humanizeLabel(String(item || "")))
+    .filter((item) => item && !isGenericEntityLabel(item));
+}
+
+function createDesktopSessionId() {
+  const storageKey = "toori_live_session_id";
+  try {
+    const existing = window.sessionStorage.getItem(storageKey);
+    if (existing) {
+      return existing;
+    }
+    const created = `desktop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    window.sessionStorage.setItem(storageKey, created);
+    return created;
+  } catch {
+    return `desktop-${Date.now().toString(36)}`;
+  }
+}
+
+function normalizedTrackCenter(track: EntityTrack, observation?: Observation | null) {
+  const metadata = (track.metadata || {}) as Record<string, unknown>;
+  const bbox = (metadata.bbox_pixels || metadata.ghost_bbox_pixels || metadata.bbox) as
+    | Record<string, unknown>
+    | undefined;
+  if (!bbox) {
+    return null;
+  }
+  const x = Number(bbox.x);
+  const y = Number(bbox.y);
+  const width = Number(bbox.width || 0);
+  const height = Number(bbox.height || 0);
+  if (![x, y, width, height].every(Number.isFinite)) {
+    return null;
+  }
+  const observationWidth = Math.max(observation?.width || 0, 1);
+  const observationHeight = Math.max(observation?.height || 0, 1);
+  const normalizedX = width > 1 || height > 1 ? (x + width / 2) / observationWidth : x + width / 2;
+  const normalizedY = width > 1 || height > 1 ? (y + height / 2) / observationHeight : y + height / 2;
+  return {
+    x: Math.max(0, Math.min(normalizedX, 1)),
+    y: Math.max(0, Math.min(normalizedY, 1)),
+  };
+}
+
+function proposalLabelForTrack(
+  track: EntityTrack,
+  proposalBoxes: BoundingBox[],
+  observation?: Observation | null,
+) {
+  const center = normalizedTrackCenter(track, observation);
+  if (!center) {
+    return "";
+  }
+  let bestLabel = "";
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const box of proposalBoxes) {
+    const label = humanizeLabel(box.label);
+    if (!label || isGenericEntityLabel(label)) {
+      continue;
+    }
+    const boxCenterX = box.x + box.width / 2;
+    const boxCenterY = box.y + box.height / 2;
+    const dx = center.x - boxCenterX;
+    const dy = center.y - boxCenterY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestLabel = label;
+    }
+  }
+  return bestDistance <= 0.22 ? bestLabel : "";
+}
+
+function mergeConsumerNodes(nodes: ConsumerGraphNode[]) {
+  const merged = new Map<string, ConsumerGraphNode & { count: number }>();
+  for (const node of nodes) {
+    const key = humanizeLabel(node.label).toLowerCase() || node.id;
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, { ...node, count: 1 });
+      continue;
+    }
+    const count = current.count + 1;
+    merged.set(key, {
+      ...current,
+      x: ((current.x * current.count) + node.x) / count,
+      y: ((current.y * current.count) + node.y) / count,
+      radius: Math.max(current.radius || 0, node.radius || 0),
+      tone: current.tone === "memory" || node.tone === "memory" ? "memory" : current.tone,
+      count,
+    });
+  }
+  return Array.from(merged.values()).map(({ count: _count, ...node }) => node);
+}
+
+function resolveConsumerTrackLabel(
+  track: EntityTrack,
+  index: number,
+  sceneState?: SceneState | null,
+  atlasNode?: Record<string, unknown> | null,
+  proposalLabel?: string,
+) {
+  const metadata = (track.metadata || {}) as Record<string, unknown>;
+  const sceneCandidates = sceneLabelCandidates(sceneState);
+  const candidates = [
+    humanizeLabel(proposalLabel || ""),
+    humanizeLabel(String(metadata.primary_object_label || "")),
+    humanizeLabel(String(metadata.caption || "")),
+    humanizeLabel(String(metadata.top_label || "")),
+    humanizeLabel(String(atlasNode?.label || "")),
+    sceneCandidates[index] || "",
+    humanizeLabel(String((sceneState?.metadata as Record<string, unknown> | undefined)?.primary_object_label || "")),
+    formatEntityBaseLabel(track),
+    `Entity ${index + 1}`,
+  ].filter((item) => item && !isGenericEntityLabel(item));
+  return candidates[0] || formatEntityBaseLabel(track) || `Entity ${index + 1}`;
+}
 
 function useDesktopAppValue() {
   const [activeTab, setActiveTab] = useState<AppTab>("Living Lens");
@@ -39,7 +172,7 @@ function useDesktopAppValue() {
   const [showAllTracks, setShowAllTracks] = useState(false);
   const [challengeGuideActive, setChallengeGuideActive] = useState(false);
   const [challengeStepIndex, setChallengeStepIndex] = useState(0);
-  const [sessionId] = useState("desktop-live");
+  const [sessionId] = useState(() => createDesktopSessionId());
   const [uiMode, setUiMode] = useState<"consumer" | "science">(() => {
     const stored = window.localStorage.getItem("toori_mode");
     if (stored === "science" || stored === "consumer") {
@@ -149,7 +282,12 @@ function useDesktopAppValue() {
   function startGuidedChallenge() {
     setChallengeGuideActive(true);
     setChallengeStepIndex(0);
+    setUiMode("science");
     setLivingSection("challenge");
+    livingLens.setLivingLensEnabled(true);
+    if (!camera.cameraStreamLive) {
+      camera.retryCamera(false).catch(() => undefined);
+    }
     setActiveTab("Living Lens");
     livingLens.setLivingLensStatus("Guided challenge started. Follow the first instruction below.");
   }
@@ -184,7 +322,7 @@ function useDesktopAppValue() {
     : null;
   const readyProviders = world.health.filter((item) => item.healthy).length;
   const degradedProviders = Math.max(world.health.length - readyProviders, 0);
-  const currentSceneState = livingLens.livingLensResult?.scene_state || world.worldState?.current || null;
+  const currentSceneState = world.worldState?.current || livingLens.livingLensResult?.scene_state || null;
   const livingTracks = livingLens.livingLensResult?.entity_tracks || world.worldState?.entity_tracks || [];
   const livingObservation = livingLens.livingLensResult?.observation || latestObservation;
   const currentJepaTick = livingLens.livingLensResult?.jepa_tick || null;
@@ -261,18 +399,52 @@ function useDesktopAppValue() {
     confidence: track.persistence_confidence,
     note: `${String((track.metadata as Record<string, any> | undefined)?.duration_ms || 0)} ms`,
   }));
-  const consumerText = consumerMessage(currentJepaTick, livingTracks);
-  const atlasNodes = Array.isArray((world.worldState?.atlas as any)?.nodes)
+  const consumerSceneState = world.worldState?.current || currentSceneState;
+  const consumerTrackSourceBase = world.worldState?.entity_tracks?.length ? world.worldState.entity_tracks : livingTracks;
+  const consumerTrackSource = consumerTrackSourceBase.filter(
+    (track) => track.status !== "disappeared" && track.status !== "violated prediction",
+  );
+  const consumerGroundedNodes = (consumerSceneState?.grounded_entities || []).slice(0, 8).map((entity, index) => {
+    const properties = (entity.properties || {}) as Record<string, any>;
+    const bbox = properties.bbox as
+      | { x?: number; y?: number; width?: number; height?: number }
+      | undefined;
+    const center = bbox
+      ? {
+          x: ((Number(bbox.x || 0) + Number(bbox.width || 0) / 2) * 100),
+          y: ((Number(bbox.y || 0) + Number(bbox.height || 0) / 2) * 100),
+        }
+      : {
+          x: 18 + ((index * 15) % 62),
+          y: 20 + ((index * 12) % 58),
+        };
+    return {
+      id: entity.id,
+      label: humanizeLabel(entity.label || `${entity.kind} ${index + 1}`),
+      x: Math.max(16, Math.min(center.x, 84)),
+      y: Math.max(16, Math.min(center.y, 84)),
+      radius: 11 + Math.min(Math.round((entity.confidence || 0.5) * 8), 8),
+      tone:
+        entity.state_domain === "memory"
+          ? ("memory" as const)
+          : entity.status === "occluded"
+            ? ("memory" as const)
+            : entity.status === "visible"
+              ? ("live" as const)
+              : ("stable" as const),
+    };
+  });
+  const consumerAtlasNodes = Array.isArray((world.worldState?.atlas as any)?.nodes)
     ? (world.worldState?.atlas as any).nodes
     : [];
-  const atlasEdges = Array.isArray((world.worldState?.atlas as any)?.edges)
-    ? (world.worldState?.atlas as any).edges
-    : [];
-  const trackNodeFallback = livingTracks.slice(0, 6).map((track, index) => {
+  const consumerNodesFromTracks = consumerTrackSource.slice(0, 8).map((track, index) => {
     const metadata = (track.metadata || {}) as Record<string, any>;
     const bbox = metadata.bbox_pixels || metadata.ghost_bbox_pixels || metadata.bbox;
     const width = Math.max(livingObservation?.width || 1, 1);
     const height = Math.max(livingObservation?.height || 1, 1);
+    const atlasNode = consumerAtlasNodes.find(
+      (node: any) => String(node.entity_id || node.id || "") === String(track.id),
+    );
     const center =
       bbox && typeof bbox === "object" && Number.isFinite(Number(bbox.x)) && Number.isFinite(Number(bbox.y))
         ? {
@@ -289,53 +461,107 @@ function useDesktopAppValue() {
             x: 20 + ((index * 17) % 60),
             y: 25 + ((index * 13) % 50),
           };
+    const proposalLabel = proposalLabelForTrack(track, livingBoxes, livingObservation);
     return {
       id: String(track.id),
-      label: formatEntityBaseLabel(track),
-      x: Math.max(10, Math.min(center.x, 90)),
-      y: Math.max(10, Math.min(center.y, 90)),
+      label: resolveConsumerTrackLabel(track, index, consumerSceneState, atlasNode, proposalLabel),
+      x: Math.max(18, Math.min(center.x, 82)),
+      y: Math.max(18, Math.min(center.y, 82)),
       radius: 10 + Math.min(track.visibility_streak || 1, 10),
       tone: track.status === "occluded" ? "memory" : track.status === "visible" ? "live" : "stable",
     };
   });
-  const boxNodeFallback = livingBoxes.slice(0, 6).map((box, index) => ({
+  const consumerBoxFallback = livingBoxes.slice(0, 6).map((box, index) => ({
     id: `box-${index}`,
     label: formatEntityBaseLabel({ label: box.label, metadata: box.metadata }),
-    x: Math.max(10, Math.min((box.x + box.width / 2) * 100, 90)),
-    y: Math.max(10, Math.min((box.y + box.height / 2) * 100, 90)),
+    x: Math.max(18, Math.min((box.x + box.width / 2) * 100, 82)),
+    y: Math.max(18, Math.min((box.y + box.height / 2) * 100, 82)),
     radius: 12,
     tone: "live" as const,
   }));
-  const atlasNodeData = atlasNodes.map((node: any, index: number) => ({
+  const atlasNodeData = consumerAtlasNodes.map((node: any, index: number) => ({
     id: String(node.entity_id || node.id || `node-${index}`),
-    label: String(node.label || node.entity_id || `Entity ${index + 1}`),
+    label: resolveConsumerTrackLabel(
+      {
+        id: String(node.entity_id || node.id || `node-${index}`),
+        session_id: sessionId,
+        label: String(node.label || node.entity_id || ""),
+        status: String(node.status || "visible"),
+        first_seen_at: "",
+        last_seen_at: "",
+        first_observation_id: "",
+        last_observation_id: "",
+        observations: [],
+        visibility_streak: Number(node.track_length || 1),
+        occlusion_count: 0,
+        reidentification_count: 0,
+        persistence_confidence: Number(node.confidence || 0),
+        continuity_score: 0,
+        last_similarity: 0,
+        status_history: [],
+        metadata: { label: node.label, track_length: node.track_length },
+      },
+      index,
+      consumerSceneState,
+      node,
+    ),
     x: Number.isFinite(Number(node.centroid?.[0]))
-      ? Number(node.centroid[0]) * 100
+      ? Math.max(18, Math.min(Number(node.centroid[0]) * 100, 82))
       : 20 + ((index * 17) % 60),
     y: Number.isFinite(Number(node.centroid?.[1]))
-      ? Number(node.centroid[1]) * 100
+      ? Math.max(18, Math.min(Number(node.centroid[1]) * 100, 82))
       : 25 + ((index * 13) % 50),
     radius: 10 + Math.min(Number(node.track_length || 1), 10),
     tone: String(node.status || "visible") === "occluded" ? "memory" : "live",
   }));
-  const consumerNodes =
-    trackNodeFallback.length > 0
-      ? trackNodeFallback
+  const consumerNodes = mergeConsumerNodes(
+    consumerGroundedNodes.length > 0
+      ? consumerGroundedNodes
+      : consumerNodesFromTracks.length > 0
+      ? consumerNodesFromTracks
       : atlasNodeData.length > 0
         ? atlasNodeData
-        : boxNodeFallback;
+        : consumerBoxFallback,
+  );
+  const consumerLeadLabel = consumerNodes[0]?.label || sceneLabelCandidates(consumerSceneState)[0] || "it";
+  const consumerText = consumerMessage(
+    currentJepaTick,
+    consumerNodes.length
+      ? [
+          {
+            ...(consumerTrackSource[0] || livingTracks[0] || {
+              id: "lead",
+              session_id: sessionId,
+              label: consumerLeadLabel,
+              status: "visible",
+              first_seen_at: "",
+              last_seen_at: "",
+              first_observation_id: "",
+              last_observation_id: "",
+              observations: [],
+              visibility_streak: 1,
+              occlusion_count: 0,
+              reidentification_count: 0,
+              persistence_confidence: 0,
+              continuity_score: 0,
+              last_similarity: 0,
+              status_history: [],
+              metadata: {},
+            }),
+            label: consumerLeadLabel,
+          },
+          ...consumerTrackSource.slice(1),
+        ]
+      : consumerTrackSource,
+  );
   const consumerLinks =
-    trackNodeFallback.length > 0 || boxNodeFallback.length > 0
+    consumerNodes.length > 1
       ? consumerNodes.slice(1).map((node: ConsumerGraphNode) => ({
           source: consumerNodes[0]?.id || node.id,
           target: node.id,
           strength: 0.45,
         }))
-      : atlasEdges.map((edge: any) => ({
-          source: String(edge.source_id),
-          target: String(edge.target_id),
-          strength: Number(edge.spatial_proximity || 0.5),
-        }));
+      : [];
   const livingHistory = [livingLens.livingLensResult?.scene_state, ...worldHistory]
     .filter((state): state is SceneState => Boolean(state))
     .filter((state, index, list) => list.findIndex((candidate) => candidate.id === state.id) === index);
@@ -349,7 +575,11 @@ function useDesktopAppValue() {
     surpriseSeparation: state.metrics.surprise_score,
     summary: state.observed_state_summary || state.predicted_state_summary,
   }));
-  const challengeHistory = livingHistory.slice(0, 8);
+  const challengeHistory = world.challengeRun?.world_state_ids?.length
+    ? world.challengeRun.world_state_ids
+        .map((worldStateId) => livingHistory.find((state) => state.id === worldStateId))
+        .filter((state): state is SceneState => Boolean(state))
+    : livingHistory.slice(0, 8);
   const trackStatusRank: Record<string, number> = {
     visible: 0,
     "re-identified": 1,
@@ -368,6 +598,12 @@ function useDesktopAppValue() {
   const featuredTracks = sortedTracks.slice(0, 4);
   const displayedTracks = showAllTracks ? sortedTracks : sortedTracks.slice(0, 8);
   const topHealth = world.health.slice(0, 4);
+  const currentRollout =
+    currentSceneState?.conditioned_rollouts ||
+    world.latestRollout ||
+    world.worldState?.current?.conditioned_rollouts ||
+    null;
+  const currentBenchmark = world.latestBenchmark || world.worldState?.benchmarks?.[0] || null;
 
   return {
     activeTab,
@@ -437,6 +673,8 @@ function useDesktopAppValue() {
     featuredTracks,
     displayedTracks,
     topHealth,
+    currentRollout,
+    currentBenchmark,
   };
 }
 

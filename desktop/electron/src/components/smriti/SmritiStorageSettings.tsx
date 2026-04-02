@@ -57,6 +57,7 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
   const [migrationTarget, setMigrationTarget] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [migrationResult, setMigrationResult] = useState<SmritiMigrationResult | null>(null);
+  const hiddenFolderPattern = /(^|\/)\.[^/]+/;
 
   const loadAll = useCallback(async () => {
     setRefreshing(true);
@@ -187,6 +188,10 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
     return <div className="muted">Loading Smriti storage settings...</div>;
   }
 
+  const hasHiddenFolderPath = [config.data_dir, config.frames_dir, config.thumbs_dir].some((value) =>
+    hiddenFolderPattern.test(value || ""),
+  );
+
   return (
     <div style={{ display: "grid", gap: "1rem" }}>
       <section className="panel panel--memory">
@@ -224,48 +229,102 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
           <h4>Storage Location</h4>
           <span>Where Smriti stores its heavy data</span>
         </div>
+        {hasHiddenFolderPath ? (
+          <div
+            style={{
+              background: "rgba(67, 216, 201, 0.08)",
+              border: "1px solid rgba(67, 216, 201, 0.2)",
+              borderRadius: 16,
+              padding: "0.85rem 1rem",
+              marginBottom: "0.9rem",
+              color: "var(--muted)",
+            }}
+          >
+            <strong style={{ color: "var(--accent-2)" }}>ⓘ Hidden folders</strong> The dot in `.toori` makes
+            the folder hidden on macOS and Linux. Use Browse or press <kbd>Cmd</kbd> + <kbd>Shift</kbd> +{" "}
+            <kbd>.</kbd> in Finder to reveal it.
+          </div>
+        ) : null}
         <div style={{ display: "grid", gap: "0.8rem" }}>
-          <label className="field">
-            <span>Primary Smriti data directory</span>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                value={watchPathToString(config.data_dir)}
-                onChange={(event) => setConfig((current) => (current ? { ...current, data_dir: event.target.value || null } : current))}
-                placeholder="Choose where Smriti stores indexes, frames, and thumbnails"
-              />
-              <button type="button" onClick={() => void choosePath("data_dir")}>
-                Browse
-              </button>
-            </div>
-          </label>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+              gap: "1rem",
+            }}
+          >
+            <label className="field">
+              <span>
+                Primary Smriti data directory
+                <span
+                  title="This stores the Smriti database, frames, thumbnails, and learned templates. The dot in .toori makes the folder hidden on macOS and Linux."
+                  style={{ cursor: "help", marginLeft: "0.35rem" }}
+                >
+                  ⓘ
+                </span>
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  value={watchPathToString(config.data_dir)}
+                  onChange={(event) =>
+                    setConfig((current) => (current ? { ...current, data_dir: event.target.value || null } : current))
+                  }
+                  placeholder="Choose where Smriti stores indexes, frames, and thumbnails"
+                />
+                <button type="button" onClick={() => void choosePath("data_dir")}>
+                  Browse
+                </button>
+              </div>
+            </label>
 
-          <label className="field">
-            <span>Frames directory</span>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                value={watchPathToString(config.frames_dir)}
-                onChange={(event) => setConfig((current) => (current ? { ...current, frames_dir: event.target.value || null } : current))}
-                placeholder="Full-resolution frame storage"
-              />
-              <button type="button" onClick={() => void choosePath("frames_dir")}>
-                Browse
-              </button>
-            </div>
-          </label>
+            <label className="field">
+              <span>
+                Frames directory
+                <span
+                  title="Full-resolution frames are stored here. Point this at an external drive if the media library is large."
+                  style={{ cursor: "help", marginLeft: "0.35rem" }}
+                >
+                  ⓘ
+                </span>
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  value={watchPathToString(config.frames_dir)}
+                  onChange={(event) =>
+                    setConfig((current) => (current ? { ...current, frames_dir: event.target.value || null } : current))
+                  }
+                  placeholder="Full-resolution frame storage"
+                />
+                <button type="button" onClick={() => void choosePath("frames_dir")}>
+                  Browse
+                </button>
+              </div>
+            </label>
 
-          <label className="field">
-            <span>Thumbnails directory</span>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input
-                value={watchPathToString(config.thumbs_dir)}
-                onChange={(event) => setConfig((current) => (current ? { ...current, thumbs_dir: event.target.value || null } : current))}
-                placeholder="Preview image storage"
-              />
-              <button type="button" onClick={() => void choosePath("thumbs_dir")}>
-                Browse
-              </button>
-            </div>
-          </label>
+            <label className="field">
+              <span>
+                Thumbnails directory
+                <span
+                  title="Small preview images are stored here. These are safe to keep on the main drive and usually take far less space."
+                  style={{ cursor: "help", marginLeft: "0.35rem" }}
+                >
+                  ⓘ
+                </span>
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  value={watchPathToString(config.thumbs_dir)}
+                  onChange={(event) =>
+                    setConfig((current) => (current ? { ...current, thumbs_dir: event.target.value || null } : current))
+                  }
+                  placeholder="Preview image storage"
+                />
+                <button type="button" onClick={() => void choosePath("thumbs_dir")}>
+                  Browse
+                </button>
+              </div>
+            </label>
+          </div>
 
           <label className="field checkbox">
             <input

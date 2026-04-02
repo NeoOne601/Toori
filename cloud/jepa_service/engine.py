@@ -22,7 +22,7 @@ from uuid import uuid4
 import numpy as np
 
 from cloud.perception import MaskResult, PerceptionPipeline
-from cloud.perception.vjepa2_encoder import get_vjepa2_encoder
+from cloud.perception.vjepa2_encoder import _is_test_environment, get_vjepa2_encoder
 from cloud.jepa_service.confidence_gate import EpistemicConfidenceGate
 from cloud.runtime.models import BoundingBox, EntityTrack, JEPATick
 from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
@@ -327,11 +327,18 @@ class ImmersiveJEPAEngine:
         # Sprint 6: V-JEPA 2 world model integration
         self._vjepa2 = None
         self._vjepa2_loaded = False
-        try:
-            self._vjepa2 = get_vjepa2_encoder()
-            self._vjepa2_loaded = self._vjepa2.is_loaded
-        except Exception:
-            self._vjepa2_loaded = False
+        self._last_world_model_failure: Optional[dict[str, str]] = None
+        self._last_tick_encoder_type = "surrogate"
+        if not _is_test_environment():
+            try:
+                self._vjepa2 = get_vjepa2_encoder()
+            except Exception:
+                self._vjepa2 = None
+                self._vjepa2_loaded = False
+                self._last_world_model_failure = {
+                    "reason": "encoder initialization failed",
+                    "stage": "init",
+                }
         self._prev_predictor_embs: dict[str, np.ndarray] = {}  # per-session
         self._surprise_windows: dict[str, deque] = {}  # per-session running window
 
@@ -373,9 +380,14 @@ class ImmersiveJEPAEngine:
         wm_aleatoric = None
         wm_surprise = None
         wm_version = "surrogate"
+        degraded = False
+        degrade_reason = None
+        degrade_stage = None
 
-        if self._vjepa2_loaded and self._vjepa2 is not None:
+        if self._vjepa2 is not None:
             try:
+                self._vjepa2.ensure_loaded()
+                self._vjepa2_loaded = self._vjepa2.is_loaded
                 enc_emb, pred_emb = self._vjepa2.encode(frame)
                 wm_encoder_emb = enc_emb
                 wm_predictor_emb = pred_emb
@@ -411,9 +423,25 @@ class ImmersiveJEPAEngine:
                     wm_aleatoric = float(min(np.var(list(self._energy_history)[-8:]), 1.0))
                 else:
                     wm_aleatoric = 0.5
+                self._last_world_model_failure = None
+                self._last_tick_encoder_type = "vjepa2"
 
-            except Exception:
-                pass  # Graceful degradation to surrogate
+            except Exception as exc:
+                self._vjepa2_loaded = False
+                degraded = True
+                degrade_stage = "encode"
+                degrade_reason = str(exc)
+                self._last_world_model_failure = {
+                    "reason": degrade_reason,
+                    "stage": degrade_stage,
+                }
+                self._last_tick_encoder_type = "surrogate"
+        else:
+            if self._last_world_model_failure is not None:
+                degraded = True
+                degrade_reason = self._last_world_model_failure.get("reason")
+                degrade_stage = self._last_world_model_failure.get("stage")
+            self._last_tick_encoder_type = "surrogate"
 
         # Update TPDS with prediction error if available
         if wm_prediction_error is not None:
@@ -512,6 +540,11 @@ class ImmersiveJEPAEngine:
             aleatoric_uncertainty=wm_aleatoric,
             surprise_score=wm_surprise,
             world_model_version=wm_version,
+            configured_encoder="vjepa2",
+            last_tick_encoder_type=self._last_tick_encoder_type,
+            degraded=degraded,
+            degrade_reason=degrade_reason,
+            degrade_stage=degrade_stage,
         )
         self._last_state = current_state.copy()
         self._tick_count += 1
@@ -685,6 +718,8 @@ class ImmersiveJEPAEngine:
             state.continuity_score = best_similarity
             state.status_history.append(state.status)
 
+        self._prune_track_states()
+
         entity_tracks: list[EntityTrack] = []
         for state in self._track_states.values():
             duration_ms = int((state.last_seen_at - state.first_seen_at).total_seconds() * 1000)
@@ -721,6 +756,20 @@ class ImmersiveJEPAEngine:
             state.just_created = False
         entity_tracks.sort(key=lambda track: track.last_seen_at, reverse=True)
         return entity_tracks
+
+    def _prune_track_states(self) -> None:
+        now = datetime.now(timezone.utc)
+        removable_ids: list[str] = []
+        for track_id, state in self._track_states.items():
+            age_s = (now - state.last_seen_at).total_seconds()
+            if state.status in {"disappeared", "violated prediction"} and (state.misses >= 4 or age_s > 8.0):
+                removable_ids.append(track_id)
+                continue
+            if state.status == "occluded" and state.misses >= 10 and age_s > 20.0:
+                removable_ids.append(track_id)
+
+        for track_id in removable_ids:
+            self._track_states.pop(track_id, None)
 
     def _forecast(self, current_state: np.ndarray) -> dict[int, float]:
         forecast_errors = {1: self._last_forecast_errors.get(1, 0.0), 2: self._last_forecast_errors.get(2, 0.0), 5: self._last_forecast_errors.get(5, 0.0)}

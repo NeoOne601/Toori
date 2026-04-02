@@ -67,6 +67,20 @@ function buildNodeMap(nodes: ConsumerModeNode[]) {
   return new Map(nodes.map((node) => [node.id, node]));
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(value, max));
+}
+
+function compactLabel(label: string) {
+  const cleaned = label.trim();
+  if (!cleaned) {
+    return "";
+  }
+  const words = cleaned.split(/\s+/).slice(0, 2);
+  const compact = words.join(" ");
+  return compact.length > 12 ? `${compact.slice(0, 11)}…` : compact;
+}
+
 export default function ConsumerMode({
   copy,
   nodes = defaultNodes,
@@ -79,11 +93,23 @@ export default function ConsumerMode({
   ...rest
 }: ConsumerModeProps) {
   const ui = { ...defaultCopy, ...copy };
-  const nodeMap = buildNodeMap(nodes);
-  const semanticLabels = nodes
-    .map((node) => node.label)
-    .filter((label) => label && !/^entity[-\s]?\d+$/i.test(label))
-    .slice(0, 4);
+  const clampedNodes = nodes.map((node) => {
+    const radius = Math.max(node.radius ?? 12, 10);
+    return {
+      ...node,
+      radius,
+      x: clamp(node.x, radius + 2, 100 - radius - 2),
+      y: clamp(node.y, radius + 2, 100 - radius - 2),
+    };
+  });
+  const nodeMap = buildNodeMap(clampedNodes);
+  const semanticLabels = Array.from(
+    new Set(
+      clampedNodes
+        .map((node) => node.label)
+        .filter((label) => label && !/^entity[-\s]?\d+$/i.test(label)),
+    ),
+  ).slice(0, 4);
 
   return (
     <section
@@ -117,10 +143,10 @@ export default function ConsumerMode({
 
           <div className="consumer-mode__status">
             <span>{ui.statusLabel}</span>
-            <strong>{nodes.length}</strong>
+            <strong>{clampedNodes.length}</strong>
           </div>
 
-          {!nodes.length ? (
+          {!clampedNodes.length ? (
             <div className="consumer-skeleton" aria-label="Loading world state">
               <div className="skeleton-line w-80" />
               <div className="skeleton-line w-60" />
@@ -136,14 +162,14 @@ export default function ConsumerMode({
               <div className="chips chips--stable">
                 {semanticLabels.length
                   ? semanticLabels.map((label) => <span key={label}>{label}</span>)
-                  : nodes.slice(0, 4).map((node) => <span key={node.id}>{node.label}</span>)}
+                  : clampedNodes.slice(0, 4).map((node) => <span key={node.id}>{node.label}</span>)}
               </div>
             </div>
           )}
         </div>
 
         <div className="consumer-mode__graph" aria-hidden="true">
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
             {links.map((link, index) => {
               const source = nodeMap.get(link.source);
               const target = nodeMap.get(link.target);
@@ -164,8 +190,9 @@ export default function ConsumerMode({
               );
             })}
 
-            {nodes.map((node) => (
+            {clampedNodes.map((node) => (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+                <title>{node.label}</title>
                 <circle
                   r={node.radius ?? 12}
                   className={mergeClassNames(
@@ -173,8 +200,12 @@ export default function ConsumerMode({
                     node.tone ? `is-${node.tone}` : undefined,
                   )}
                 />
-                <text className="consumer-mode__label" textAnchor="middle" dy="24">
-                  {node.label}
+                <text
+                  className="consumer-mode__label"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                >
+                  {compactLabel(node.label)}
                 </text>
               </g>
             ))}

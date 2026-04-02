@@ -16,10 +16,20 @@ def utc_now() -> datetime:
 DecodeMode = Literal["off", "auto", "force"]
 StorageMode = Literal["embeddings-only", "frames+embeddings"]
 AuthMode = Literal["loopback", "api-key", "disabled"]
-ThemePreference = Literal["system", "dark", "light"]
+ThemePreference = Literal[
+    "system",
+    "dark",
+    "light",
+    "graphite",
+    "sepia",
+    "high_contrast_dark",
+    "high_contrast_light",
+]
 ProofMode = Literal["jepa", "baseline", "both"]
 ChallengeSet = Literal["live", "curated", "both"]
 TrackStatus = Literal["visible", "occluded", "re-identified", "disappeared", "violated prediction"]
+ObservationKind = Literal["camera", "tool_state", "memory_query"]
+StateDomain = Literal["camera", "browser", "desktop", "memory"]
 TalkerEventType = Literal[
     "ENTITY_APPEARED",
     "ENTITY_DISAPPEARED",
@@ -201,6 +211,8 @@ class RuntimeSettings(BaseModel):
     sync_enabled: bool = False
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     public_url: str = "https://github.com/NeoOne601/Toori"
+    vjepa2_model_path: str = ""
+    vjepa2_n_frames: int = 0
     smriti_storage: SmritiStorageConfig = Field(default_factory=SmritiStorageConfig)
 
 
@@ -235,6 +247,7 @@ class Observation(BaseModel):
     session_id: str
     created_at: datetime
     world_state_id: Optional[str] = None
+    observation_kind: ObservationKind = "camera"
     image_path: str
     thumbnail_path: str
     width: int
@@ -286,6 +299,75 @@ class WorldModelMetrics(BaseModel):
     persistence_signal: PersistenceSignal = Field(default_factory=PersistenceSignal)
 
 
+class ActionToken(BaseModel):
+    id: str
+    verb: str
+    target_kind: str = ""
+    target_id: Optional[str] = None
+    target_label: Optional[str] = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class GroundedEntity(BaseModel):
+    id: str
+    label: str
+    kind: str
+    state_domain: StateDomain = "camera"
+    status: str = "visible"
+    confidence: float = 0.0
+    source_track_id: Optional[str] = None
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class GroundedAffordance(BaseModel):
+    id: str
+    label: str
+    kind: str
+    state_domain: StateDomain = "camera"
+    target_entity_id: Optional[str] = None
+    availability: Literal["available", "hidden", "disabled", "missing", "error"] = "available"
+    confidence: float = 0.0
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class PredictedAffordanceState(BaseModel):
+    affordance_id: str
+    label: str
+    availability: Literal["available", "hidden", "disabled", "missing", "error"] = "available"
+    reason: str = ""
+
+
+class RolloutStep(BaseModel):
+    step_index: int = 0
+    action: ActionToken
+    predicted_state_domain: StateDomain = "camera"
+    predicted_summary: str = ""
+    blockers: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class RolloutBranch(BaseModel):
+    id: str
+    candidate_action: ActionToken
+    predicted_next_state_summary: str = ""
+    predicted_persistent_entities: list[str] = Field(default_factory=list)
+    predicted_affordances: list[PredictedAffordanceState] = Field(default_factory=list)
+    risk_score: float = 0.0
+    confidence: float = 0.0
+    expected_recovery_cost: float = 0.0
+    failure_predicates: list[str] = Field(default_factory=list)
+    steps: list[RolloutStep] = Field(default_factory=list)
+
+
+class RolloutComparison(BaseModel):
+    state_domain: StateDomain = "camera"
+    based_on_world_state_id: Optional[str] = None
+    horizon: int = 1
+    ranked_branches: list[RolloutBranch] = Field(default_factory=list)
+    chosen_branch_id: Optional[str] = None
+    summary: str = ""
+
+
 class PredictionWindow(BaseModel):
     previous_observation_id: Optional[str] = None
     context_observation_ids: list[str] = Field(default_factory=list)
@@ -294,6 +376,9 @@ class PredictionWindow(BaseModel):
     predicted_summary: str = ""
     stable_elements: list[str] = Field(default_factory=list)
     confidence: float = 0.0
+    candidate_actions: list[ActionToken] = Field(default_factory=list)
+    predicted_branches: list[RolloutBranch] = Field(default_factory=list)
+    chosen_branch_id: Optional[str] = None
 
 
 class EntityTrack(BaseModel):
@@ -322,6 +407,7 @@ class SceneState(BaseModel):
     session_id: str
     created_at: datetime
     observation_id: str
+    state_domain: StateDomain = "camera"
     previous_world_state_id: Optional[str] = None
     nearest_memory_observation_id: Optional[str] = None
     primary_object_label: Optional[str] = None
@@ -335,6 +421,9 @@ class SceneState(BaseModel):
     predicted_state_summary: str = ""
     observed_state_summary: str = ""
     prediction_window: PredictionWindow = Field(default_factory=PredictionWindow)
+    grounded_entities: list[GroundedEntity] = Field(default_factory=list)
+    affordances: list[GroundedAffordance] = Field(default_factory=list)
+    conditioned_rollouts: Optional[RolloutComparison] = None
     metrics: WorldModelMetrics = Field(default_factory=WorldModelMetrics)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -369,6 +458,28 @@ class ChallengeRun(BaseModel):
     summary: str = ""
 
 
+class RecoveryScenario(BaseModel):
+    id: str
+    title: str
+    domain: str = "hybrid"
+    description: str = ""
+    passed: bool = False
+    score: float = 0.0
+    details: str = ""
+    related_branch_id: Optional[str] = None
+
+
+class RecoveryBenchmarkRun(BaseModel):
+    id: str
+    session_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    benchmark_scope: str = "hybrid"
+    world_state_ids: list[str] = Field(default_factory=list)
+    scenarios: list[RecoveryScenario] = Field(default_factory=list)
+    winner: str = "action_conditioned_rollout"
+    summary: str = ""
+
+
 class AnalyzeRequest(BaseModel):
     image_base64: Optional[str] = None
     file_path: Optional[str] = None
@@ -396,6 +507,59 @@ class AnalyzeResponse(BaseModel):
 
 class LivingLensTickRequest(AnalyzeRequest):
     proof_mode: ProofMode = "both"
+
+
+class ToolStateObserveRequest(BaseModel):
+    session_id: str = "default"
+    state_domain: StateDomain = "browser"
+    current_url: Optional[str] = None
+    view_id: Optional[str] = None
+    screenshot_base64: Optional[str] = None
+    file_path: Optional[str] = None
+    visible_entities: list[GroundedEntity] = Field(default_factory=list)
+    affordances: list[GroundedAffordance] = Field(default_factory=list)
+    focused_target: Optional[str] = None
+    error_banners: list[str] = Field(default_factory=list)
+    triggering_action: Optional[ActionToken] = None
+    top_k: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_tool_state(self) -> "ToolStateObserveRequest":
+        if not (
+            self.current_url
+            or self.view_id
+            or self.visible_entities
+            or self.affordances
+            or self.error_banners
+        ):
+            raise ValueError(
+                "Provide current_url, view_id, visible_entities, affordances, or error_banners"
+            )
+        return self
+
+
+class ToolStateObserveResponse(AnalyzeResponse):
+    scene_state: SceneState
+    entity_tracks: list[EntityTrack] = Field(default_factory=list)
+
+
+class PlanningRolloutRequest(BaseModel):
+    session_id: str = "default"
+    state_domain: Optional[StateDomain] = None
+    current_state_id: Optional[str] = None
+    candidate_actions: list[ActionToken] = Field(default_factory=list)
+    horizon: int = Field(default=2, ge=1, le=5)
+
+
+class PlanningRolloutResponse(BaseModel):
+    scene_state: SceneState
+    comparison: RolloutComparison
+
+
+class RecoveryBenchmarkRunRequest(BaseModel):
+    session_id: str = "default"
+    current_state_id: Optional[str] = None
+    horizon: int = Field(default=2, ge=1, le=5)
 
 
 class QueryRequest(BaseModel):
@@ -460,6 +624,11 @@ class JEPATick:
     audio_embedding: Optional[list[float]] = None
     audio_energy: Optional[float] = None
     world_model_version: str = "surrogate"
+    configured_encoder: str = "vjepa2"
+    last_tick_encoder_type: str = "surrogate"
+    degraded: bool = False
+    degrade_reason: Optional[str] = None
+    degrade_stage: Optional[str] = None
 
     def to_payload(self) -> "JEPATickPayload":
         return JEPATickPayload(
@@ -492,6 +661,11 @@ class JEPATick:
             audio_embedding=self.audio_embedding,
             audio_energy=float(self.audio_energy) if self.audio_energy is not None else None,
             world_model_version=self.world_model_version,
+            configured_encoder=self.configured_encoder,
+            last_tick_encoder_type=self.last_tick_encoder_type,
+            degraded=self.degraded,
+            degrade_reason=self.degrade_reason,
+            degrade_stage=self.degrade_stage,
         )
 
 
@@ -526,6 +700,11 @@ class JEPATickPayload(BaseModel):
     audio_embedding: Optional[list[float]] = None
     audio_energy: Optional[float] = None
     world_model_version: str = "surrogate"
+    configured_encoder: str = "vjepa2"
+    last_tick_encoder_type: str = "surrogate"
+    degraded: bool = False
+    degrade_reason: Optional[str] = None
+    degrade_stage: Optional[str] = None
 
 
 class AtlasNode(BaseModel):
@@ -651,6 +830,7 @@ class WorldStateResponse(BaseModel):
     history: list[SceneState] = Field(default_factory=list)
     entity_tracks: list[EntityTrack] = Field(default_factory=list)
     challenges: list[ChallengeRun] = Field(default_factory=list)
+    benchmarks: list[RecoveryBenchmarkRun] = Field(default_factory=list)
     atlas: Optional[dict[str, Any]] = None
 
 
@@ -684,6 +864,37 @@ class ProofReportResponse(BaseModel):
     session_id: str
     path: str
     generated: bool = True
+
+
+class WorldModelStatus(BaseModel):
+    encoder_type: str = "surrogate"
+    model_id: str = ""
+    model_loaded: bool = False
+    device: str = "cpu"
+    n_frames: int = 0
+    test_mode: bool = False
+    total_ticks: int = 0
+    mean_prediction_error: Optional[float] = None
+    mean_surprise_score: Optional[float] = None
+    configured_encoder: str = "vjepa2"
+    last_tick_encoder_type: str = "surrogate"
+    degraded: bool = False
+    degrade_reason: Optional[str] = None
+    degrade_stage: Optional[str] = None
+    telescope_test: str = "PASSED"
+
+
+class WorldModelConfig(BaseModel):
+    model_path: str = ""
+    n_frames: int = 0
+    effective_model: str = ""
+    cache_dir: str = ""
+    download_url: str = "https://huggingface.co/facebook/vjepa2-vitl-fpc64-256"
+
+
+class WorldModelConfigUpdate(BaseModel):
+    model_path: str = ""
+    n_frames: int = 0
 
 
 ShareObservationEventType = Literal["share_clicked", "share_copied"]

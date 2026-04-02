@@ -4,9 +4,13 @@ import type {
   AnalyzeResponse,
   ChallengeRun,
   ObservationSharePayload,
+  PlanningRolloutResponse,
   ProviderHealth,
   QueryResponse,
+  RecoveryBenchmarkRun,
   Settings,
+  ToolStateObserveResponse,
+  WorldModelStatus,
   WorldStateResponse,
   Observation,
 } from "../types";
@@ -17,15 +21,40 @@ type UseWorldStateOptions = {
   runtimeRequest: <T>(path: string, method?: string, body?: unknown) => Promise<T>;
 };
 
+function cloneSettings(settings: Settings | null) {
+  return settings ? structuredClone(settings) : null;
+}
+
+function settingsEqual(left: Settings | null, right: Settings | null) {
+  return JSON.stringify(left || {}) === JSON.stringify(right || {});
+}
+
+function resolveThemePreference(preference: string | undefined) {
+  if (!preference || preference === "system") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return preference;
+}
+
+function resolveColorScheme(theme: string) {
+  if (theme === "light" || theme === "sepia" || theme === "high_contrast_light") {
+    return "light";
+  }
+  return "dark";
+}
+
 export function useWorldState({
   sessionId,
   searchText,
   runtimeRequest,
 }: UseWorldStateOptions) {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const [savedSettings, setSavedSettings] = useState<Settings | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<Settings | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
   const [health, setHealth] = useState<ProviderHealth[]>([]);
   const [observations, setObservations] = useState<Observation[]>([]);
   const [worldState, setWorldState] = useState<WorldStateResponse | null>(null);
+  const [worldModelStatus, setWorldModelStatus] = useState<WorldModelStatus | null>(null);
   const [analysis, setAnalysis] = useState<AnalyzeResponse | null>(null);
   const [queryResult, setQueryResult] = useState<QueryResponse | null>(null);
   const [status, setStatus] = useState("Connecting to runtime");
@@ -35,35 +64,61 @@ export function useWorldState({
   const [challengeBusy, setChallengeBusy] = useState(false);
   const [llmLatencyMs, setLlmLatencyMs] = useState<number | null>(null);
   const [exportingProof, setExportingProof] = useState(false);
+  const [latestRollout, setLatestRollout] = useState<PlanningRolloutResponse["comparison"] | null>(null);
+  const [latestBenchmark, setLatestBenchmark] = useState<RecoveryBenchmarkRun | null>(null);
   const lastRefreshAtRef = useRef(0);
   const refreshTimerRef = useRef<number | null>(null);
 
+  const settings = settingsDraft ?? savedSettings;
+
+  const applySettingsSnapshot = useCallback((next: Settings) => {
+    setSavedSettings(next);
+    setSettingsDraft((current) => (settingsDirty && current ? current : next));
+  }, [settingsDirty]);
+
   const refreshAll = useCallback(async () => {
-    const [settingsResponse, healthResponse, observationsResponse, worldStateResponse] =
-      await Promise.all([
-        runtimeRequest<Settings>("/v1/settings"),
-        runtimeRequest<{ providers: ProviderHealth[] }>("/v1/providers/health"),
-        runtimeRequest<{ observations: Observation[] }>(
-          `/v1/observations?session_id=${encodeURIComponent(sessionId)}&limit=48`,
-        ),
-        runtimeRequest<WorldStateResponse>(`/v1/world-state?session_id=${encodeURIComponent(sessionId)}`),
-      ]);
-    setSettings(settingsResponse);
+    const [
+      settingsResponse,
+      healthResponse,
+      observationsResponse,
+      worldStateResponse,
+      worldModelStatusResponse,
+    ] = await Promise.all([
+      runtimeRequest<Settings>("/v1/settings"),
+      runtimeRequest<{ providers: ProviderHealth[] }>("/v1/providers/health"),
+      runtimeRequest<{ observations: Observation[] }>(
+        `/v1/observations?session_id=${encodeURIComponent(sessionId)}&limit=48`,
+      ),
+      runtimeRequest<WorldStateResponse>(`/v1/world-state?session_id=${encodeURIComponent(sessionId)}`),
+      runtimeRequest<WorldModelStatus>("/v1/world-model/status"),
+    ]);
+    applySettingsSnapshot(settingsResponse);
     setHealth(healthResponse.providers);
     setObservations(observationsResponse.observations);
     setWorldState(worldStateResponse);
+    setWorldModelStatus(worldModelStatusResponse);
     setChallengeRun(worldStateResponse.challenges?.[0] || null);
+    setLatestRollout(worldStateResponse.current?.conditioned_rollouts || null);
+    setLatestBenchmark(worldStateResponse.benchmarks?.[0] || null);
     setStatus("Runtime ready");
-  }, [runtimeRequest, sessionId]);
+  }, [applySettingsSnapshot, runtimeRequest, sessionId]);
+
+  const setSettings = useCallback((next: Settings) => {
+    setSavedSettings(next);
+    setSettingsDraft(next);
+    setSettingsDirty(false);
+  }, []);
 
   async function saveSettings() {
-    if (!settings) {
+    if (!settingsDraft) {
       return;
     }
     setSavingSettings(true);
     try {
-      const updated = await runtimeRequest<Settings>("/v1/settings", "PUT", settings);
-      setSettings(updated);
+      const updated = await runtimeRequest<Settings>("/v1/settings", "PUT", settingsDraft);
+      setSavedSettings(updated);
+      setSettingsDraft(updated);
+      setSettingsDirty(false);
       setStatus("Settings saved");
     } catch (error) {
       setStatus((error as Error).message);
@@ -72,19 +127,62 @@ export function useWorldState({
     }
   }
 
+  async function setThemePreference(nextTheme: string) {
+    const persistedBase = cloneSettings(savedSettings) ?? cloneSettings(settingsDraft);
+    const nextDraft = cloneSettings(settingsDraft) ?? cloneSettings(savedSettings);
+    if (!persistedBase || !nextDraft) {
+      return;
+    }
+    persistedBase.theme_preference = nextTheme;
+    nextDraft.theme_preference = nextTheme;
+    setSettingsDraft(nextDraft);
+    setSavedSettings((current) => (current ? { ...current, theme_preference: nextTheme } : current));
+    setSavingSettings(true);
+    try {
+      const updated = await runtimeRequest<Settings>("/v1/settings", "PUT", persistedBase);
+      setSavedSettings(updated);
+      setSettingsDraft((current) => {
+        if (!current) {
+          return updated;
+        }
+        const merged = structuredClone(current);
+        merged.theme_preference = updated.theme_preference;
+        return merged;
+      });
+      setSettingsDirty((current) => {
+        const draftWithTheme = cloneSettings(nextDraft);
+        if (!draftWithTheme) {
+          return current;
+        }
+        return !settingsEqual(
+          { ...draftWithTheme, theme_preference: updated.theme_preference },
+          updated,
+        );
+      });
+      setStatus(`Theme set to ${nextTheme.replace(/_/g, " ")}`);
+    } catch (error) {
+      setStatus((error as Error).message);
+      setSavedSettings(savedSettings);
+      setSettingsDraft(settingsDraft);
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
   function mutateSetting(path: string[], value: string | number | boolean) {
-    setSettings((current) => {
-      if (!current) {
-        return current;
+    setSettingsDraft((current) => {
+      const base = structuredClone(current ?? savedSettings);
+      if (!base) {
+        return base;
       }
-      const clone = structuredClone(current);
-      let pointer = clone;
+      let pointer = base;
       for (const key of path.slice(0, -1)) {
         pointer = pointer[key];
       }
       pointer[path[path.length - 1]] = value;
-      return clone;
+      return base;
     });
+    setSettingsDirty(true);
   }
 
   function mutateProviderEnabled(name: string, enabled: boolean) {
@@ -124,10 +222,24 @@ export function useWorldState({
       if (desktopBridge.openPath && result.path) {
         const openError = await desktopBridge.openPath(result.path);
         if (openError) {
-          throw new Error(openError);
+          const response = await fetch(`${BROWSER_RUNTIME_URL}/v1/proof-report/latest`);
+          if (!response.ok) {
+            throw new Error(openError);
+          }
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          window.open(objectUrl, "_blank", "noopener,noreferrer");
+          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
         }
       } else {
-        window.open(`${BROWSER_RUNTIME_URL}/v1/proof-report/latest`, "_blank", "noopener,noreferrer");
+        const response = await fetch(`${BROWSER_RUNTIME_URL}/v1/proof-report/latest`);
+        if (!response.ok) {
+          throw new Error(`Proof report unavailable (${response.status})`);
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
       }
       setStatus("Proof report generated");
     } catch (error) {
@@ -159,6 +271,87 @@ export function useWorldState({
     } catch (error) {
       const message = (error as Error).message;
       setStatus(message);
+      throw error;
+    }
+  }
+
+  async function runPlanningRollout(body?: Record<string, unknown>) {
+    setStatus("Planning rollout");
+    try {
+      const result = await runtimeRequest<PlanningRolloutResponse>("/v1/planning/rollout", "POST", {
+        session_id: sessionId,
+        horizon: 2,
+        ...body,
+      });
+      setLatestRollout(result.comparison);
+      setWorldState((current) =>
+        current
+          ? {
+              ...current,
+              current: result.scene_state,
+              history: [
+                result.scene_state,
+                ...current.history.filter((state) => state.id !== result.scene_state.id),
+              ],
+            }
+          : current,
+      );
+      setStatus(result.comparison.summary || "Rollout updated");
+      return result;
+    } catch (error) {
+      setStatus((error as Error).message);
+      throw error;
+    }
+  }
+
+  async function runRecoveryBenchmark(body?: Record<string, unknown>) {
+    setStatus("Running recovery benchmark");
+    try {
+      const result = await runtimeRequest<RecoveryBenchmarkRun>("/v1/benchmarks/recovery/run", "POST", {
+        session_id: sessionId,
+        ...body,
+      });
+      setLatestBenchmark(result);
+      setWorldState((current) =>
+        current
+          ? {
+              ...current,
+              benchmarks: [
+                result,
+                ...current.benchmarks.filter((benchmark) => benchmark.id !== result.id),
+              ],
+            }
+          : current,
+      );
+      setStatus(result.summary);
+      return result;
+    } catch (error) {
+      setStatus((error as Error).message);
+      throw error;
+    }
+  }
+
+  async function observeToolState(body: Record<string, unknown>) {
+    setStatus("Observing tool state");
+    try {
+      const result = await runtimeRequest<ToolStateObserveResponse>("/v1/tool-state/observe", "POST", {
+        session_id: sessionId,
+        ...body,
+      });
+      setAnalysis({
+        observation: result.observation,
+        hits: result.hits,
+        answer: result.answer,
+        provider_health: result.provider_health,
+        reasoning_trace: result.reasoning_trace,
+      });
+      startTransition(() => {
+        refreshAll().catch(() => undefined);
+      });
+      setStatus("Tool state observed");
+      return result;
+    } catch (error) {
+      setStatus((error as Error).message);
       throw error;
     }
   }
@@ -228,15 +421,14 @@ export function useWorldState({
 
   useEffect(() => {
     const root = document.documentElement;
-    const preference = settings?.theme_preference || "system";
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const applyTheme = () => {
-      const resolved = preference === "system" ? (mediaQuery.matches ? "dark" : "light") : preference;
+      const resolved = resolveThemePreference(settings?.theme_preference);
       root.dataset.theme = resolved;
-      root.style.colorScheme = resolved;
+      root.style.colorScheme = resolveColorScheme(resolved);
     };
     applyTheme();
-    if (preference !== "system") {
+    if ((settings?.theme_preference || "system") !== "system") {
       return;
     }
     const handleChange = () => applyTheme();
@@ -263,13 +455,19 @@ export function useWorldState({
 
   return {
     settings,
+    savedSettings,
+    settingsDirty,
     setSettings,
+    setSettingsDraft,
+    setThemePreference,
     health,
     setHealth,
     observations,
     setObservations,
     worldState,
     setWorldState,
+    worldModelStatus,
+    setWorldModelStatus,
     analysis,
     setAnalysis,
     queryResult,
@@ -283,6 +481,8 @@ export function useWorldState({
     challengeBusy,
     llmLatencyMs,
     exportingProof,
+    latestRollout,
+    latestBenchmark,
     refreshAll,
     saveSettings,
     mutateSetting,
@@ -290,5 +490,8 @@ export function useWorldState({
     runChallengeEvaluation,
     exportProofReport,
     copyObservationShare,
+    observeToolState,
+    runPlanningRollout,
+    runRecoveryBenchmark,
   };
 }

@@ -80,13 +80,24 @@ def _fallback_pdf_bytes(html: str) -> bytes:
     return pdf.encode("latin-1", errors="ignore")
 
 
-def generate_proof_report(ticks: list[JEPATick], session_id: str, chart_b64: str | None = None) -> Path:
-    output_path = Path(f"/tmp/toori_proof_{session_id}.pdf")
-    html = _build_html(ticks=ticks, session_id=session_id, chart_b64=chart_b64)
+def _render_pdf_bytes(html: str) -> bytes:
     try:
         from weasyprint import HTML
 
-        HTML(string=html).write_pdf(str(output_path))
+        pdf_bytes = HTML(string=html).write_pdf()
+        if not isinstance(pdf_bytes, (bytes, bytearray)):
+            raise TypeError("write_pdf() returned a non-bytes payload")
+        pdf_bytes = bytes(pdf_bytes)
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise ValueError("write_pdf() did not return a valid PDF")
+        return pdf_bytes
     except Exception:
-        output_path.write_bytes(_fallback_pdf_bytes(html))
+        return _fallback_pdf_bytes(html)
+
+
+def generate_proof_report(ticks: list[JEPATick], session_id: str, chart_b64: str | None = None) -> Path:
+    output_path = Path(f"/tmp/toori_proof_{session_id}.pdf")
+    html = _build_html(ticks=ticks, session_id=session_id, chart_b64=chart_b64)
+    pdf_bytes = _render_pdf_bytes(html)
+    output_path.write_bytes(pdf_bytes)
     return output_path

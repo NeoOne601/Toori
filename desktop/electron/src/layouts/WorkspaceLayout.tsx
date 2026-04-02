@@ -10,6 +10,19 @@ import SmritiTab from "../tabs/SmritiTab";
 export function WorkspaceLayout() {
   const app = useDesktopApp();
   const isSmriti = app.activeTab === "Smriti";
+  const configuredWorldModel = app.world.worldModelStatus?.configured_encoder || "vjepa2";
+  const lastTickWorldModel =
+    app.currentJepaTick?.last_tick_encoder_type ||
+    app.world.worldModelStatus?.last_tick_encoder_type ||
+    "awaiting first tick";
+  const worldModelChip = `${configuredWorldModel} configured`;
+  const worldModelRuntimeChip = app.currentJepaTick?.degraded || app.world.worldModelStatus?.degraded
+    ? `${configuredWorldModel} degraded`
+    : lastTickWorldModel === "surrogate"
+      ? "surrogate fallback"
+      : lastTickWorldModel === "vjepa2"
+        ? "vjepa2 active"
+        : lastTickWorldModel;
 
   return (
     <>
@@ -24,7 +37,9 @@ export function WorkspaceLayout() {
           </p>
           <h2>{app.activeTab}</h2>
           <div className="hero-meta">
-            <span>{app.world.settings?.primary_perception_provider || "onnx"} perception</span>
+            <span>{app.world.settings?.primary_perception_provider || "onnx"} proposals</span>
+            <span>{worldModelChip}</span>
+            <span>{worldModelRuntimeChip}</span>
             <span>{app.world.settings?.reasoning_backend || "cloud"} reasoning</span>
             <span>{isSmriti ? "recall + ingestion active" : app.cameraStatusLabel}</span>
             {isSmriti ? <span>{app.sessionId}</span> : null}

@@ -9,7 +9,7 @@ M1 8GB Unified Memory Architecture:
     frames:  8  (2,048 tokens — safe for MPS)
     peak:    ~1.8 GB per forward pass
 
-  TEST mode  (TOORI_VJEPA2_ENV=test  OR  running under pytest)
+  TEST mode  (TOORI_VJEPA2_ENV=test)
     device:  CPU  (never causes MPS pool accumulation)
     frames:  4  (1,024 tokens — fast on CPU)
     peak:    ~400 MB per forward pass
@@ -24,29 +24,96 @@ M1 8GB Unified Memory Architecture:
 from __future__ import annotations
 
 import gc
+import json
 import os
-import sys
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
 
 def _is_test_environment() -> bool:
-    if os.environ.get("TOORI_VJEPA2_ENV", "").lower() == "test":
-        return True
-    return "pytest" in sys.modules or "_pytest" in sys.modules
+    """
+    True only when explicitly set to test mode via env var.
+
+    NEVER use pytest's current-test marker. Production startup does not set
+    TOORI_VJEPA2_ENV, so this returns False and V-JEPA 2 loads.
+    """
+    env = os.environ.get("TOORI_VJEPA2_ENV", "").lower()
+    return env == "test"
 
 
-def _get_n_frames() -> int:
+DEFAULT_MODEL_ID = "facebook/vjepa2-vitl-fpc64-256"
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _settings_json_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    data_dir = os.environ.get("TOORI_DATA_DIR")
+    if data_dir:
+        candidates.append(Path(data_dir).expanduser().resolve() / "settings.json")
+    candidates.append((Path.cwd() / ".toori" / "settings.json").resolve())
+    candidates.append((Path.home() / ".toori" / "settings.json").expanduser().resolve())
+    return candidates
+
+
+def _load_settings_json() -> dict[str, object]:
+    for candidate in _settings_json_candidates():
+        try:
+            if not candidate.exists():
+                continue
+            payload = json.loads(candidate.read_text())
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            continue
+    return {}
+
+
+def _resolve_model_id() -> str:
+    env_val = os.environ.get("TOORI_VJEPA2_MODEL", "").strip()
+    if env_val:
+        if env_val.startswith(("~", "/")):
+            resolved = Path(env_val).expanduser()
+            if resolved.exists():
+                return str(resolved.resolve())
+            return DEFAULT_MODEL_ID
+        return env_val
+
+    settings = _load_settings_json()
+    configured = str(settings.get("vjepa2_model_path", "") or "").strip()
+    if configured:
+        if configured.startswith(("~", "/")):
+            resolved = Path(configured).expanduser()
+            if resolved.exists():
+                return str(resolved.resolve())
+            return DEFAULT_MODEL_ID
+        return configured
+
+    return DEFAULT_MODEL_ID
+
+
+def _resolve_n_frames() -> int:
     env_val = os.environ.get("TOORI_VJEPA2_FRAMES")
     if env_val:
         n = int(env_val)
-        if n not in (1, 2, 4, 8):
+        if n not in (0, 4, 8):
             raise ValueError(
-                f"TOORI_VJEPA2_FRAMES={n} unsafe. "
-                f"Use 4 (test) or 8 (production). 16 crashes M1 8GB."
+                f"TOORI_VJEPA2_FRAMES={n} unsafe. Use 4 (test), 8 (production), or 0 for auto."
             )
         return n
+
+    settings = _load_settings_json()
+    configured = settings.get("vjepa2_n_frames")
+    if configured is not None:
+        n = int(configured)
+        if n not in (0, 4, 8):
+            raise ValueError(
+                f"vjepa2_n_frames={n} unsafe. Use 4 (test), 8 (production), or 0 for auto."
+            )
+        if n != 0:
+            return n
+
     return 4 if _is_test_environment() else 8
 
 
@@ -62,7 +129,6 @@ def _get_device() -> "torch.device":
     return torch.device("cpu")
 
 
-MODEL_ID = os.environ.get("TOORI_VJEPA2_MODEL", "facebook/vjepa2-vitl-fpc64-256")
 FRAME_RES = 256
 TARGET_DIM = 384
 PROJECTION_SEED = 42
@@ -71,11 +137,6 @@ _encoder_singleton: Optional["VJepa2Encoder"] = None
 
 
 def get_vjepa2_encoder() -> "VJepa2Encoder":
-    import os
-    test_name = os.environ.get("PYTEST_CURRENT_TEST", "")
-    if test_name and "test_world_model_predictor.py" not in test_name:
-        raise RuntimeError("Skip VJEPA2 in main suite to meet SLA and torch isolation")
-
     global _encoder_singleton
     if _encoder_singleton is None:
         _encoder_singleton = VJepa2Encoder()
@@ -84,10 +145,10 @@ def get_vjepa2_encoder() -> "VJepa2Encoder":
 
 def reset_encoder_singleton() -> None:
     global _encoder_singleton
-    if _encoder_singleton is not None:
-        _encoder_singleton._unload()
-        _encoder_singleton = None
-    _force_full_gc()
+    if _encoder_singleton is None:
+        return
+    _encoder_singleton._unload()
+    _encoder_singleton = None
 
 
 def _force_full_gc() -> None:
@@ -109,7 +170,8 @@ class VJepa2Encoder:
         import torch
         from cloud.runtime.observability import get_logger
         self.log = get_logger("vjepa2_encoder")
-        self._n_frames = _get_n_frames()
+        self._model_id = _resolve_model_id()
+        self._n_frames = _resolve_n_frames()
         self.device = _get_device()
         self._model = None
         self._processor = None
@@ -120,18 +182,25 @@ class VJepa2Encoder:
         proj /= np.sqrt(1024)
         self._projection = torch.from_numpy(proj).to(self.device)
 
-        self.log.info("vjepa2_init", device=str(self.device), n_frames=self._n_frames,
-                 model=MODEL_ID, test_mode=_is_test_environment())
-        self._load()
+        self.log.info(
+            "vjepa2_init",
+            device=str(self.device),
+            n_frames=self._n_frames,
+            model=self._model_id,
+            test_mode=_is_test_environment(),
+            message="V-JEPA 2 encoder initialized (lazy load — weights load on first encode())",
+        )
 
     def _load(self) -> None:
+        if self._loaded:
+            return
         import torch
         from transformers import AutoVideoProcessor, AutoModel
 
-        self.log.info("vjepa2_loading", model=MODEL_ID)
-        self._processor = AutoVideoProcessor.from_pretrained(MODEL_ID)
+        self.log.info("vjepa2_loading", model=self._model_id)
+        self._processor = AutoVideoProcessor.from_pretrained(self._model_id)
         self._model = AutoModel.from_pretrained(
-            MODEL_ID, torch_dtype=torch.float16,
+            self._model_id, dtype=torch.float16,
         ).to(self.device).eval()
 
         dummy = np.zeros((self._n_frames, FRAME_RES, FRAME_RES, 3), dtype=np.uint8)
@@ -151,8 +220,12 @@ class VJepa2Encoder:
         _force_full_gc()
 
         self._loaded = True
-        self.log.info("vjepa2_loaded", model=MODEL_ID, device=str(self.device),
+        self.log.info("vjepa2_loaded", model=self._model_id, device=str(self.device),
                  n_frames=self._n_frames, encoder_dim=enc_dim)
+
+    def ensure_loaded(self) -> None:
+        if not self._loaded:
+            self._load()
 
     def _unload(self) -> None:
         import torch
@@ -178,7 +251,7 @@ class VJepa2Encoder:
             torch.mps.empty_cache()
 
     def encode(self, frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        assert self._loaded
+        self.ensure_loaded()
         import torch
         from PIL import Image
 
@@ -210,7 +283,7 @@ class VJepa2Encoder:
     def encode_with_context(
         self, frames: list[np.ndarray]
     ) -> tuple[np.ndarray, np.ndarray]:
-        assert self._loaded
+        self.ensure_loaded()
         import torch
         from PIL import Image
 
@@ -255,7 +328,7 @@ class VJepa2Encoder:
 
     @property
     def model_id(self) -> str:
-        return MODEL_ID
+        return self._model_id
 
     @property
     def n_frames(self) -> int:
@@ -263,6 +336,6 @@ class VJepa2Encoder:
 
     def __repr__(self) -> str:
         return (
-            f"VJepa2Encoder(model={MODEL_ID!r}, device={self.device}, "
+            f"VJepa2Encoder(model={self._model_id!r}, device={self.device}, "
             f"n_frames={self._n_frames}, loaded={self._loaded})"
         )

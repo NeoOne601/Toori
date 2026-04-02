@@ -20,6 +20,7 @@ export const DEFAULT_CHALLENGE_STEPS = [
 export const LIVING_SECTIONS = [
   { id: "overview", label: "Overview", detail: "Scene delta and live metrics" },
   { id: "memory", label: "Memory", detail: "Continuity memory and entity tracks" },
+  { id: "planning", label: "Recovery Lab", detail: "Action rollouts and fallback proofs" },
   { id: "challenge", label: "Challenge Lab", detail: "Guided proof run and baselines" },
 ] as const;
 

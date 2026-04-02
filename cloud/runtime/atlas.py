@@ -143,6 +143,21 @@ class EpistemicAtlas:
             elif age > self._stale_seconds:
                 self._edges[key] = edge.model_copy(update={"status": "stale"})
 
+        removable_nodes = [
+            track_id
+            for track_id, node in self._nodes.items()
+            if (
+                node.status in {"disappeared", "violated prediction"}
+                or (now - node.last_seen_at).total_seconds() > self._stale_seconds
+            )
+        ]
+        for track_id in removable_nodes:
+            self._nodes.pop(track_id, None)
+
+        for key, edge in list(self._edges.items()):
+            if edge.source_id not in self._nodes or edge.target_id not in self._nodes:
+                self._edges.pop(key, None)
+
     def get_nodes(self) -> list[AtlasNode]:
         return list(self._nodes.values())
 

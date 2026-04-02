@@ -8,10 +8,11 @@ from cloud.runtime.atlas import EpistemicAtlas
 from cloud.runtime.models import (
     BoundingBox,
     EntityTrack,
-    SceneState,
     PredictionWindow,
+    SceneState,
     WorldModelMetrics,
 )
+from cloud.runtime.service import RuntimeContainer
 
 
 def _make_track(
@@ -145,3 +146,36 @@ def test_reset_clears_atlas():
     atlas.reset()
     assert len(atlas.get_nodes()) == 0
     assert len(atlas.get_edges()) == 0
+
+
+def test_disappeared_nodes_are_pruned():
+    atlas = EpistemicAtlas(stale_seconds=30.0)
+    visible_track = _make_track("trk_1", "cup", status="visible")
+    scene = _make_scene_state(track_ids=["trk_1"])
+    atlas.update([visible_track], scene)
+    assert len(atlas.get_nodes()) == 1
+
+    disappeared_track = visible_track.model_copy(update={"status": "disappeared"})
+    later_scene = scene.model_copy(update={"id": "ws_test_2", "created_at": datetime.now(timezone.utc)})
+    atlas.update([disappeared_track], later_scene)
+
+    assert len(atlas.get_nodes()) == 0
+    assert len(atlas.get_edges()) == 0
+
+
+def test_world_state_uses_session_scoped_atlas(tmp_path):
+    runtime = RuntimeContainer(data_dir=tmp_path)
+
+    session_a_track = _make_track("trk_a", "cup").model_copy(update={"session_id": "session-a"})
+    session_b_track = _make_track("trk_b", "chair").model_copy(update={"session_id": "session-b"})
+    session_a_scene = _make_scene_state(track_ids=["trk_a"]).model_copy(update={"session_id": "session-a", "id": "ws_a"})
+    session_b_scene = _make_scene_state(track_ids=["trk_b"]).model_copy(update={"session_id": "session-b", "id": "ws_b"})
+
+    runtime._atlas_for_session("session-a").update([session_a_track], session_a_scene)
+    runtime._atlas_for_session("session-b").update([session_b_track], session_b_scene)
+
+    session_a_world = runtime.get_world_state("session-a")
+    session_b_world = runtime.get_world_state("session-b")
+
+    assert [node["label"] for node in session_a_world.atlas["nodes"]] == ["cup"]
+    assert [node["label"] for node in session_b_world.atlas["nodes"]] == ["chair"]

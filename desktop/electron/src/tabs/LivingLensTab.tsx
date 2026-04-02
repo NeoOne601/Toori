@@ -1,3 +1,4 @@
+import { useState } from "react";
 import BaselineBattle from "../components/BaselineBattle";
 import ConsumerMode from "../components/ConsumerMode";
 import ForecastPanel from "../components/ForecastPanel";
@@ -17,6 +18,12 @@ import KPICard from "../widgets/KPICard";
 
 export default function LivingLensTab() {
   const app = useDesktopApp();
+  const [toolUrl, setToolUrl] = useState("");
+  const [toolViewId, setToolViewId] = useState("");
+  const [toolEntities, setToolEntities] = useState("");
+  const [toolAffordances, setToolAffordances] = useState("");
+  const [toolErrors, setToolErrors] = useState("");
+  const [toolBusy, setToolBusy] = useState(false);
   const cameraStateLabel =
     app.cameraConnectionState === "live"
       ? "Live"
@@ -303,9 +310,235 @@ export default function LivingLensTab() {
             </section>
           ) : null}
 
+          {app.livingSection === "planning" ? (
+            <section className="ll-grid living-view-grid">
+              <div className="ll-row ll-row--2col">
+                <article className="panel panel--comparison">
+                  <div className="panel-head">
+                    <h3>Recovery Lab</h3>
+                    <span>{app.currentSceneState?.state_domain || "camera"}</span>
+                  </div>
+                  <div className="stack">
+                    <div className="status-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+                      <div className="status-metric">
+                        <span>Grounded entities</span>
+                        <strong>{app.currentSceneState?.grounded_entities?.length || 0}</strong>
+                      </div>
+                      <div className="status-metric">
+                        <span>Affordances</span>
+                        <strong>{app.currentSceneState?.affordances?.length || 0}</strong>
+                      </div>
+                      <div className="status-metric">
+                        <span>Plan branches</span>
+                        <strong>{app.currentRollout?.ranked_branches.length || 0}</strong>
+                      </div>
+                      <div className="status-metric">
+                        <span>Last tick</span>
+                        <strong>{app.world.worldModelStatus?.last_tick_encoder_type || "waiting"}</strong>
+                      </div>
+                    </div>
+                    <div className="camera-health panel--stable">
+                      <strong>{app.currentRollout?.summary || "Action-conditioned rollout is ready to rank Plan A vs Plan B."}</strong>
+                      <p>
+                        {app.world.worldModelStatus?.degraded
+                          ? `World model degraded at ${app.world.worldModelStatus.degrade_stage || "runtime"}: ${app.world.worldModelStatus.degrade_reason || "fallback active"}`
+                          : "Use this lab to compare the current best action path against fallback recovery branches."}
+                      </p>
+                    </div>
+                    <div className="button-row">
+                      <button type="button" className="primary" onClick={() => void app.world.runPlanningRollout()}>
+                        Refresh Rollout
+                      </button>
+                      <button type="button" onClick={() => void app.world.runRecoveryBenchmark()}>
+                        Run Recovery Benchmark
+                      </button>
+                    </div>
+                    <div className="chips chips--stable">
+                      {(app.currentSceneState?.grounded_entities || []).slice(0, 8).map((entity) => (
+                        <span key={entity.id}>{entity.label}</span>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+                <article className="panel panel--memory">
+                  <div className="panel-head">
+                    <h3>Tool-State Grounding</h3>
+                    <span>Manual browser or desktop evidence</span>
+                  </div>
+                  <div className="stack">
+                    <label className="field">
+                      <span>Current URL</span>
+                      <input value={toolUrl} onChange={(event) => setToolUrl(event.target.value)} placeholder="https://example.com/app" />
+                    </label>
+                    <label className="field">
+                      <span>View or dialog id</span>
+                      <input value={toolViewId} onChange={(event) => setToolViewId(event.target.value)} placeholder="checkout-modal" />
+                    </label>
+                    <label className="field">
+                      <span>Visible entities</span>
+                      <textarea
+                        rows={3}
+                        value={toolEntities}
+                        onChange={(event) => setToolEntities(event.target.value)}
+                        placeholder="button:Submit order, field:Card number, dialog:Payment failed"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Affordances</span>
+                      <textarea
+                        rows={3}
+                        value={toolAffordances}
+                        onChange={(event) => setToolAffordances(event.target.value)}
+                        placeholder="click:Retry payment, click:Change card, open:Support chat"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Error banners</span>
+                      <input value={toolErrors} onChange={(event) => setToolErrors(event.target.value)} placeholder="Payment failed, Button moved" />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={toolBusy}
+                      onClick={async () => {
+                        const parseItems = (value: string) =>
+                          value
+                            .split(/\n|,/)
+                            .map((item) => item.trim())
+                            .filter(Boolean);
+                        const visibleEntities = parseItems(toolEntities).map((item, index) => {
+                          const [kind, ...labelParts] = item.split(":");
+                          const label = (labelParts.join(":").trim() || kind.trim());
+                          return {
+                            id: `tool-entity-${index}-${label.toLowerCase().replace(/\s+/g, "-")}`,
+                            label,
+                            kind: labelParts.length ? kind.trim() : "ui_element",
+                            state_domain: "browser",
+                            status: "visible",
+                            confidence: 0.82,
+                            properties: {},
+                          };
+                        });
+                        const affordances = parseItems(toolAffordances).map((item, index) => {
+                          const [kind, ...labelParts] = item.split(":");
+                          const label = (labelParts.join(":").trim() || kind.trim());
+                          return {
+                            id: `tool-affordance-${index}-${label.toLowerCase().replace(/\s+/g, "-")}`,
+                            label,
+                            kind: labelParts.length ? `browser.${kind.trim()}` : "browser.click",
+                            state_domain: "browser",
+                            availability: "available",
+                            confidence: 0.78,
+                            properties: {},
+                          };
+                        });
+                        setToolBusy(true);
+                        try {
+                          await app.world.observeToolState({
+                            state_domain: "browser",
+                            current_url: toolUrl || undefined,
+                            view_id: toolViewId || undefined,
+                            visible_entities: visibleEntities,
+                            affordances,
+                            error_banners: parseItems(toolErrors),
+                          });
+                          await app.world.runPlanningRollout();
+                        } finally {
+                          setToolBusy(false);
+                        }
+                      }}
+                    >
+                      {toolBusy ? "Grounding..." : "Observe Tool State"}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <div className="ll-row ll-row--2col">
+                <article className="panel panel--comparison">
+                  <div className="panel-head">
+                    <h3>Ranked Rollouts</h3>
+                    <span>{app.currentRollout?.chosen_branch_id || "no branch selected"}</span>
+                  </div>
+                  <div className="stack">
+                    {(app.currentRollout?.ranked_branches || []).length ? (
+                      app.currentRollout?.ranked_branches.map((branch) => (
+                        <div key={branch.id} className="camera-health panel--comparison">
+                          <strong>{branch.candidate_action.verb.replace(/_/g, " ")} · risk {branch.risk_score.toFixed(2)}</strong>
+                          <p>{branch.predicted_next_state_summary}</p>
+                          <div className="chips chips--stable">
+                            {branch.failure_predicates.length
+                              ? branch.failure_predicates.map((predicate) => <span key={predicate}>{predicate}</span>)
+                              : <span>no blockers predicted</span>}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="muted">Rollout branches will appear after the first camera tick or tool-state observation.</p>
+                    )}
+                  </div>
+                </article>
+                <article className="panel panel--challenge">
+                  <div className="panel-head">
+                    <h3>Benchmark Summary</h3>
+                    <span>{app.currentBenchmark?.winner || "waiting"}</span>
+                  </div>
+                  <div className="stack">
+                    <div className="camera-health panel--challenge">
+                      <strong>{app.currentBenchmark?.summary || "Run the benchmark to validate closed-loop recovery."}</strong>
+                    </div>
+                    <div className="chips chips--challenge">
+                      {(app.currentBenchmark?.scenarios || []).map((scenario) => (
+                        <span key={scenario.id}>{scenario.passed ? "pass" : "watch"} {scenario.title}</span>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </section>
+          ) : null}
+
           {app.livingSection === "challenge" ? (
             <section className="ll-grid living-view-grid">
               <div className="ll-row ll-row--2col">
+                <SceneMonitor
+                  title="Challenge Capture"
+                  subtitle={app.currentSceneState ? `scene ${app.currentSceneState.id.slice(0, 8)}` : "waiting for challenge frames"}
+                  videoRef={app.camera.livingVideoRef}
+                  captureCanvasRef={app.camera.livingCaptureCanvasRef}
+                  diagnosticsCanvasRef={app.camera.livingDiagnosticsCanvasRef}
+                  boxes={app.livingBoxes}
+                  showEntities={app.showEntities}
+                  showEnergyMap={app.showEnergyMap}
+                  energyMap={app.currentJepaTick?.energy_map || []}
+                  ghosts={app.ghostBoxes}
+                  anchors={app.energyAnchors}
+                  uiMode="science"
+                  toneClassName="panel--live"
+                  overlay={
+                    <div className="living-overlay">
+                      <span className={`video-status-dot is-${app.cameraConnectionState}`} title={cameraStateLabel} />
+                    </div>
+                  }
+                  footer={
+                    <div className="signal-grid">
+                      <div className="diagnostic-card panel--live">
+                        <span>Status</span>
+                        <strong>{app.livingLens.livingLensStatus}</strong>
+                      </div>
+                      <div className="diagnostic-card panel--stable">
+                        <span>Step</span>
+                        <strong>
+                          {app.challengeGuideActive
+                            ? `${app.challengeStepIndex + 1}/${app.challengeSteps.length}`
+                            : "ready"}
+                        </strong>
+                      </div>
+                      <div className="diagnostic-card panel--persistence">
+                        <span>World States</span>
+                        <strong>{app.challengeHistory.length}</strong>
+                      </div>
+                    </div>
+                  }
+                />
                 <ChallengeGuide
                   challengeGuideActive={app.challengeGuideActive}
                   challengeStepIndex={app.challengeStepIndex}
@@ -333,10 +566,15 @@ export default function LivingLensTab() {
                 </article>
               </div>
               <div className="ll-row ll-row--full">
-                <BaselineBattle history={app.baselineHistory} />
+                <ScientificReadout
+                  challengeRun={app.world.challengeRun}
+                  history={app.challengeHistory}
+                  rollout={app.currentRollout}
+                  benchmark={app.currentBenchmark}
+                />
               </div>
               <div className="ll-row ll-row--full">
-                <ScientificReadout challengeRun={app.world.challengeRun} history={app.challengeHistory} />
+                <BaselineBattle history={app.baselineHistory} />
               </div>
             </section>
           ) : null}

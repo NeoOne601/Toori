@@ -26,9 +26,18 @@ from .models import (
     ChallengeEvaluateRequest,
     JEPAForecastRequest,
     LivingLensTickRequest,
+    PlanningRolloutRequest,
+    PlanningRolloutResponse,
     ProofReportGenerateRequest,
     QueryRequest,
+    RecoveryBenchmarkRun,
+    RecoveryBenchmarkRunRequest,
     RuntimeSettings,
+    ToolStateObserveRequest,
+    ToolStateObserveResponse,
+    WorldModelConfig,
+    WorldModelConfigUpdate,
+    WorldModelStatus,
     ShareObservationEventRequest,
     ShareObservationRequest,
     ShareObservationResponse,
@@ -241,6 +250,26 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     def put_settings(settings: RuntimeSettings) -> RuntimeSettings:
         return app.state.runtime.update_settings(settings)
 
+    @app.get("/v1/world-model/status", response_model=WorldModelStatus)
+    def world_model_status() -> WorldModelStatus:
+        return app.state.runtime.get_world_model_status()
+
+    @app.get(
+        "/v1/world-model/config",
+        response_model=WorldModelConfig,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("world_model.config.get"))],
+    )
+    def get_world_model_config() -> WorldModelConfig:
+        return app.state.runtime.get_vjepa2_settings()
+
+    @app.put(
+        "/v1/world-model/config",
+        response_model=WorldModelConfig,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("world_model.config"))],
+    )
+    def put_world_model_config(payload: WorldModelConfigUpdate) -> WorldModelConfig:
+        return app.state.runtime.update_vjepa2_settings(payload.model_path, payload.n_frames)
+
     @app.get(
         "/v1/providers/health",
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("providers.health"))],
@@ -326,6 +355,41 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         return app.state.runtime.get_world_state(session_id)
 
     @app.post(
+        "/v1/tool-state/observe",
+        response_model=ToolStateObserveResponse,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("tool_state.observe"))],
+    )
+    def tool_state_observe(payload: ToolStateObserveRequest):
+        return app.state.runtime.observe_tool_state(payload)
+
+    @app.post(
+        "/v1/planning/rollout",
+        response_model=PlanningRolloutResponse,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("planning.rollout"))],
+    )
+    def planning_rollout(payload: PlanningRolloutRequest):
+        return app.state.runtime.plan_rollout(payload)
+
+    @app.post(
+        "/v1/benchmarks/recovery/run",
+        response_model=RecoveryBenchmarkRun,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("benchmarks.recovery.run"))],
+    )
+    def run_recovery_benchmark(payload: RecoveryBenchmarkRunRequest):
+        return app.state.runtime.run_recovery_benchmark(payload)
+
+    @app.get(
+        "/v1/benchmarks/recovery/{benchmark_id}",
+        response_model=RecoveryBenchmarkRun,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("benchmarks.recovery.get"))],
+    )
+    def get_recovery_benchmark(benchmark_id: str):
+        benchmark = app.state.runtime.get_recovery_benchmark(benchmark_id)
+        if benchmark is None:
+            raise HTTPException(status_code=404, detail="Recovery benchmark not found")
+        return benchmark
+
+    @app.post(
         "/v1/challenges/evaluate",
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("challenges.evaluate"))],
     )
@@ -381,10 +445,16 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         latest = app.state.runtime.latest_proof_report()
         if latest is None or not latest.exists():
             raise HTTPException(status_code=404, detail="Proof report not found")
-        return StreamingResponse(
-            iter([latest.read_bytes()]),
+        content = latest.read_bytes()
+        if not content.startswith(b"%PDF"):
+            raise HTTPException(status_code=500, detail="Proof report is not a valid PDF")
+        return Response(
+            content=content,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{latest.name}"'},
+            headers={
+                "Content-Disposition": f'inline; filename="{latest.name}"',
+                "Cache-Control": "no-cache",
+            },
         )
 
     @app.websocket("/v1/events")

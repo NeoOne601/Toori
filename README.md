@@ -212,7 +212,9 @@ npm run web
 
 ### 2. Configure Desktop Settings
 Open the **Settings** menu. 
-- **Providers:** M1 users default to DINOv2 perception. You can also configure optional reasoners (`providers.onnx.model_path`, `ollama` with `base_url`, `mlx`, `cloud`).
+- **World Model:** V-JEPA2 is configured separately from proposal-box perception. Use **World Model** to point Toori at a local V-JEPA2 weight directory, tune `n_frames`, and inspect whether the last tick stayed on `vjepa2` or degraded to surrogate fallback.
+- **Providers:** M1 users default to DINOv2 perception. ONNX remains a proposal-box compatibility path, while `ollama`, `mlx`, and `cloud` are optional language sidecars rather than the authoritative planner.
+- **Themes:** Choose from `system`, `dark`, `light`, `graphite`, `sepia`, `high_contrast_dark`, and `high_contrast_light`. Theme changes save immediately; other settings remain draft until you save them.
 - **Smriti Storage:** Configure the heavy-data directory. *(On an M1 iMac with a 256 GB SSD, point Smriti at an external drive before indexing a large video corpus).*
 
 ### 3. Smriti Quick Workflow
@@ -224,7 +226,7 @@ Open the **Settings** menu.
 6. Tag a person to automatically generate their **Journals** and social topology graph.
 
 ### 4. Living Lens Workflow
-Use the **Live Lens** for live camera capture debugging. The **Living Lens** proof surface runs continuously in passive mode to track entity persistence, predicting moment-to-moment reality. Evaluate baselines by running an *occlusion challenge* and hitting **Copy Share Text** for a portable recap!
+Use the **Live Lens** for live camera capture debugging. The **Living Lens** proof surface runs continuously in passive mode to track entity persistence, predicting moment-to-moment reality. The new **Recovery Lab** extends the same scene-state pipeline with grounded tool/browser evidence, ranked action-conditioned rollouts, and closed-loop recovery benchmarks. Evaluate baselines by running an *occlusion challenge* and hit **Copy Share Text** for a portable recap.
 
 ---
 
@@ -275,6 +277,11 @@ docs/                     — Extended system-design and manual architecture spe
 |--------|-------|-------------|
 | `POST` | `/v1/analyze` | Single frame camera analysis |
 | `POST` | `/v1/living-lens/tick` | Advance live world-model state |
+| `GET` | `/v1/world-model/status` | Report configured encoder, last tick result, and degradation state |
+| `POST` | `/v1/tool-state/observe` | Ground browser or desktop tool state into the same world-state pipeline |
+| `POST` | `/v1/planning/rollout` | Rank local Plan A / Plan B action-conditioned branches |
+| `POST` | `/v1/benchmarks/recovery/run` | Run the hybrid recovery benchmark pack |
+| `GET` | `/v1/benchmarks/recovery/{id}` | Fetch a stored recovery benchmark run |
 | `GET` | `/v1/world-state` | Get Epistemic Atlas and scene threads |
 | `WS` | `/v1/events` | Stream live observations & syncs |
 | `POST` | `/v1/share/observation` | Build shareable observation text |

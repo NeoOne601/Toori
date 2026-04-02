@@ -1,10 +1,53 @@
-import type { FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import SmritiStorageSettings from "../components/smriti/SmritiStorageSettings";
+import { pickFolderPath, runtimeRequest } from "../hooks/useRuntimeBridge";
 import { useDesktopApp } from "../state/DesktopAppContext";
+import type { WorldModelConfig, WorldModelStatus } from "../types";
 
 export default function SettingsTab() {
   const app = useDesktopApp();
   const settings = app.world.settings;
+  const [wmStatus, setWmStatus] = useState<WorldModelStatus | null>(app.world.worldModelStatus);
+  const [wmConfig, setWmConfig] = useState<WorldModelConfig | null>(null);
+  const [wmLoading, setWmLoading] = useState(true);
+  const [wmSaving, setWmSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadWorldModelConfig() {
+      try {
+        const [status, config] = await Promise.all([
+          runtimeRequest<WorldModelStatus>("/v1/world-model/status"),
+          runtimeRequest<WorldModelConfig>("/v1/world-model/config"),
+        ]);
+        if (!active) {
+          return;
+        }
+        setWmStatus(status);
+        setWmConfig(config);
+      } catch (error) {
+        if (active) {
+          app.world.setStatus((error as Error).message);
+        }
+      } finally {
+        if (active) {
+          setWmLoading(false);
+        }
+      }
+    }
+
+    void loadWorldModelConfig();
+    return () => {
+      active = false;
+    };
+  }, [app.world.setStatus]);
+
+  useEffect(() => {
+    if (app.world.worldModelStatus) {
+      setWmStatus(app.world.worldModelStatus);
+    }
+  }, [app.world.worldModelStatus]);
 
   if (!settings) {
     return null;
@@ -13,6 +56,35 @@ export default function SettingsTab() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await app.world.saveSettings();
+  }
+
+  async function saveWorldModelConfig() {
+    if (!wmConfig) {
+      return;
+    }
+    setWmSaving(true);
+    try {
+      const nextConfig = await runtimeRequest<WorldModelConfig>("/v1/world-model/config", "PUT", {
+        model_path: wmConfig.model_path,
+        n_frames: wmConfig.n_frames,
+      });
+      setWmConfig(nextConfig);
+      const nextStatus = await runtimeRequest<WorldModelStatus>("/v1/world-model/status");
+      setWmStatus(nextStatus);
+      app.world.setStatus("World model settings saved");
+    } catch (error) {
+      app.world.setStatus((error as Error).message);
+    } finally {
+      setWmSaving(false);
+    }
+  }
+
+  async function chooseWorldModelPath() {
+    const nextPath = await pickFolderPath();
+    if (!nextPath) {
+      return;
+    }
+    setWmConfig((current) => (current ? { ...current, model_path: nextPath } : current));
   }
 
   return (
@@ -40,12 +112,17 @@ export default function SettingsTab() {
           <span>Theme</span>
           <select
             value={settings.theme_preference || "system"}
-            onChange={(event) => app.world.mutateSetting(["theme_preference"], event.target.value)}
+            onChange={(event) => void app.world.setThemePreference(event.target.value)}
           >
             <option value="system">system</option>
             <option value="dark">dark</option>
             <option value="light">light</option>
+            <option value="graphite">graphite</option>
+            <option value="sepia">sepia</option>
+            <option value="high_contrast_dark">high contrast dark</option>
+            <option value="high_contrast_light">high contrast light</option>
           </select>
+          <small className="field-hint">Theme saves immediately. Other settings stay in draft until you save.</small>
         </label>
         <label className="field">
           <span>Sampling FPS</span>
@@ -82,9 +159,105 @@ export default function SettingsTab() {
 
       <article className="panel">
         <div className="panel-head">
-          <h3>Providers</h3>
-          <span>Perception and reasoning routing</span>
+          <h3>World Model</h3>
+          <span>{wmLoading ? "Checking V-JEPA 2 status" : wmStatus?.configured_encoder || "unavailable"}</span>
         </div>
+        <div className="status-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))", marginBottom: "1rem" }}>
+          <div className="status-metric">
+            <span>Configured</span>
+            <strong>{wmStatus?.configured_encoder || "checking..."}</strong>
+          </div>
+          <div className="status-metric">
+            <span>Last tick</span>
+            <strong>{wmStatus?.last_tick_encoder_type || "checking..."}</strong>
+          </div>
+          <div className="status-metric">
+            <span>Device</span>
+            <strong>{wmStatus?.device || "checking..."}</strong>
+          </div>
+          <div className="status-metric">
+            <span>Mode</span>
+            <strong>{wmStatus ? (wmStatus.test_mode ? "test" : "production") : "checking..."}</strong>
+          </div>
+        </div>
+        {wmStatus ? (
+          <p className="field-hint">
+            Loaded: {wmStatus.model_loaded ? "yes" : "no"} · Frames: {wmStatus.n_frames} · Ticks: {wmStatus.total_ticks} · Telescope:{" "}
+            {wmStatus.telescope_test}
+          </p>
+        ) : null}
+        {wmStatus?.degraded ? (
+          <p className="field-hint" style={{ color: "var(--danger)", marginBottom: "1rem" }}>
+            Runtime degraded at {wmStatus.degrade_stage || "runtime"}: {wmStatus.degrade_reason || "surrogate fallback active"}
+          </p>
+        ) : null}
+        <label className="field">
+          <span>
+            V-JEPA 2 model path
+            <span
+              title="Leave empty to use the HuggingFace Hub cache. Pick a local folder if you already downloaded the weights and want to avoid a re-download."
+              style={{ cursor: "help", marginLeft: "0.35rem" }}
+            >
+              ⓘ
+            </span>
+          </span>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <input
+              value={wmConfig?.model_path || ""}
+              onChange={(event) =>
+                setWmConfig((current) => (current ? { ...current, model_path: event.target.value } : current))
+              }
+              placeholder="Leave empty to use the HuggingFace cache"
+            />
+            <button type="button" onClick={() => void chooseWorldModelPath()}>
+              Browse
+            </button>
+          </div>
+        </label>
+        <label className="field">
+          <span>
+            Frames per clip
+            <span title="0 = auto, 4 = lower memory, 8 = full quality." style={{ cursor: "help", marginLeft: "0.35rem" }}>
+              ⓘ
+            </span>
+          </span>
+          <select
+            value={wmConfig?.n_frames ?? 0}
+            onChange={(event) =>
+              setWmConfig((current) => (current ? { ...current, n_frames: Number(event.target.value) } : current))
+            }
+          >
+            <option value={0}>Auto</option>
+            <option value={4}>4</option>
+            <option value={8}>8</option>
+          </select>
+        </label>
+        {wmConfig ? (
+          <div className="field-hint" style={{ display: "grid", gap: "0.35rem", marginBottom: "1rem" }}>
+            <span>Effective model: {wmConfig.effective_model}</span>
+            <span>Cache location: {wmConfig.cache_dir}</span>
+            <span>Download URL: {wmConfig.download_url}</span>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="primary"
+          onClick={() => void saveWorldModelConfig()}
+          disabled={wmSaving || !wmConfig}
+        >
+          {wmSaving ? "Saving" : "Save World Model Settings"}
+        </button>
+      </article>
+
+      <article className="panel">
+        <div className="panel-head">
+          <h3>Providers</h3>
+          <span>Legacy perception + language routing</span>
+        </div>
+        <p className="field-hint" style={{ marginBottom: "1rem" }}>
+          These controls do not disable V-JEPA 2. ONNX/basic still drive proposal boxes and observation summaries,
+          while the reasoning backend only affects language answers.
+        </p>
         <label className="field">
           <span>Primary perception</span>
           <select
@@ -93,6 +266,7 @@ export default function SettingsTab() {
               app.world.mutateSetting(["primary_perception_provider"], event.target.value)
             }
           >
+            <option value="dinov2">dinov2</option>
             <option value="onnx">onnx</option>
             <option value="basic">basic fallback</option>
           </select>
@@ -176,6 +350,11 @@ export default function SettingsTab() {
           <span>Enable Ollama local reasoning</span>
         </label>
       </article>
+      {app.world.settingsDirty ? (
+        <p className="field-hint" style={{ gridColumn: "1 / -1", margin: 0 }}>
+          Draft settings are pending. Save when you want non-theme changes to persist.
+        </p>
+      ) : null}
 
       <article className="panel">
         <div className="panel-head">

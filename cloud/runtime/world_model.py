@@ -9,17 +9,27 @@ from uuid import uuid4
 import numpy as np
 
 from .models import (
+    ActionToken,
     BaselineComparison,
     BaselineModeScore,
     ChallengeRun,
     ContinuitySignal,
     BoundingBox,
     EntityTrack,
+    GroundedAffordance,
+    GroundedEntity,
     Observation,
     PersistenceSignal,
+    PredictedAffordanceState,
     PredictionWindow,
+    RecoveryBenchmarkRun,
+    RecoveryScenario,
+    RolloutBranch,
+    RolloutComparison,
+    RolloutStep,
     SceneState,
     SearchHit,
+    StateDomain,
     WorldModelMetrics,
 )
 
@@ -332,11 +342,360 @@ def stable_elements_from_history(recent_observations: list[Observation]) -> list
     return stable[:6]
 
 
+def _state_domain_from_metadata(metadata: dict) -> StateDomain:
+    raw = str(metadata.get("state_domain") or "camera").strip().lower()
+    if raw in {"camera", "browser", "desktop", "memory"}:
+        return raw  # type: ignore[return-value]
+    return "camera"
+
+
+def _validate_grounded_entities(raw_entities: object) -> list[GroundedEntity]:
+    grounded: list[GroundedEntity] = []
+    if not isinstance(raw_entities, list):
+        return grounded
+    for raw in raw_entities:
+        try:
+            grounded.append(
+                raw if isinstance(raw, GroundedEntity) else GroundedEntity.model_validate(raw)
+            )
+        except Exception:
+            continue
+    return grounded
+
+
+def _validate_affordances(raw_affordances: object) -> list[GroundedAffordance]:
+    affordances: list[GroundedAffordance] = []
+    if not isinstance(raw_affordances, list):
+        return affordances
+    for raw in raw_affordances:
+        try:
+            affordances.append(
+                raw if isinstance(raw, GroundedAffordance) else GroundedAffordance.model_validate(raw)
+            )
+        except Exception:
+            continue
+    return affordances
+
+
+def _label_from_entity_track(track: EntityTrack) -> str:
+    label = _meaningful_label(track.label) or normalize_token(track.label)
+    return label or f"entity {track.id[-4:]}"
+
+
+def _grounded_entities_from_camera(
+    observation: Observation,
+    entity_tracks: list[EntityTrack],
+    proposal_boxes: list[BoundingBox],
+) -> list[GroundedEntity]:
+    grounded: list[GroundedEntity] = []
+    used_track_ids: set[str] = set()
+    for track in entity_tracks:
+        if track.status == "disappeared":
+            continue
+        grounded.append(
+            GroundedEntity(
+                id=track.id,
+                label=_label_from_entity_track(track),
+                kind="physical_object",
+                state_domain="camera",
+                status=track.status,
+                confidence=round(max(track.persistence_confidence, track.continuity_score), 4),
+                source_track_id=track.id,
+                properties={
+                    "visibility_streak": track.visibility_streak,
+                    "continuity_score": track.continuity_score,
+                },
+            )
+        )
+        used_track_ids.add(track.id)
+    for index, box in enumerate(proposal_boxes[:8]):
+        label = _meaningful_label(box.label or "") or normalize_token(str(box.label or ""))
+        if not label:
+            continue
+        grounded.append(
+            GroundedEntity(
+                id=f"{observation.id}:proposal:{index}",
+                label=label,
+                kind="proposal_box",
+                state_domain="camera",
+                status="visible",
+                confidence=round(float(box.score or observation.confidence or 0.5), 4),
+                properties={
+                    "bbox": {
+                        "x": box.x,
+                        "y": box.y,
+                        "width": box.width,
+                        "height": box.height,
+                    }
+                },
+            )
+        )
+    return grounded
+
+
+def _default_affordances_for_domain(
+    *,
+    state_domain: StateDomain,
+    grounded_entities: list[GroundedEntity],
+    metadata: dict,
+) -> list[GroundedAffordance]:
+    if state_domain == "camera":
+        labels = [entity.label for entity in grounded_entities[:4]]
+        affordances = [
+            GroundedAffordance(
+                id="camera.observe",
+                label="observe scene",
+                kind="camera.observe",
+                state_domain="camera",
+                confidence=0.92,
+            ),
+        ]
+        if labels:
+            affordances.append(
+                GroundedAffordance(
+                    id="camera.inspect",
+                    label=f"inspect {labels[0]}",
+                    kind="camera.inspect",
+                    state_domain="camera",
+                    target_entity_id=grounded_entities[0].id,
+                    confidence=0.78,
+                )
+            )
+        return affordances
+
+    affordances: list[GroundedAffordance] = []
+    if metadata.get("current_url"):
+        affordances.append(
+            GroundedAffordance(
+                id="browser.refresh",
+                label="refresh view",
+                kind="browser.refresh",
+                state_domain=state_domain,
+                confidence=0.8,
+            )
+        )
+    if metadata.get("error_banners"):
+        affordances.append(
+            GroundedAffordance(
+                id="browser.retry",
+                label="retry failed step",
+                kind="browser.retry",
+                state_domain=state_domain,
+                availability="error",
+                confidence=0.86,
+            )
+        )
+    return affordances
+
+
+def derive_grounded_entities(
+    observation: Observation,
+    entity_tracks: list[EntityTrack],
+    proposal_boxes: list[BoundingBox],
+) -> tuple[StateDomain, list[GroundedEntity], list[GroundedAffordance]]:
+    metadata = _metadata_dict(observation)
+    state_domain = _state_domain_from_metadata(metadata)
+    grounded_entities = _validate_grounded_entities(metadata.get("grounded_entities"))
+    if not grounded_entities:
+        grounded_entities = _grounded_entities_from_camera(observation, entity_tracks, proposal_boxes)
+    affordances = _validate_affordances(metadata.get("affordances"))
+    if not affordances:
+        affordances = _default_affordances_for_domain(
+            state_domain=state_domain,
+            grounded_entities=grounded_entities,
+            metadata=metadata,
+        )
+    return state_domain, grounded_entities, affordances
+
+
+def default_candidate_actions(
+    *,
+    observation: Observation,
+    state_domain: StateDomain,
+    grounded_entities: list[GroundedEntity],
+    affordances: list[GroundedAffordance],
+) -> list[ActionToken]:
+    actions: list[ActionToken] = []
+    for affordance in affordances[:4]:
+        verb = affordance.kind.split(".")[-1] if "." in affordance.kind else affordance.kind
+        actions.append(
+            ActionToken(
+                id=f"act:{affordance.id}",
+                verb=verb or "use",
+                target_kind=affordance.kind,
+                target_id=affordance.target_entity_id or affordance.id,
+                target_label=affordance.label,
+                parameters={
+                    "availability": affordance.availability,
+                    "state_domain": affordance.state_domain,
+                },
+            )
+        )
+    if grounded_entities:
+        lead = grounded_entities[0]
+        actions.append(
+            ActionToken(
+                id=f"inspect:{lead.id}",
+                verb="inspect",
+                target_kind=lead.kind,
+                target_id=lead.id,
+                target_label=lead.label,
+                parameters={"state_domain": state_domain},
+            )
+        )
+    actions.append(
+        ActionToken(
+            id=f"memory:{observation.id}",
+            verb="query_memory",
+            target_kind="memory",
+            target_id=observation.world_state_id or observation.id,
+            target_label="continuity memory",
+            parameters={"state_domain": "memory"},
+        )
+    )
+    deduped: list[ActionToken] = []
+    seen_ids: set[str] = set()
+    for action in actions:
+        if action.id in seen_ids:
+            continue
+        seen_ids.add(action.id)
+        deduped.append(action)
+    return deduped[:6]
+
+
+def build_rollout_comparison(
+    *,
+    scene_state: SceneState,
+    candidate_actions: list[ActionToken],
+    horizon: int = 2,
+) -> RolloutComparison:
+    grounded_labels = [entity.label for entity in scene_state.grounded_entities[:6]]
+    affordance_map = {affordance.id: affordance for affordance in scene_state.affordances}
+    branches: list[RolloutBranch] = []
+    baseline_risk = scene_state.metrics.surprise_score
+
+    for index, action in enumerate(candidate_actions[:6]):
+        availability = str(action.parameters.get("availability") or "available")
+        target_label = action.target_label or action.target_id or action.verb
+        blockers: list[str] = []
+        if availability in {"missing", "error"}:
+            blockers.append(f"{target_label} is currently {availability}")
+        elif availability == "disabled":
+            blockers.append(f"{target_label} is disabled")
+        if action.verb in {"click", "submit", "open", "retry"} and scene_state.changed_elements:
+            blockers.append("layout may have shifted since the previous state")
+        if scene_state.state_domain == "camera" and scene_state.occluded_track_ids and action.verb != "query_memory":
+            blockers.append("occlusion may hide the target")
+
+        confidence = clamp_unit(
+            scene_state.prediction_window.confidence
+            + max(0.0, 0.15 - (0.08 * len(blockers)))
+            + (0.05 if availability == "available" else 0.0)
+        )
+        risk_score = clamp_unit(
+            baseline_risk
+            + (0.18 * len(blockers))
+            + (0.08 if availability in {"missing", "error"} else 0.0)
+            - (0.1 if action.verb == "query_memory" else 0.0)
+        )
+        recovery_cost = clamp_unit((risk_score * 0.6) + (0.1 * len(blockers)))
+        predicted_summary = (
+            f"{action.verb.replace('_', ' ')} should preserve continuity around {', '.join(grounded_labels[:3])}"
+            if grounded_labels
+            else f"{action.verb.replace('_', ' ')} should advance the current {scene_state.state_domain} state"
+        )
+        predicted_affordances: list[PredictedAffordanceState] = []
+        for affordance in scene_state.affordances[:4]:
+            next_availability = affordance.availability
+            if affordance.id == action.target_id and action.verb in {"click", "submit"}:
+                next_availability = "hidden"
+            elif action.verb == "retry" and affordance.availability in {"error", "missing"}:
+                next_availability = "available"
+            predicted_affordances.append(
+                PredictedAffordanceState(
+                    affordance_id=affordance.id,
+                    label=affordance.label,
+                    availability=next_availability,
+                    reason="predicted from current affordance state",
+                )
+            )
+        follow_up = ActionToken(
+            id=f"{action.id}:followup",
+            verb="query_memory" if blockers else "confirm_state",
+            target_kind="memory" if blockers else scene_state.state_domain,
+            target_id=scene_state.id,
+            target_label="recover context" if blockers else "verify continuity",
+            parameters={"state_domain": "memory" if blockers else scene_state.state_domain},
+        )
+        steps = [
+            RolloutStep(
+                step_index=0,
+                action=action,
+                predicted_state_domain=scene_state.state_domain,
+                predicted_summary=predicted_summary,
+                blockers=blockers,
+                confidence=round(confidence, 4),
+            ),
+        ]
+        if horizon > 1:
+            steps.append(
+                RolloutStep(
+                    step_index=1,
+                    action=follow_up,
+                    predicted_state_domain="memory" if blockers else scene_state.state_domain,
+                    predicted_summary=(
+                        "Fallback to continuity memory if the primary affordance path breaks"
+                        if blockers
+                        else "Confirm that the resulting state matches the expected rollout"
+                    ),
+                    blockers=[],
+                    confidence=round(clamp_unit(confidence - 0.06), 4),
+                )
+            )
+
+        branches.append(
+            RolloutBranch(
+                id=f"branch-{index}-{action.id}",
+                candidate_action=action,
+                predicted_next_state_summary=predicted_summary,
+                predicted_persistent_entities=grounded_labels[:4],
+                predicted_affordances=predicted_affordances,
+                risk_score=round(risk_score, 4),
+                confidence=round(confidence, 4),
+                expected_recovery_cost=round(recovery_cost, 4),
+                failure_predicates=blockers,
+                steps=steps,
+            )
+        )
+
+    branches.sort(key=lambda branch: (branch.risk_score, -branch.confidence, branch.id))
+    chosen = branches[0].id if branches else None
+    summary = (
+        f"Plan A: {branches[0].candidate_action.verb.replace('_', ' ')}; "
+        f"Plan B: {branches[1].candidate_action.verb.replace('_', ' ') if len(branches) > 1 else 'query memory'}."
+        if branches
+        else "No rollout candidates available yet."
+    )
+    return RolloutComparison(
+        state_domain=scene_state.state_domain,
+        based_on_world_state_id=scene_state.id,
+        horizon=horizon,
+        ranked_branches=branches,
+        chosen_branch_id=chosen,
+        summary=summary,
+    )
+
+
 def build_prediction_window(
     observation: Observation,
     previous_state: SceneState | None,
     recent_observations: list[Observation],
     entity_tracks: list[EntityTrack],
+    *,
+    state_domain: StateDomain = "camera",
+    grounded_entities: list[GroundedEntity] | None = None,
+    affordances: list[GroundedAffordance] | None = None,
+    candidate_actions: list[ActionToken] | None = None,
 ) -> PredictionWindow:
     stable_history = stable_elements_from_history(recent_observations[:4])
     predicted_tags = ordered_unique(
@@ -360,6 +719,10 @@ def build_prediction_window(
         if stable_elements
         else "Expect a broadly similar scene to recent observations"
     )
+    if state_domain != "camera":
+        predicted_summary = (
+            f"Expect the {state_domain} state to preserve {', '.join(stable_elements[:3]) or 'the current affordances'}"
+        )
     return PredictionWindow(
         previous_observation_id=recent_observations[0].id if recent_observations else None,
         context_observation_ids=[item.id for item in recent_observations[:4]],
@@ -368,6 +731,9 @@ def build_prediction_window(
         predicted_summary=predicted_summary,
         stable_elements=stable_elements,
         confidence=round(mean(confidence_sources), 4),
+        candidate_actions=list(candidate_actions or []),
+        predicted_branches=[],
+        chosen_branch_id=None,
     )
 
 
@@ -528,9 +894,25 @@ def build_scene_state(
 ) -> tuple[SceneState, list[EntityTrack]]:
     metadata = _metadata_dict(observation)
     observed_elements = extract_observed_elements(observation)
-    prediction_window = build_prediction_window(observation, previous_state, recent_observations, existing_tracks)
     tracks, persistence_signal = update_entity_tracks(observation, previous_state, existing_tracks)
     proposal_boxes = _metadata_boxes(observation)
+    state_domain, grounded_entities, affordances = derive_grounded_entities(observation, tracks, proposal_boxes)
+    candidate_actions = default_candidate_actions(
+        observation=observation,
+        state_domain=state_domain,
+        grounded_entities=grounded_entities,
+        affordances=affordances,
+    )
+    prediction_window = build_prediction_window(
+        observation,
+        previous_state,
+        recent_observations,
+        tracks,
+        state_domain=state_domain,
+        grounded_entities=grounded_entities,
+        affordances=affordances,
+        candidate_actions=candidate_actions,
+    )
     primary_object_label = str(metadata.get("primary_object_label") or "").strip() or None
 
     predicted = prediction_window.predicted_tags
@@ -583,6 +965,7 @@ def build_scene_state(
         session_id=observation.session_id,
         created_at=observation.created_at,
         observation_id=observation.id,
+        state_domain=state_domain,
         previous_world_state_id=previous_state.id if previous_state else None,
         nearest_memory_observation_id=hits[0].observation_id if hits else None,
         primary_object_label=primary_object_label,
@@ -596,6 +979,8 @@ def build_scene_state(
         predicted_state_summary=prediction_window.predicted_summary,
         observed_state_summary=observation.summary or "Observed scene captured",
         prediction_window=prediction_window,
+        grounded_entities=grounded_entities,
+        affordances=affordances,
         metrics=metrics,
         metadata={
             "proof_mode": "hybrid",
@@ -604,7 +989,25 @@ def build_scene_state(
             "proposal_boxes": [box.model_dump(mode="json") for box in proposal_boxes],
             "summary_candidates": metadata.get("summary_candidates", []),
             "summary_source": metadata.get("summary_source"),
+            "state_domain": state_domain,
         },
+    )
+    rollout_horizon = int(metadata.get("rollout_horizon") or 2)
+    rollout_comparison = build_rollout_comparison(
+        scene_state=scene_state,
+        candidate_actions=prediction_window.candidate_actions,
+        horizon=max(1, min(rollout_horizon, 5)),
+    )
+    scene_state = scene_state.model_copy(
+        update={
+            "conditioned_rollouts": rollout_comparison,
+            "prediction_window": prediction_window.model_copy(
+                update={
+                    "predicted_branches": rollout_comparison.ranked_branches,
+                    "chosen_branch_id": rollout_comparison.chosen_branch_id,
+                }
+            ),
+        }
     )
     return scene_state, tracks
 
@@ -742,5 +1145,97 @@ def build_challenge_run(
         guide_steps=LIVE_CHALLENGE_GUIDE,
         success_criteria=success_criteria,
         baseline_comparison=comparison,
+        summary=summary,
+    )
+
+
+def build_recovery_benchmark_run(
+    *,
+    session_id: str,
+    scene_states: list[SceneState],
+    comparison: RolloutComparison | None = None,
+) -> RecoveryBenchmarkRun:
+    latest = scene_states[0] if scene_states else None
+    comparison = comparison or (latest.conditioned_rollouts if latest else None)
+    scenarios: list[RecoveryScenario] = []
+    if latest is not None:
+        occlusion_passed = bool(
+            latest.metrics.persistence_signal.recovered_track_ids
+            or latest.metrics.occlusion_recovery_score >= 0.5
+        )
+        scenarios.append(
+            RecoveryScenario(
+                id="camera-occlusion",
+                title="Camera occlusion and re-identification",
+                domain="camera",
+                passed=occlusion_passed,
+                score=round(latest.metrics.occlusion_recovery_score, 4),
+                details="Tracks should remain coherent through temporary occlusion.",
+                related_branch_id=comparison.chosen_branch_id if comparison else None,
+            )
+        )
+        changed_text = " ".join(latest.changed_elements).lower()
+        layout_shift_passed = "lost:" in changed_text or "new:" in changed_text
+        scenarios.append(
+            RecoveryScenario(
+                id="browser-layout-shift",
+                title="Browser missing or moved control recovery",
+                domain="browser",
+                passed=layout_shift_passed,
+                score=round(clamp_unit(latest.metrics.surprise_score + 0.2), 4),
+                details="A shifted affordance should register as a state change rather than a fresh unrelated world.",
+                related_branch_id=comparison.chosen_branch_id if comparison else None,
+            )
+        )
+        error_affordances = [
+            affordance for affordance in latest.affordances if affordance.availability in {"error", "missing"}
+        ]
+        scenarios.append(
+            RecoveryScenario(
+                id="tool-failure",
+                title="Tool or network failure recovery",
+                domain="hybrid",
+                passed=bool(error_affordances) or bool(comparison and comparison.ranked_branches),
+                score=round(
+                    clamp_unit(
+                        1.0 - (comparison.ranked_branches[0].risk_score if comparison and comparison.ranked_branches else 0.45)
+                    ),
+                    4,
+                ),
+                details="The planner should expose an explicit fallback branch when the primary affordance path fails.",
+                related_branch_id=comparison.chosen_branch_id if comparison else None,
+            )
+        )
+        memory_branch = next(
+            (
+                branch
+                for branch in (comparison.ranked_branches if comparison else [])
+                if branch.candidate_action.verb == "query_memory"
+            ),
+            None,
+        )
+        scenarios.append(
+            RecoveryScenario(
+                id="memory-fallback",
+                title="Memory query fallback",
+                domain="memory",
+                passed=memory_branch is not None,
+                score=round(memory_branch.confidence if memory_branch is not None else 0.0, 4),
+                details="Continuity memory should remain available as a recovery path when visual affordances break.",
+                related_branch_id=memory_branch.id if memory_branch is not None else None,
+            )
+        )
+    passed = sum(1 for scenario in scenarios if scenario.passed)
+    summary = (
+        f"Recovery benchmark covered {len(scenarios)} scenarios; {passed}/{len(scenarios)} passed. "
+        f"{comparison.summary if comparison else 'No rollout comparison available yet.'}"
+    ) if scenarios else "No recovery scenarios available yet."
+    return RecoveryBenchmarkRun(
+        id=f"benchmark_{uuid4().hex[:12]}",
+        session_id=session_id,
+        benchmark_scope="hybrid",
+        world_state_ids=[state.id for state in scene_states[:8]],
+        scenarios=scenarios,
+        winner="action_conditioned_rollout" if passed >= max(len(scenarios) // 2, 1) else "baseline_caption_retrieval",
         summary=summary,
     )

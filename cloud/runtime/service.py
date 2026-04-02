@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import io
 import hashlib
+import os
 from collections import defaultdict, deque
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .atlas import EpistemicAtlas
 from .config import resolve_data_dir, resolve_smriti_storage
@@ -18,12 +20,15 @@ from .error_types import SmritiError, SmritiPipelineError
 from .events import EventBus
 from .jepa_worker import JEPAWorkItem, JEPAWorkerPool
 from .models import (
+    ActionToken,
     AnalyzeRequest,
     AnalyzeResponse,
     Answer,
     ChallengeEvaluateRequest,
     ChallengeRun,
     EntityTrack,
+    GroundedAffordance,
+    GroundedEntity,
     JEPAForecastResponse,
     JEPATick,
     JEPATickPayload,
@@ -31,7 +36,15 @@ from .models import (
     LivingLensTickResponse,
     Observation,
     ObservationsResponse,
+    PlanningRolloutRequest,
+    PlanningRolloutResponse,
     ProofReportResponse,
+    RecoveryBenchmarkRun,
+    RecoveryBenchmarkRunRequest,
+    RecoveryScenario,
+    WorldModelConfig,
+    WorldModelConfigUpdate,
+    WorldModelStatus,
     ProviderHealthResponse,
     SmritiMigrationRequest,
     SmritiMigrationResult,
@@ -52,6 +65,8 @@ from .models import (
     SmritiTagPersonRequest,
     SmritiTagPersonResponse,
     StorageUsageReport,
+    ToolStateObserveRequest,
+    ToolStateObserveResponse,
     TalkerEvent,
     WatchFolderStatus,
     WorldStateResponse,
@@ -61,7 +76,16 @@ from .providers import ProviderRegistry
 from .smriti_storage import SmetiDB
 from .storage import ObservationStore
 from .talker import SelectiveTalker
-from .world_model import build_baseline_comparison, build_challenge_run, build_object_summary, build_scene_state
+from .world_model import (
+    build_baseline_comparison,
+    build_challenge_run,
+    build_object_summary,
+    build_recovery_benchmark_run,
+    build_rollout_comparison,
+    build_scene_state,
+    default_candidate_actions,
+    derive_grounded_entities,
+)
 
 
 
@@ -123,6 +147,20 @@ def _jepa_tick_from_payload(payload: JEPATickPayload) -> JEPATick:
         anchor_matches=payload.anchor_matches,
         setu_descriptions=payload.setu_descriptions,
         alignment_loss=float(payload.alignment_loss),
+        l2_embedding=payload.l2_embedding,
+        predicted_next_embedding=payload.predicted_next_embedding,
+        prediction_error=payload.prediction_error,
+        epistemic_uncertainty=payload.epistemic_uncertainty,
+        aleatoric_uncertainty=payload.aleatoric_uncertainty,
+        surprise_score=payload.surprise_score,
+        audio_embedding=payload.audio_embedding,
+        audio_energy=payload.audio_energy,
+        world_model_version=payload.world_model_version,
+        configured_encoder=payload.configured_encoder,
+        last_tick_encoder_type=payload.last_tick_encoder_type,
+        degraded=payload.degraded,
+        degrade_reason=payload.degrade_reason,
+        degrade_stage=payload.degrade_stage,
     )
 
 
@@ -145,6 +183,7 @@ class RuntimeContainer:
         self._latest_proof_report: Optional[Path] = None
         self.talker = SelectiveTalker()
         self.atlas = EpistemicAtlas()
+        self._atlases: dict[str, EpistemicAtlas] = {}
         self._previous_tracks: list = []
         self._progressive_scheduler = ProgressiveComputationScheduler()
         self._jepa_energy_ema: dict[str, float] = defaultdict(float)
@@ -727,13 +766,180 @@ class RuntimeContainer:
         return settings
 
     def update_settings(self, settings: RuntimeSettings) -> RuntimeSettings:
+        previous = self.store.load_settings()
         saved = self.store.save_settings(settings)
+        self._write_settings_mirror(saved)
+        self._reset_vjepa2_if_config_changed(previous, saved)
         self.providers.reset_circuits()
         self.events.publish(
             "provider.changed",
             {"settings": saved.model_dump(mode="json")},
         )
         return saved
+
+    def _settings_mirror_path(self) -> Path:
+        return Path(self.data_dir).expanduser().resolve() / "settings.json"
+
+    def _write_settings_mirror(self, settings: RuntimeSettings) -> None:
+        try:
+            path = self._settings_mirror_path()
+            path.write_text(json.dumps(settings.model_dump(mode="json"), indent=2, sort_keys=True))
+        except Exception as exc:
+            get_logger("runtime").warning("settings_mirror_write_failed", error=str(exc))
+
+    def _reset_vjepa2_if_config_changed(
+        self,
+        previous: RuntimeSettings | None,
+        current: RuntimeSettings,
+    ) -> None:
+        if previous is None:
+            return
+        if (
+            previous.vjepa2_model_path == current.vjepa2_model_path
+            and previous.vjepa2_n_frames == current.vjepa2_n_frames
+        ):
+            return
+        try:
+            from cloud.perception.vjepa2_encoder import reset_encoder_singleton
+
+            reset_encoder_singleton()
+        except Exception as exc:
+            get_logger("runtime").warning("vjepa2_reset_failed", error=str(exc))
+
+    def get_vjepa2_settings(self) -> WorldModelConfig:
+        settings = self.get_settings()
+        effective_model = self._effective_vjepa2_model_id(settings)
+
+        return WorldModelConfig(
+            model_path=settings.vjepa2_model_path or "",
+            n_frames=settings.vjepa2_n_frames or 0,
+            effective_model=effective_model,
+            cache_dir=str(Path.home() / ".cache" / "huggingface" / "hub"),
+            download_url="https://huggingface.co/facebook/vjepa2-vitl-fpc64-256",
+        )
+
+    def update_vjepa2_settings(self, model_path: str, n_frames: int) -> WorldModelConfig:
+        settings = self.get_settings()
+        updated = settings.model_copy(
+            update={
+                "vjepa2_model_path": model_path,
+                "vjepa2_n_frames": n_frames,
+            }
+        )
+        self.update_settings(updated)
+        return self.get_vjepa2_settings()
+
+    def _effective_vjepa2_model_id(self, settings: RuntimeSettings) -> str:
+        env_override = os.environ.get("TOORI_VJEPA2_MODEL", "").strip()
+        if env_override:
+            if env_override.startswith(("~", "/")):
+                resolved = Path(env_override).expanduser()
+                if resolved.exists():
+                    return str(resolved.resolve())
+            else:
+                return env_override
+
+        configured = str(settings.vjepa2_model_path or "").strip()
+        if configured:
+            if configured.startswith(("~", "/")):
+                resolved = Path(configured).expanduser()
+                if resolved.exists():
+                    return str(resolved.resolve())
+            else:
+                return configured
+
+        from cloud.perception.vjepa2_encoder import _resolve_model_id
+
+        return _resolve_model_id()
+
+    def get_world_model_status(self) -> WorldModelStatus:
+        from cloud.perception.vjepa2_encoder import _is_test_environment, get_vjepa2_encoder
+
+        settings = self.get_settings()
+        test_mode = _is_test_environment()
+        encoder_type = "surrogate"
+        model_id = "mobilenetv2-12.onnx"
+        model_loaded = True
+        device = "cpu"
+        n_frames = 0
+        configured_encoder = "surrogate" if test_mode else "vjepa2"
+        last_tick_encoder_type = "surrogate" if test_mode else "not_loaded"
+        degraded = False
+        degrade_reason = None
+        degrade_stage = None
+
+        if not test_mode:
+            try:
+                encoder = get_vjepa2_encoder()
+                encoder_type = encoder.encoder_type
+                model_id = encoder.model_id
+                model_loaded = encoder.is_loaded
+                device = str(encoder.device)
+                n_frames = encoder.n_frames
+            except Exception as exc:
+                get_logger("runtime").warning("world_model_status_fallback", error=str(exc))
+                degraded = True
+                degrade_reason = str(exc)
+                degrade_stage = "status"
+        else:
+            model_id = "mobilenetv2-12.onnx"
+
+        latest_tick: JEPATick | None = None
+        latest_ts = -1
+        for ticks in self._jepa_ticks_by_session.values():
+            if not ticks:
+                continue
+            candidate = ticks[-1]
+            if candidate.timestamp_ms > latest_ts:
+                latest_tick = candidate
+                latest_ts = candidate.timestamp_ms
+
+        if latest_tick is not None:
+            last_tick_encoder_type = latest_tick.last_tick_encoder_type or latest_tick.world_model_version
+            degraded = bool(latest_tick.degraded)
+            degrade_reason = latest_tick.degrade_reason
+            degrade_stage = latest_tick.degrade_stage
+            if latest_tick.world_model_version == "vjepa2":
+                encoder_type = "vjepa2"
+            if latest_tick.world_model_version == "surrogate" and not test_mode:
+                encoder_type = "surrogate"
+
+        all_prediction_errors: list[float] = []
+        for engine in self._immersive_engines.values():
+            windows = getattr(engine, "_surprise_windows", {})
+            for window in windows.values():
+                all_prediction_errors.extend(float(score) for score in window)
+
+        mean_prediction_error = (
+            float(sum(all_prediction_errors) / len(all_prediction_errors))
+            if all_prediction_errors
+            else None
+        )
+        mean_surprise_score = (
+            float(
+                sum((score / (score + 1.0)) for score in all_prediction_errors) / len(all_prediction_errors)
+            )
+            if all_prediction_errors
+            else None
+        )
+        total_ticks = int(sum(int(getattr(engine, "_tick_count", 0)) for engine in self._immersive_engines.values()))
+
+        return WorldModelStatus(
+            encoder_type=encoder_type,
+            model_id=model_id,
+            model_loaded=model_loaded,
+            device=device,
+            n_frames=n_frames,
+            test_mode=test_mode,
+            total_ticks=total_ticks,
+            mean_prediction_error=mean_prediction_error,
+            mean_surprise_score=mean_surprise_score,
+            configured_encoder=configured_encoder,
+            last_tick_encoder_type=last_tick_encoder_type,
+            degraded=degraded,
+            degrade_reason=degrade_reason,
+            degrade_stage=degrade_stage,
+        )
 
     def provider_health(self) -> ProviderHealthResponse:
         return ProviderHealthResponse(providers=self.providers.health_snapshot(self.get_settings()))
@@ -786,6 +992,11 @@ class RuntimeContainer:
             scene_state=scene_state,
             energy_map=jepa_tick.energy_map,
         )
+        self._atlas_for_session(request.session_id).update(
+            entity_tracks=immersive_tracks,
+            scene_state=scene_state,
+            energy_map=jepa_tick.energy_map,
+        )
 
         scene_state.metrics.surprise_score = round(float(min(jepa_tick.mean_energy, 1.0)), 4)
         scene_state.metrics.prediction_consistency = round(float(max(1.0 - jepa_tick.mean_energy, 0.0)), 4)
@@ -807,6 +1018,17 @@ class RuntimeContainer:
             "jepa_tick",
             {"payload": jepa_tick.to_payload().model_dump(mode="json")},
         )
+        if payload.degraded:
+            self.events.publish(
+                "world_model.degraded",
+                {
+                    "session_id": request.session_id,
+                    "configured_encoder": payload.configured_encoder,
+                    "last_tick_encoder_type": payload.last_tick_encoder_type,
+                    "degrade_reason": payload.degrade_reason,
+                    "degrade_stage": payload.degrade_stage,
+                },
+            )
         if talker_event is not None:
             self.events.publish("jepa.talker_event", talker_event.model_dump(mode="json"))
 
@@ -823,19 +1045,221 @@ class RuntimeContainer:
         if self._jepa_pool is not None:
             await self._jepa_pool.shutdown()
             self._jepa_pool = None
+        self._atlases.clear()
 
     def get_world_state(self, session_id: str) -> WorldStateResponse:
         history = self.store.recent_scene_states(session_id=session_id, limit=24)
         tracks = self.store.list_entity_tracks(session_id=session_id, limit=32)
         challenges = self.store.recent_challenge_runs(session_id=session_id, limit=8)
+        benchmarks = self.store.recent_recovery_benchmark_runs(session_id=session_id, limit=8)
         return WorldStateResponse(
             session_id=session_id,
             current=history[0] if history else None,
             history=history,
             entity_tracks=tracks,
             challenges=challenges,
-            atlas=self.atlas.to_dict(),
+            benchmarks=benchmarks,
+            atlas=self._atlas_for_session(session_id).to_dict(),
         )
+
+    def observe_tool_state(self, request: ToolStateObserveRequest) -> ToolStateObserveResponse:
+        settings = self.get_settings()
+        self.store.prune(settings.retention_days)
+
+        image_bytes, image = self._load_tool_state_image(request)
+        summary_seed = self._tool_state_summary(request)
+        if request.screenshot_base64 or request.file_path:
+            embedding, provider_name, confidence, provider_metadata = self.providers.perceive(settings, image)
+            if provider_name != "basic":
+                _, _, basic_metadata = self.providers.basic.perceive(image)
+                provider_metadata = {**basic_metadata, **provider_metadata}
+        else:
+            embedding = self._embed_smriti_query(summary_seed, dim=128).tolist()
+            provider_name = "local"
+            confidence = 0.78
+            provider_metadata = {
+                "top_label": request.view_id or request.current_url or "tool state",
+                "source": "tool_state",
+            }
+
+        previous = self.store.recent_observations(session_id=request.session_id, limit=1)
+        novelty = 1.0
+        if previous:
+            novelty = max(0.0, 1.0 - self._cosine_similarity(embedding, previous[0].embedding))
+
+        grounded_entities = [entity.model_dump(mode="json") for entity in request.visible_entities]
+        affordances = [affordance.model_dump(mode="json") for affordance in request.affordances]
+        tags = [
+            *[entity.label for entity in request.visible_entities if entity.label],
+            *[affordance.label for affordance in request.affordances if affordance.label],
+            *request.error_banners,
+        ]
+        metadata = {
+            "perception": provider_metadata,
+            "observation_kind": "tool_state",
+            "state_domain": request.state_domain,
+            "current_url": request.current_url,
+            "view_id": request.view_id,
+            "grounded_entities": grounded_entities,
+            "affordances": affordances,
+            "focused_target": request.focused_target,
+            "error_banners": request.error_banners,
+            "triggering_action": request.triggering_action.model_dump(mode="json") if request.triggering_action else None,
+            "summary_candidates": [entity["label"] for entity in grounded_entities if entity.get("label")][:6],
+            "primary_object_label": request.visible_entities[0].label if request.visible_entities else (request.view_id or None),
+        }
+
+        observation = self.store.create_observation(
+            image=image,
+            raw_bytes=image_bytes,
+            embedding=list(embedding),
+            session_id=request.session_id,
+            confidence=confidence,
+            novelty=novelty,
+            source_query=request.current_url or request.view_id or summary_seed,
+            tags=[tag for tag in tags if tag],
+            providers=[provider_name],
+            metadata=metadata,
+            observation_kind="tool_state",
+        )
+        observation = self.store.update_observation(
+            observation.id,
+            summary=summary_seed,
+            metadata={
+                **observation.metadata,
+                "summary_source": "tool_state",
+                "summary_candidates": metadata["summary_candidates"],
+                "primary_object_label": metadata["primary_object_label"],
+            },
+        )
+        hits = self.store.search_by_vector(
+            observation.embedding,
+            top_k=request.top_k or settings.top_k,
+            session_id=request.session_id,
+            exclude_id=observation.id,
+        )
+        previous_state = self.store.latest_scene_state(request.session_id)
+        recent_observations = [
+            item
+            for item in self.store.recent_observations(session_id=request.session_id, limit=6)
+            if item.id != observation.id
+        ]
+        existing_tracks = self.store.list_entity_tracks(session_id=request.session_id, limit=32)
+        scene_state, entity_tracks = build_scene_state(
+            observation=observation,
+            hits=hits,
+            previous_state=previous_state,
+            recent_observations=recent_observations,
+            existing_tracks=existing_tracks,
+        )
+        self.store.save_scene_state(scene_state)
+        self.store.save_entity_tracks(entity_tracks)
+        self._atlas_for_session(request.session_id).update(
+            entity_tracks=entity_tracks[:12],
+            scene_state=scene_state,
+            energy_map=np.zeros((14, 14), dtype=np.float32),
+        )
+        observation = self.store.update_observation(
+            observation.id,
+            world_state_id=scene_state.id,
+            metadata={
+                **observation.metadata,
+                "world_model": scene_state.metrics.model_dump(mode="json"),
+                "scene_state_id": scene_state.id,
+            },
+        )
+
+        self.events.publish("observation.created", {"observation": observation.model_dump(mode="json")})
+        self.events.publish("tool_state.observed", {"scene_state": scene_state.model_dump(mode="json")})
+        self.events.publish("world_state.updated", {"scene_state": scene_state.model_dump(mode="json")})
+        return ToolStateObserveResponse(
+            observation=observation,
+            hits=hits,
+            provider_health=self.providers.health_snapshot(settings),
+            reasoning_trace=[],
+            scene_state=scene_state,
+            entity_tracks=entity_tracks,
+        )
+
+    def plan_rollout(self, request: PlanningRolloutRequest) -> PlanningRolloutResponse:
+        scene_state = (
+            self.store.get_scene_state(request.current_state_id)
+            if request.current_state_id
+            else self.store.latest_scene_state(request.session_id)
+        )
+        if scene_state is None:
+            raise SmritiError("No world state available for rollout planning")
+        observation = self.store.get_observation(scene_state.observation_id)
+        if request.candidate_actions:
+            candidate_actions = request.candidate_actions
+        elif scene_state.prediction_window.candidate_actions:
+            candidate_actions = scene_state.prediction_window.candidate_actions
+        elif observation is not None:
+            state_domain, grounded_entities, affordances = derive_grounded_entities(
+                observation,
+                self.store.list_entity_tracks(session_id=request.session_id, limit=16),
+                scene_state.proposal_boxes,
+            )
+            candidate_actions = default_candidate_actions(
+                observation=observation,
+                state_domain=request.state_domain or state_domain,
+                grounded_entities=grounded_entities,
+                affordances=affordances,
+            )
+        else:
+            candidate_actions = [
+                ActionToken(
+                    id=f"fallback:{scene_state.id}",
+                    verb="query_memory",
+                    target_kind="memory",
+                    target_id=scene_state.id,
+                    target_label="continuity memory",
+                    parameters={"state_domain": "memory"},
+                )
+            ]
+
+        comparison = build_rollout_comparison(
+            scene_state=scene_state.model_copy(update={"state_domain": request.state_domain or scene_state.state_domain}),
+            candidate_actions=candidate_actions,
+            horizon=request.horizon,
+        )
+        updated_scene_state = scene_state.model_copy(
+            update={
+                "conditioned_rollouts": comparison,
+                "prediction_window": scene_state.prediction_window.model_copy(
+                    update={
+                        "candidate_actions": candidate_actions,
+                        "predicted_branches": comparison.ranked_branches,
+                        "chosen_branch_id": comparison.chosen_branch_id,
+                    }
+                ),
+            }
+        )
+        self.store.save_scene_state(updated_scene_state)
+        self.events.publish("planning.rollout", {"comparison": comparison.model_dump(mode="json")})
+        return PlanningRolloutResponse(scene_state=updated_scene_state, comparison=comparison)
+
+    def run_recovery_benchmark(self, request: RecoveryBenchmarkRunRequest) -> RecoveryBenchmarkRun:
+        scene_states = self.store.recent_scene_states(session_id=request.session_id, limit=12)
+        if not scene_states:
+            raise SmritiError("No world states available for recovery benchmarking")
+        comparison = scene_states[0].conditioned_rollouts
+        if comparison is None:
+            comparison = self.plan_rollout(
+                PlanningRolloutRequest(session_id=request.session_id, current_state_id=scene_states[0].id, horizon=2)
+            ).comparison
+            scene_states = self.store.recent_scene_states(session_id=request.session_id, limit=12)
+        benchmark = build_recovery_benchmark_run(
+            session_id=request.session_id,
+            scene_states=scene_states,
+            comparison=comparison,
+        )
+        self.store.save_recovery_benchmark_run(benchmark)
+        self.events.publish("recovery.benchmark", {"benchmark": benchmark.model_dump(mode="json")})
+        return benchmark
+
+    def get_recovery_benchmark(self, benchmark_id: str) -> Optional[RecoveryBenchmarkRun]:
+        return self.store.get_recovery_benchmark_run(benchmark_id)
 
     def forecast_jepa(self, session_id: str, k: int) -> JEPAForecastResponse:
         engine = self._immersive_engines.get(session_id)
@@ -954,6 +1378,13 @@ class RuntimeContainer:
             self._load_sag_templates_into_engine(engine)
             self._immersive_engines[session_id] = engine
         return self._immersive_engines[session_id]
+
+    def _atlas_for_session(self, session_id: str) -> EpistemicAtlas:
+        atlas = self._atlases.get(session_id)
+        if atlas is None:
+            atlas = EpistemicAtlas()
+            self._atlases[session_id] = atlas
+        return atlas
 
     def _load_sag_templates_into_engine(self, engine: Any) -> None:
         from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
@@ -1318,6 +1749,40 @@ class RuntimeContainer:
             raise ValueError("image input missing")
         image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
         return raw_bytes, image
+
+    def _load_tool_state_image(self, request: ToolStateObserveRequest) -> tuple[bytes, Image.Image]:
+        if request.screenshot_base64 or request.file_path:
+            return self._load_image(request.screenshot_base64, request.file_path)
+
+        canvas = Image.new("RGB", (960, 540), color=(247, 249, 252))
+        draw = ImageDraw.Draw(canvas)
+        headline = request.view_id or request.current_url or f"{request.state_domain} state"
+        detail_lines = [
+            headline[:80],
+            f"focused: {request.focused_target or 'none'}",
+            f"errors: {', '.join(request.error_banners[:3]) or 'none'}",
+            f"entities: {', '.join(entity.label for entity in request.visible_entities[:4]) or 'none'}",
+            f"affordances: {', '.join(affordance.label for affordance in request.affordances[:4]) or 'none'}",
+        ]
+        draw.rounded_rectangle((32, 32, 928, 508), radius=24, outline=(60, 94, 130), width=3, fill=(255, 255, 255))
+        for index, line in enumerate(detail_lines):
+            draw.text((56, 60 + (index * 64)), line, fill=(22, 39, 61))
+        buffer = io.BytesIO()
+        canvas.save(buffer, format="PNG")
+        return buffer.getvalue(), canvas
+
+    def _tool_state_summary(self, request: ToolStateObserveRequest) -> str:
+        entity_labels = [entity.label for entity in request.visible_entities[:4] if entity.label]
+        affordance_labels = [affordance.label for affordance in request.affordances[:4] if affordance.label]
+        target = request.view_id or request.current_url or f"{request.state_domain} state"
+        parts = [f"{request.state_domain} state at {target}"]
+        if entity_labels:
+            parts.append(f"entities: {', '.join(entity_labels)}")
+        if affordance_labels:
+            parts.append(f"affordances: {', '.join(affordance_labels)}")
+        if request.error_banners:
+            parts.append(f"errors: {', '.join(request.error_banners[:2])}")
+        return " | ".join(parts)
 
     def _cosine_similarity(self, left: list[float], right: list[float]) -> float:
         left_vec = np.array(left, dtype=np.float32)
