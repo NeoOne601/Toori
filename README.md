@@ -17,7 +17,7 @@ Organized by geometry — not by captions.
 Recalled by meaning — not by keywords.  
 Runs entirely on your machine.
 
-[![Tests](https://img.shields.io/badge/tests-197%20passing-brightgreen?style=flat-square)](cloud/api/tests)
+[![Tests](https://img.shields.io/badge/tests-235%20passing-brightgreen?style=flat-square)](cloud/api/tests)
 [![JEPA Tick](https://img.shields.io/badge/JEPA%20tick-48.5ms-blue?style=flat-square)](#performance-goals)
 [![WCAG](https://img.shields.io/badge/WCAG-2.1%20AA-purple?style=flat-square)](#accessibility)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](LICENSE)
@@ -134,6 +134,9 @@ flowchart LR
   World --> Living["Living Lens Proof Surface"]
   World --> Challenge["Challenge Evaluation"]
   Challenge --> Compare["Baseline Comparison"]
+  World --> ToolState["Tool-State Observer"]
+  World --> Planning["Planning Rollout Engine"]
+  Planning --> Recovery["Recovery Benchmarks"]
   Runtime --> Reasoning["Optional Local / Cloud Reasoning"]
   Reasoning --> Observation
   Runtime --> Smriti["Smriti Memory System"]
@@ -146,13 +149,14 @@ flowchart LR
   Challenge --> Docs["Reports / Results"]
 ```
 
-Toori is organized into six functional layers:
+Toori is organized into seven functional layers:
 1. **Capture layer** — Real camera frames or uploaded images enter through Browser, Electron, or mobile clients.
 2. **Observation layer** — The runtime stores observations, thumbnails, embeddings/descriptors, provenance, and session context.
 3. **World-model layer** — Temporal state is built on top of observations through `SceneState`, `EntityTrack`, `PredictionWindow`, continuity signals, persistence signals, and challenge runs.
-4. **Proof layer** — `Living Lens` exposes predicted vs observed state, stability/change, persistence, challenge evaluation, and baseline comparison.
-5. **Smriti layer** — The semantic memory system persists media, builds cluster graphs, performs guarded recall, and surfaces person/location timelines without breaking the main live runtime.
-6. **Extension layer** — The same runtime is available through HTTP, WebSocket events, and generated plugin SDKs.
+4. **Planning layer** — `GroundedEntity` and `GroundedAffordance` objects derived from live frames feed `ActionToken`-ranked rollout branches. `RolloutComparison` ranks Plan A vs Plan B. Uncertainty gates suppress low-confidence branches.
+5. **Proof layer** — `Living Lens` exposes predicted vs observed state, stability/change, persistence, challenge evaluation, and baseline comparison. The **Recovery Lab** adds closed-loop recovery benchmarks and tool-state grounding.
+6. **Smriti layer** — The semantic memory system persists media, builds cluster graphs, performs guarded recall, and surfaces person/location timelines without breaking the main live runtime.
+7. **Extension layer** — The same runtime is available through HTTP, WebSocket events, and generated plugin SDKs.
 
 ### The VL-JEPA Pipeline (5 Stages)
 
@@ -211,9 +215,9 @@ npm run web
 *(Browser mode is recommended natively for active proof development, as it seamlessly handles macOS Camera permission flows avoiding unsigned Electron bundle identifier quirks. Legacy ONNX models can optionally be downloaded using `python3.11 scripts/download_desktop_models.py`)*
 
 ### 2. Configure Desktop Settings
-Open the **Settings** menu. 
-- **World Model:** V-JEPA2 is configured separately from proposal-box perception. Use **World Model** to point Toori at a local V-JEPA2 weight directory, tune `n_frames`, and inspect whether the last tick stayed on `vjepa2` or degraded to surrogate fallback.
-- **Providers:** M1 users default to DINOv2 perception. ONNX remains a proposal-box compatibility path, while `ollama`, `mlx`, and `cloud` are optional language sidecars rather than the authoritative planner.
+Open the **Settings** menu.
+- **World Model:** V-JEPA2 is now configured dynamically via a JSON settings mirror (no hard-coded constants). Use **World Model** in Settings to point Toori at a local V-JEPA2 weight directory, tune `n_frames`, and inspect whether the last tick stayed on `vjepa2` or degraded to surrogate fallback. The `WorldModelStatus` panel reports the configured encoder, the encoder *actually used* on the last tick, and an explicit degradation reason/stage if V-JEPA2 fell back.
+- **Providers:** M1 users default to DINOv2 perception. ONNX remains a proposal-box compatibility path, while `ollama`, `mlx`, and `cloud` are optional language sidecars — they must never overwrite authoritative world-model metrics or rollout rankings.
 - **Themes:** Choose from `system`, `dark`, `light`, `graphite`, `sepia`, `high_contrast_dark`, and `high_contrast_light`. Theme changes save immediately; other settings remain draft until you save them.
 - **Smriti Storage:** Configure the heavy-data directory. *(On an M1 iMac with a 256 GB SSD, point Smriti at an external drive before indexing a large video corpus).*
 
@@ -225,8 +229,15 @@ Open the **Settings** menu.
 5. Use `✓` and `✗` buttons on results to train your personalized Setu-2 W-matrix.
 6. Tag a person to automatically generate their **Journals** and social topology graph.
 
-### 4. Living Lens Workflow
-Use the **Live Lens** for live camera capture debugging. The **Living Lens** proof surface runs continuously in passive mode to track entity persistence, predicting moment-to-moment reality. The new **Recovery Lab** extends the same scene-state pipeline with grounded tool/browser evidence, ranked action-conditioned rollouts, and closed-loop recovery benchmarks. Evaluate baselines by running an *occlusion challenge* and hit **Copy Share Text** for a portable recap.
+### 4. Living Lens & Recovery Lab Workflow
+Use the **Live Lens** for live camera capture debugging. The **Living Lens** proof surface runs continuously in passive mode to track entity persistence, predicting moment-to-moment reality.
+
+The **Recovery Lab** (inside Living Lens) extends the scene-state pipeline with:
+- **Tool-State Observer** — ground browser or desktop tool evidence into the same world-state pipeline via `POST /v1/tool-state/observe`.
+- **Planning Rollout** — submit a scene + candidate actions to get ranked `Plan A / Plan B` branches scored by the world model via `POST /v1/planning/rollout`.
+- **Recovery Benchmarks** — run closed-loop hybrid recovery benchmarks and retrieve historical results via `POST/GET /v1/benchmarks/recovery/`.
+
+Evaluate baselines by running an *occlusion challenge* and hit **Copy Share Text** for a portable recap.
 
 ---
 
@@ -250,12 +261,17 @@ cloud/
   jepa_service/engine.py  — Core JEPA engine & spatial energy maps
   runtime/
     smriti_ingestion.py   — Ingestion daemon & watch queues
-    smriti_storage.py     — SmetiDB + FAISS-lite vector index
+    smriti_storage.py     — SmetiDB + FAISS-lite vector index (+ RecoveryBenchmarkRun persistence)
     smriti_migration.py   — Copy-first data migration service
     setu2.py              — Setu-2 EBM language bridge
-    service.py            — Runtime contracts, states, configs
+    service.py            — Runtime contracts, states, configs (V-JEPA2 dynamic config + planning logic)
+    world_model.py        — Grounded entities, affordances, rollout comparison, recovery benchmark builder
+    models.py             — Canonical schema: ActionToken, GroundedEntity, GroundedAffordance,
+                            RolloutBranch, RolloutComparison, RecoveryBenchmarkRun, WorldModelStatus, WorldModelConfig
+    proof_report.py       — PDF proof report generator (now byte-streaming via _render_pdf_bytes)
   search_service/main.py  — Compatibility search layer
-  perception/             — Primary perception backbones (Torch MUST be isolated here)
+  perception/
+    vjepa2_encoder.py     — V-JEPA2 encoder (dynamic JSON-based config: _resolve_model_id, _resolve_n_frames)
 
 desktop/electron/         — Electron shell & React/Vite operator UI
   src/tabs/SmritiTab.tsx  — Main workspace
@@ -277,10 +293,12 @@ docs/                     — Extended system-design and manual architecture spe
 |--------|-------|-------------|
 | `POST` | `/v1/analyze` | Single frame camera analysis |
 | `POST` | `/v1/living-lens/tick` | Advance live world-model state |
-| `GET` | `/v1/world-model/status` | Report configured encoder, last tick result, and degradation state |
+| `GET` | `/v1/world-model/status` | Report configured encoder, last tick result, and degradation stage (`WorldModelStatus`) |
+| `GET` | `/v1/world-model/config` | Retrieve current V-JEPA2 dynamic config (`WorldModelConfig`) |
+| `PUT` | `/v1/world-model/config` | Update V-JEPA2 model path and `n_frames` at runtime |
 | `POST` | `/v1/tool-state/observe` | Ground browser or desktop tool state into the same world-state pipeline |
-| `POST` | `/v1/planning/rollout` | Rank local Plan A / Plan B action-conditioned branches |
-| `POST` | `/v1/benchmarks/recovery/run` | Run the hybrid recovery benchmark pack |
+| `POST` | `/v1/planning/rollout` | Rank local Plan A / Plan B action-conditioned branches (`RolloutComparison`) |
+| `POST` | `/v1/benchmarks/recovery/run` | Run the hybrid recovery benchmark pack (`RecoveryBenchmarkRun`) |
 | `GET` | `/v1/benchmarks/recovery/{id}` | Fetch a stored recovery benchmark run |
 | `GET` | `/v1/world-state` | Get Epistemic Atlas and scene threads |
 | `WS` | `/v1/events` | Stream live observations & syncs |
@@ -298,9 +316,17 @@ docs/                     — Extended system-design and manual architecture spe
 
 - **Live Lens:** Manual capture and debugging surface.
 - **Living Lens:** Continuous proof surface demonstrating real-time persistence and continuity.
+- **Recovery Lab:** World-model planning workspace inside Living Lens — tool-state grounding, ranked rollout branches, and benchmark evaluation.
 - **JEPA Energy / Residual:** Pure loss target. Low energy = prediction consistency.
 - **Epistemic Atlas:** Spatial tracking of entities and their relationship threads across time.
 - **Selective Talker:** Adaptive event narration. Only speaks on extreme JEPA surprise or track shifts.
+- **GroundedEntity:** A tracked scene element attached to world-model state with a spatial domain (`table_surface`, `hand`, `tool`, etc.).
+- **GroundedAffordance:** An affordance (reachable, graspable, blocked, etc.) attached to a `GroundedEntity` as predicted by the world model.
+- **ActionToken:** A ranked candidate action derived from grounded entities and affordances, used to seed rollout branches.
+- **RolloutComparison:** A ranked pair of `Plan A` vs `Plan B` rollout branches. Each branch scores predicted outcome + uncertainty.
+- **RecoveryBenchmarkRun:** A persisted benchmark run that evaluates camera + tool planning across a recovery scenario set.
+- **WorldModelStatus:** Live diagnostic: configured encoder, encoder actually used on last tick, degradation reason, and fallback stage.
+- **WorldModelConfig:** Dynamic V-JEPA2 parameters (model path, `n_frames`) that can be updated at runtime via `PUT /v1/world-model/config`.
 - **Responsive Grid:** Modular Living Lens layout separating understanding, pulse, and relinking.
 - **Saliency Filtering:** Rejects weak or irrelevant proposals from dynamic entities.
 - **Passive mode:** Continuous monitoring updating the scene model seamlessly.
@@ -340,6 +366,9 @@ cd desktop/electron && npm run typecheck && npm run build
 4. EMA updates strictly happen before predictor forward steps.
 5. Missing cloud reasoning models degrade gracefully into local memory-storage operations.
 6. Native mobile wiring directories exist but require separate packaging steps outside the desktop Python runner loop.
+7. `ollama` and MLX are explanatory sidecars only — they must never overwrite authoritative world-model metrics, rollout rankings, or recovery benchmark winners.
+8. V-JEPA2 encoder configuration is now dynamic. The canonical settings are written to a JSON mirror on disk by `_write_settings_mirror()` and re-read by `_resolve_model_id()` / `_resolve_n_frames()` on each load. Never hard-code encoder parameters.
+9. `WorldModelStatus` must stay truthful: report the configured encoder, the encoder *actually used* on the last tick, and explicit degradation reason/stage when V-JEPA2 falls back to surrogate.
 
 ---
 
@@ -352,7 +381,8 @@ cd desktop/electron && npm run typecheck && npm run build
 | Sprint 2+3 | 146 | PyAV integration, Ingestion, Smriti Recall & Journals UI |
 | Sprint 4 | 162 | Storage config, quotas, Watch Folders management |
 | Sprint 5 | 197 | Safe Migrations, W-Matrix Feedback, Web Worker Mandala, WCAG AA |
-| Sprint 6 | — | Mobile companion · federated Setu-2 · signed macOS bundle |
+| Sprint 6 | 235 | World Model Foundation: GroundedEntities, Affordances, Planning Rollouts, Recovery Benchmarks, V-JEPA2 Dynamic Config |
+| Sprint 7 | — | Mobile companion · federated Setu-2 · signed macOS bundle |
 
 ---
 
