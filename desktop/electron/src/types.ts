@@ -765,6 +765,35 @@ export type SmritiRecallFeedback = {
   session_id?: string;
 };
 
+export interface AudioQueryRequest {
+  audio_base64: string;
+  sample_rate?: number;         // default 16000
+  top_k?: number;               // default 10
+  session_id?: string | null;
+  depth_stratum?: string | null;
+  person_filter?: string | null;
+  confidence_min?: number;      // default 0.0
+}
+
+export interface AudioQueryResult {
+  media_id: string;
+  audio_score: number;          // cosine similarity 0.0-1.0
+  rank: number;
+  thumbnail_path?: string | null;
+  setu_descriptions?: unknown[];
+  audio_energy?: number | null;
+  audio_duration_seconds?: number | null;
+  gemma4_narration?: string | null;
+}
+
+export interface AudioQueryResponse {
+  results: AudioQueryResult[];
+  query_audio_energy: number;
+  index_size: number;
+  latency_ms: number;
+  encoder: string;              // "audio_jepa_phase1" or "unavailable"
+}
+
 export type SmritiRecallFeedbackResult = {
   updated: boolean;
   w_mean: number;

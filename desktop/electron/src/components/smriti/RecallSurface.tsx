@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import type { SmritiRecallFeedbackResult, SmritiRecallResult } from "../../types";
 import { Gemma4InsightCard } from "../Gemma4Panel";
+import { useAudioQuery } from "../../hooks/useAudioQuery";
+import { AudioResultsPanel } from "./AudioResultsPanel";
 
 type RecallSurfaceProps = {
   query: string;
@@ -54,6 +56,11 @@ export default function RecallSurface({
   runtimeRequest,
 }: RecallSurfaceProps) {
   const [feedbackSent, setFeedbackSent] = useState<Record<string, boolean | null>>({});
+
+  const {
+    recording, audioResults, audioLatencyMs, audioIndexSize,
+    audioError, isQuerying, startRecording, stopRecording, clearAudioResults,
+  } = useAudioQuery();
 
   const orderedResults = useMemo(
     () =>
@@ -144,6 +151,26 @@ export default function RecallSurface({
               <option value={90}>Last 90 days</option>
             </select>
           </label>
+          <button
+            type="button"
+            className={recording ? "smriti-mic-btn recording" : "smriti-mic-btn"}
+            onClick={recording ? stopRecording : startRecording}
+            aria-label={recording ? "Stop recording" : "Search by sound"}
+            title={recording ? "Stop recording (auto-stops at 5 seconds)" : "Hum or speak to find memories by sound"}
+            disabled={isQuerying}
+          >
+            {recording ? "■" : "◉"}
+          </button>
+          {isQuerying && (
+            <span style={{ fontSize: "0.78rem", color: "var(--muted)", marginLeft: "6px" }}>
+              Searching audio memory...
+            </span>
+          )}
+          {audioError && (
+            <span style={{ fontSize: "0.78rem", color: "var(--kpi-danger)", marginLeft: "6px" }}>
+              {audioError}
+            </span>
+          )}
         </div>
       </section>
 
@@ -306,6 +333,15 @@ export default function RecallSurface({
           </div>
         ) : null}
       </section>
+
+      {audioResults.length > 0 && (
+        <AudioResultsPanel
+          results={audioResults}
+          latencyMs={audioLatencyMs}
+          indexSize={audioIndexSize}
+          onClear={clearAudioResults}
+        />
+      )}
     </div>
   );
 }

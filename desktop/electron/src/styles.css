@@ -2987,6 +2987,28 @@ textarea {
   border-color: color-mix(in srgb, var(--kpi-healthy) 40%, var(--line));
   color: var(--kpi-healthy);
 }
+.smriti-mic-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.smriti-mic-btn:hover { background: var(--bg2); }
+.smriti-mic-btn.recording {
+  background: rgba(210, 60, 60, 0.1);
+  border-color: rgba(210, 60, 60, 0.45);
+  color: rgb(210, 60, 60);
+}
+.smriti-mic-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .smriti-pill--watch {
   border-color: color-mix(in srgb, var(--kpi-watch) 40%, var(--line));

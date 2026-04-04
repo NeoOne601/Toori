@@ -420,11 +420,13 @@ Methods:
 - `useSmritiState.ts` — Smriti section state, recall, mandala, journals
 - `useLivingLens.ts` — living lens session and proof metrics
 - `useRuntimeBridge.ts` — generic fetch/WebSocket helpers to `127.0.0.1:7777`
+- `useAudioQuery.ts` — microphone capture, base64 encoding, POST /v1/audio/query, state management
 
 **Smriti UI components:**
 - `MandalaView.tsx` — force-layout cluster graph using `mandala-force-worker.ts`
 - `DeepdiveView.tsx` — accessible modal (WCAG 2.1 AA focus trap, Escape to close)
-- `RecallSurface.tsx` — natural language recall with filter controls
+- `RecallSurface.tsx` — natural language recall with filter controls; mic button triggers audio-modal recall via useAudioQuery hook
+- `AudioResultsPanel.tsx` — audio recall results with score bars, thumbnail, Gemma4 narration
 - `PersonJournal.tsx` — chronological person media gallery
 - `SmritiStorageSettings.tsx` — storage config, watch folders, usage, migration, pruning
 - `PerformanceHUD.tsx` — worker stats, queue depth, energy EMA
@@ -611,8 +613,8 @@ Update SDK when any of these change:
 
 ## Recommended Work Areas (Current State)
 
-1. **Audio-JEPA Phase 1 (Completed)** — Implemented robust, non-blocking `AudioEncoder` (numpy/PyAV fixed seed `20260327`), migrated schema to v3, integrated FAISS sub-index, wired into `SmritiIngestionDaemon`, and added the `/v1/audio/query` API endpoint for same-modal retrieval.
-2. **Audio-JEPA Phase 2 (Next)** — Same-modal audio retrieval via mic/hum query against Smriti audio sub-index needs UI/Frontend wire-up to leverage the new `/v1/audio/query` API.
+1. **Audio-JEPA Phase 1 (Completed)** — Implemented robust, non-blocking `AudioEncoder` (numpy/PyAV fixed seed `20260327`), migrated schema to v3, integrated FAISS sub-index, wired into `SmritiIngestionDaemon`, and added the `/v1/audio/query` API endpoint for same-modal retrieval. Phase 1 Frontend UI is also complete.
+2. **Audio-JEPA Phase 2** — CLAP projection head for cross-modal audio-visual retrieval (hum to find video frame)
 3. **Federated Setu-2** — W-matrix is currently runtime-local and not persisted
 4. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
 5. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
