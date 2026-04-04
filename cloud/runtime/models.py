@@ -199,7 +199,7 @@ class RuntimeSettings(BaseModel):
     primary_perception_provider: str = "dinov2"
     reasoning_backend: str = "cloud"
     search_provider: str = "local"
-    local_reasoning_disabled: bool = True
+    local_reasoning_disabled: bool = False # Gemma 4 is the primary local provider
     fallback_order: list[str] = Field(default_factory=lambda: ["dinov2", "onnx", "basic", "cloud"])
     decode_auto_threshold: float = 0.32
     top_k: int = 6
@@ -629,6 +629,7 @@ class JEPATick:
     degraded: bool = False
     degrade_reason: Optional[str] = None
     degrade_stage: Optional[str] = None
+    gemma4_alert: Optional[dict[str, Any]] = None
 
     def to_payload(self) -> "JEPATickPayload":
         return JEPATickPayload(
@@ -666,6 +667,7 @@ class JEPATick:
             degraded=self.degraded,
             degrade_reason=self.degrade_reason,
             degrade_stage=self.degrade_stage,
+            gemma4_alert=self.gemma4_alert,
         )
 
 
@@ -705,6 +707,7 @@ class JEPATickPayload(BaseModel):
     degraded: bool = False
     degrade_reason: Optional[str] = None
     degrade_stage: Optional[str] = None
+    gemma4_alert: Optional[dict[str, Any]] = None
 
 
 class AtlasNode(BaseModel):

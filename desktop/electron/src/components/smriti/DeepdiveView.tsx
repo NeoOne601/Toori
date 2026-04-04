@@ -6,6 +6,7 @@ import type {
   SmritiRecallResult,
   SmritiSetuRecord,
 } from "../../types";
+import { Gemma4InsightCard } from "../Gemma4Panel";
 
 type SmritiMediaDetail = {
   id: string;
@@ -359,6 +360,23 @@ export default function DeepdiveView({
               <span>Hybrid {(media.hybrid_score * 100).toFixed(0)}</span>
               <span>Setu {(media.setu_score * 100).toFixed(0)}</span>
             </div>
+            {(() => {
+              const g4 = setuDescriptions.find(d => (d.description as any).narrator === "gemma4");
+              if (g4) {
+                return (
+                  <div style={{ marginBottom: "0.75rem" }}>
+                    <Gemma4InsightCard
+                      narrationText={g4.description.text}
+                      anchorName={g4.description.anchor_basis}
+                      confidence={g4.description.confidence}
+                      hallucinationRisk={g4.description.hallucination_risk || 0.5}
+                      latencyMs={(g4.description as any).latency_ms || 0}
+                    />
+                  </div>
+                );
+              }
+              return null;
+            })()}
             {setuDescriptions.length > 0 ? (
               <div className="smriti-side-stack">
                 {setuDescriptions.slice(0, 4).map((record, index) => (

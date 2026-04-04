@@ -161,6 +161,7 @@ def _jepa_tick_from_payload(payload: JEPATickPayload) -> JEPATick:
         degraded=payload.degraded,
         degrade_reason=payload.degrade_reason,
         degrade_stage=payload.degrade_stage,
+        gemma4_alert=payload.gemma4_alert,
     )
 
 
@@ -1031,6 +1032,19 @@ class RuntimeContainer:
             )
         if talker_event is not None:
             self.events.publish("jepa.talker_event", talker_event.model_dump(mode="json"))
+
+        # Gemma 4 proactive alert — gated on surprise_score > 0.55
+        if jepa_tick.surprise_score is not None and jepa_tick.surprise_score > 0.55:
+            try:
+                from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
+                _mlx_p = self.providers.get("mlx")
+                _g4_alert = await _G4E(_mlx_p).live_tick_alert(
+                    result.jepa_tick_dict,
+                    scene_state, entity_tracks)
+                jepa_tick.gemma4_alert = _g4_alert
+            except Exception as _g4_err:
+                import logging as _lg
+                _lg.getLogger(__name__).debug("Gemma4 alert skipped: %s", _g4_err)
 
         return LivingLensTickResponse(
             **response.model_dump(),

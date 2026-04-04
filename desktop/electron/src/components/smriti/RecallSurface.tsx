@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { SmritiRecallFeedbackResult, SmritiRecallResult } from "../../types";
+import { Gemma4InsightCard } from "../Gemma4Panel";
 
 type RecallSurfaceProps = {
   query: string;
@@ -244,6 +245,21 @@ export default function RecallSurface({
                   ))}
                   {result.location_name ? <span className="smriti-chip">{result.location_name}</span> : null}
                 </div>
+                
+                {(() => {
+                  const g4 = result.setu_descriptions?.find(d => (d.description as any).narrator === "gemma4");
+                  if (g4) {
+                    return <Gemma4InsightCard 
+                      narrationText={g4.description.text} 
+                      anchorName={g4.description.anchor_basis} 
+                      confidence={g4.description.confidence} 
+                      hallucinationRisk={g4.description.hallucination_risk || 0.5} 
+                      latencyMs={(g4.description as any).latency_ms || 0} 
+                    />;
+                  }
+                  return null;
+                })()}
+
                 {feedback === undefined ? (
                   <div className="recall-feedback-row">
                     <button

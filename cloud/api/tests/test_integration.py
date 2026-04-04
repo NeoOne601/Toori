@@ -262,6 +262,11 @@ def test_mlx_malformed_output_produces_failed_trace(tmp_path, monkeypatch):
     _enable_local_reasoning(runtime, "mlx")
 
     monkeypatch.setattr(
+      runtime.providers.ollama,
+      "health",
+      lambda config: ProviderHealth(name="ollama", role="reasoning", enabled=True, healthy=False, message="unsupported in this test"),
+    )
+    monkeypatch.setattr(
       runtime.providers.mlx,
       "health",
       lambda config: ProviderHealth(name="mlx", role="reasoning", enabled=True, healthy=True, message="configured"),

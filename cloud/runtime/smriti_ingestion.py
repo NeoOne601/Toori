@@ -264,15 +264,31 @@ class SmritiIngestionDaemon:
 
         tick_dict = result.jepa_tick_dict
         embedding = tick_dict.get("session_fingerprint", [])[:128]
+        
+        media.depth_strata = tick_dict.get("depth_strata")
+        media.anchor_matches = tick_dict.get("anchor_matches") or []
+        media.setu_descriptions = [
+            item.get("description", item)
+            for item in (tick_dict.get("setu_descriptions") or [])
+            if isinstance(item, dict)
+        ]
+
+        # Gemma 4 narration layer — evidence-first, hallucination-bounded
+        try:
+            from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
+            _mlx_prov = getattr(self, '_container', None)
+            _mlx_prov = getattr(_mlx_prov, 'mlx_provider', None) if _mlx_prov else None
+            _enricher = _G4E(_mlx_prov)
+            media.setu_descriptions = await _enricher.enrich_ingested_media(media)
+        except Exception as _g4_err:
+            import logging as _lg
+            _lg.getLogger(__name__).debug("Gemma4 enrichment skipped: %s", _g4_err)
+
         self._db.update_smriti_media(
             media_id=media.id,
-            depth_strata=tick_dict.get("depth_strata"),
-            anchor_matches=tick_dict.get("anchor_matches") or [],
-            setu_descriptions=[
-                item.get("description", item)
-                for item in (tick_dict.get("setu_descriptions") or [])
-                if isinstance(item, dict)
-            ],
+            depth_strata=media.depth_strata,
+            anchor_matches=media.anchor_matches,
+            setu_descriptions=media.setu_descriptions,
             alignment_loss=tick_dict.get("alignment_loss", 0.0),
             hallucination_risk=self._compute_mean_hallucination_risk(tick_dict),
             ingestion_status="complete",

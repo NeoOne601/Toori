@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Gemma4AlertBanner } from "../components/Gemma4Panel";
 import BaselineBattle from "../components/BaselineBattle";
 import ConsumerMode from "../components/ConsumerMode";
 import ForecastPanel from "../components/ForecastPanel";
@@ -54,6 +55,9 @@ export default function LivingLensTab() {
 
   return (
     <>
+      {app.currentJepaTick?.gemma4_alert && (
+        <Gemma4AlertBanner alert={app.currentJepaTick.gemma4_alert as any} />
+      )}
       <header className="global-controls-header">
         <div className="global-controls-left">
           <label className="field checkbox compact-check">

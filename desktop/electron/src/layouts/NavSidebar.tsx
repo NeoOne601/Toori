@@ -1,5 +1,6 @@
 import { TABS } from "../constants";
 import { useDesktopApp } from "../state/DesktopAppContext";
+import { Gemma4StatusBadge } from "../components/Gemma4Panel";
 
 export default function NavSidebar() {
   const app = useDesktopApp();
@@ -50,6 +51,18 @@ export default function NavSidebar() {
           ))}
         </nav>
         <div className="sidebar-health">
+          {(() => {
+            const mlxHealth = app.world.health?.find((h: any) => h.name === "mlx");
+            const isAvailable = mlxHealth?.healthy ?? false;
+            return (
+              <Gemma4StatusBadge 
+                available={isAvailable}
+                model_label="Gemma 4 e4b"
+                mean_latency_ms={mlxHealth?.latency_ms ?? 0}
+                call_count={0} 
+              />
+            );
+          })()}
           {app.topHealth.map((item) => (
             <div key={item.name} className="health-badge" data-healthy={item.healthy}>
               <span>{item.name}</span>

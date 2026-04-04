@@ -94,10 +94,10 @@ def default_settings() -> RuntimeSettings:
             ),
             "mlx": ProviderConfig(
                 name="mlx",
-                enabled=False,
-                model_path=os.getenv("TOORI_MLX_MODEL_PATH", "mlx-community/Qwen2-VL-2B-Instruct-4bit"),
+                enabled=False, # Gemma 4 on-device narrator (user-enabled)
+                model_path=os.getenv("TOORI_MLX_MODEL_PATH", "/Volumes/Apple/AI Model/gemma-4-e4b-it-4bit"),
                 timeout_s=float(os.getenv("TOORI_MLX_TIMEOUT", "150")),
-                metadata={"command": default_mlx_command},
+                metadata={"command": default_mlx_command, "keep_alive": "30m"},
             ),
             "cloud": ProviderConfig(
                 name="cloud",

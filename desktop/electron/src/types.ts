@@ -348,6 +348,7 @@ export type JEPATickPayload = {
   degraded?: boolean;
   degrade_reason?: string | null;
   degrade_stage?: string | null;
+  gemma4_alert?: Record<string, unknown> | null;
 };
 
 export type LivingLensTickResponse = AnalyzeResponse & {
