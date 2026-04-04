@@ -25,10 +25,20 @@ def _get_model():
     global _MODEL, _TOKENIZER, _LOADED_PATH
     if _MODEL is None:
         import mlx_vlm
+        import mlx_vlm.utils
+        # Remap gemma4_vision to gemma4 if not already present (support for mlx-vlm 0.4.4+)
+        if "gemma4_vision" not in mlx_vlm.utils.MODEL_REMAPPING:
+            mlx_vlm.utils.MODEL_REMAPPING["gemma4_vision"] = "gemma4"
+            
         path = LOCAL_MODEL_PATH if Path(LOCAL_MODEL_PATH).exists() else FALLBACK_HF_REPO
         print(f"[mlx_reasoner] Loading from {path}", file=sys.stderr, flush=True)
-        _MODEL, _TOKENIZER, _LOADED_PATH = *mlx_vlm.load(path), path
-        print("[mlx_reasoner] Model ready", file=sys.stderr, flush=True)
+        try:
+            _MODEL, _TOKENIZER = mlx_vlm.load(path)
+            _LOADED_PATH = path
+            print("[mlx_reasoner] Model ready", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[mlx_reasoner] Load error: {e}", file=sys.stderr, flush=True)
+            raise
     return _MODEL, _TOKENIZER, _LOADED_PATH
 
 def _build_prompt(user_text, system, has_image, processor, model):
@@ -74,7 +84,48 @@ def _write_error(msg):
                                   "latency_ms":0.0,"local":True,"error":msg}) + "\n")
     sys.stdout.flush()
 
+def _lightweight_healthcheck():
+    """Validate environment and model paths without loading weights into RAM."""
+    result = {"success": False, "message": "", "model_path": "", "status": "FAILED"}
+    # Check model path existence
+    path = LOCAL_MODEL_PATH if Path(LOCAL_MODEL_PATH).exists() else None
+    if path is None:
+        # Check if fallback HF repo could work (mlx_vlm would download it)
+        result["model_path"] = FALLBACK_HF_REPO
+        result["message"] = f"Local path not found; would use HF repo {FALLBACK_HF_REPO}"
+    else:
+        result["model_path"] = path
+    # Check mlx_vlm is importable
+    try:
+        import mlx_vlm  # noqa: F401
+    except ImportError as exc:
+        result["message"] = f"mlx_vlm not installed: {exc}"
+        return result
+    # Check Metal device is accessible (mlx itself)
+    try:
+        import mlx.core as mx  # noqa: F401
+    except Exception as exc:
+        result["message"] = f"MLX Metal device error: {exc}"
+        return result
+    # If we have a local path, verify key files exist
+    if path is not None:
+        config_file = Path(path) / "config.json"
+        if not config_file.exists():
+            result["message"] = f"config.json not found in {path}"
+            return result
+    result["success"] = True
+    result["status"] = "READY"
+    result["message"] = f"READY ({result['model_path']})"
+    return result
+
+
 def main():
+    if "--healthcheck" in sys.argv:
+        result = _lightweight_healthcheck()
+        sys.stdout.write(json.dumps(result) + "\n")
+        sys.stdout.flush()
+        sys.exit(0 if result["success"] else 1)
+
     model, tokenizer, loaded_path = _get_model()
     model_label = Path(loaded_path).name if loaded_path else "gemma-4-e4b"
     for raw in sys.stdin:
@@ -83,6 +134,17 @@ def main():
         tmp = None
         try:
             p = json.loads(raw)
+            # Handle healthcheck ping from daemon mode
+            if p.get("type") == "healthcheck":
+                sys.stdout.write(json.dumps({
+                    "type": "healthcheck",
+                    "success": True,
+                    "status": "READY",
+                    "model": model_label,
+                    "message": f"daemon alive ({model_label})",
+                }) + "\n")
+                sys.stdout.flush()
+                continue
             user_text = str(p.get("prompt","")).strip()
             image_b64 = p.get("image_base64") or None
             system    = p.get("system") or None

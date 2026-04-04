@@ -516,6 +516,104 @@ class CloudReasoningProvider:
 class MlxReasoningProvider:
     name = "mlx"
 
+    _HEALTH_CACHE_TTL_S = 30.0
+
+    def __init__(self) -> None:
+        import atexit
+        import threading
+
+        self._daemon: Optional[subprocess.Popen] = None
+        self._daemon_lock = threading.Lock()
+        self._health_cache: Optional[tuple[ProviderHealth, float]] = None
+        atexit.register(self.shutdown)
+
+    # ── lifecycle ──────────────────────────────────────────────────
+
+    def shutdown(self) -> None:
+        """Terminate the daemon process if running. Safe to call multiple times."""
+        with self._daemon_lock:
+            proc = self._daemon
+            self._daemon = None
+        if proc is not None:
+            try:
+                proc.stdin.close()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def _daemon_alive(self) -> bool:
+        return self._daemon is not None and self._daemon.poll() is None
+
+    def _ensure_daemon(self, config: ProviderConfig) -> subprocess.Popen:
+        """Start the daemon if not already running. Returns the Popen handle."""
+        with self._daemon_lock:
+            if self._daemon_alive():
+                return self._daemon  # type: ignore[return-value]
+            # Kill stale process if it exited
+            if self._daemon is not None:
+                try:
+                    self._daemon.kill()
+                except Exception:
+                    pass
+                self._daemon = None
+            argv = self._resolve_wrapper_prefix(config)
+            self._daemon = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            return self._daemon
+
+    def _send_receive(self, config: ProviderConfig, payload: dict, timeout_s: float = 150.0) -> dict:
+        """Send a JSON line to the daemon and read back a JSON line response."""
+        import select
+
+        daemon = self._ensure_daemon(config)
+        with self._daemon_lock:
+            try:
+                line = json.dumps(payload) + "\n"
+                daemon.stdin.write(line)  # type: ignore[union-attr]
+                daemon.stdin.flush()  # type: ignore[union-attr]
+            except (BrokenPipeError, OSError) as exc:
+                self._daemon = None
+                raise RuntimeError(f"daemon stdin broken: {exc}") from exc
+
+            # Read response with timeout
+            try:
+                stdout_fd = daemon.stdout.fileno()  # type: ignore[union-attr]
+                ready, _, _ = select.select([stdout_fd], [], [], timeout_s)
+                if not ready:
+                    raise RuntimeError(f"daemon response timed out after {timeout_s}s")
+                response_line = daemon.stdout.readline()  # type: ignore[union-attr]
+            except (OSError, ValueError) as exc:
+                self._daemon = None
+                raise RuntimeError(f"daemon stdout error: {exc}") from exc
+
+        if not response_line or not response_line.strip():
+            if not self._daemon_alive():
+                self._daemon = None
+                raise RuntimeError("daemon exited unexpectedly")
+            raise RuntimeError("daemon returned empty response")
+        try:
+            result = json.loads(response_line.strip())
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"daemon returned invalid JSON: {response_line.strip()[:200]}") from exc
+        if not isinstance(result, dict):
+            raise RuntimeError("daemon returned non-object JSON")
+        return result
+
+    # ── health ─────────────────────────────────────────────────────
+
     def health(self, config: ProviderConfig) -> ProviderHealth:
         if not config.enabled:
             return ProviderHealth(name=self.name, role="reasoning", enabled=False, message="disabled")
@@ -523,19 +621,49 @@ class MlxReasoningProvider:
             return ProviderHealth(name=self.name, role="reasoning", enabled=True, healthy=False, message="metadata.command missing")
         if not (config.model_path or config.model):
             return ProviderHealth(name=self.name, role="reasoning", enabled=True, healthy=False, message="model_path missing")
+
+        # Return cached result if fresh
+        if self._health_cache is not None:
+            cached_result, cached_at = self._health_cache
+            if (time.time() - cached_at) < self._HEALTH_CACHE_TTL_S:
+                return cached_result
+
+        # Tier 2: If daemon is already running, ping it
+        if self._daemon_alive():
+            try:
+                result = self._send_receive(config, {"type": "healthcheck"}, timeout_s=5.0)
+                if result.get("success"):
+                    health = ProviderHealth(
+                        name=self.name, role="reasoning", enabled=True, healthy=True,
+                        message=str(result.get("message") or "daemon alive"),
+                    )
+                    self._health_cache = (health, time.time())
+                    return health
+            except Exception:
+                pass  # Fall through to lightweight probe
+
+        # Tier 1: Lightweight subprocess probe (no model load)
         try:
-            result = self._run_wrapper(config, healthcheck=True)
+            result = self._run_healthcheck_subprocess(config)
         except Exception as exc:
-            return ProviderHealth(name=self.name, role="reasoning", enabled=True, healthy=False, message=_short_error_message(exc))
+            health = ProviderHealth(name=self.name, role="reasoning", enabled=True, healthy=False, message=_short_error_message(exc))
+            self._health_cache = (health, time.time())
+            return health
         if not result.get("success"):
-            return ProviderHealth(
-                name=self.name,
-                role="reasoning",
-                enabled=True,
-                healthy=False,
+            health = ProviderHealth(
+                name=self.name, role="reasoning", enabled=True, healthy=False,
                 message=str(result.get("message") or "mlx healthcheck failed"),
             )
-        return ProviderHealth(name=self.name, role="reasoning", enabled=True, healthy=True, message=str(result.get("message") or "configured"))
+            self._health_cache = (health, time.time())
+            return health
+        msg = str(result.get("message") or "configured")
+        if not self._daemon_alive():
+            msg += " (model loads on first use)"
+        health = ProviderHealth(name=self.name, role="reasoning", enabled=True, healthy=True, message=msg)
+        self._health_cache = (health, time.time())
+        return health
+
+    # ── reasoning ──────────────────────────────────────────────────
 
     def reason(
         self,
@@ -546,28 +674,32 @@ class MlxReasoningProvider:
         context: list[Observation],
         image_path: Optional[str] = None,
     ) -> Answer:
-        rendered_prompt = self._format_prompt(prompt, context)
-        cleanup_path: Optional[Path] = None
-        effective_image_path = image_path
-        if effective_image_path is None and image_bytes is not None:
-            suffix = Path(image_path or "image.png").suffix or ".png"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(image_bytes)
-                cleanup_path = Path(tmp.name)
-            effective_image_path = str(cleanup_path)
-        try:
-            result = self._run_wrapper(config, prompt=rendered_prompt, image_path=effective_image_path)
-        finally:
-            if cleanup_path is not None:
-                cleanup_path.unlink(missing_ok=True)
-        if not result.get("success"):
-            raise RuntimeError(str(result.get("message") or "mlx reasoning failed"))
+        has_image = bool(image_bytes or image_path)
+        rendered_prompt = self._format_prompt(prompt, context, has_image=has_image)
+        image_b64: Optional[str] = None
+        if image_bytes is not None:
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        elif image_path is not None:
+            try:
+                image_b64 = base64.b64encode(Path(image_path).read_bytes()).decode("utf-8")
+            except Exception:
+                pass
+        payload: dict = {
+            "prompt": rendered_prompt,
+            "image_base64": image_b64,
+            "max_tokens": int(config.metadata.get("max_tokens", 512)),
+        }
+        result = self._send_receive(config, payload, timeout_s=config.timeout_s)
+        if result.get("error"):
+            raise RuntimeError(str(result["error"]))
         text = str(result.get("text") or "").strip()
         if not text:
-            raise RuntimeError("mlx returned empty output")
+            raise RuntimeError("mlx daemon returned empty output")
         return Answer(text=text, provider=self.name, confidence=0.6)
 
-    def _format_prompt(self, prompt: str, context: list[Observation], *, has_image: bool) -> str:
+    # ── prompt formatting ──────────────────────────────────────────
+
+    def _format_prompt(self, prompt: str, context: list[Observation], *, has_image: bool = False) -> str:
         if has_image:
             lines = [
                 "Analyze the current live camera frame.",
@@ -584,6 +716,8 @@ class MlxReasoningProvider:
         for observation in context[:5]:
             lines.append(f"- {observation.summary or 'No summary'}")
         return "\n".join(lines)
+
+    # ── internal helpers ───────────────────────────────────────────
 
     def _command_string(self, config: ProviderConfig) -> str:
         return str(config.metadata.get("command", "")).strip()
@@ -604,52 +738,39 @@ class MlxReasoningProvider:
             raise RuntimeError("mlx_reasoner.py not found in command")
         return [resolved, script_path]
 
-    def _run_wrapper(
-        self,
-        config: ProviderConfig,
-        *,
-        prompt: Optional[str] = None,
-        image_path: Optional[str] = None,
-        healthcheck: bool = False,
-    ) -> dict:
+    def _run_healthcheck_subprocess(self, config: ProviderConfig) -> dict:
+        """Run a lightweight --healthcheck subprocess (no model loading)."""
         argv = self._resolve_wrapper_prefix(config)
-        argv.append("--json")
-        if healthcheck:
-            argv.append("--healthcheck")
-        else:
-            argv.extend(
-                [
-                    "--model-path",
-                    str(config.model_path or ""),
-                    "--image-path",
-                    str(image_path or ""),
-                    "--prompt",
-                    str(prompt or ""),
-                ]
-            )
+        argv.append("--healthcheck")
         completed = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             check=False,
-            timeout=max(int(config.timeout_s), 10),
+            timeout=15,
         )
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
+        # Parse the last line of stdout as JSON (in case mlx prints warnings above)
         payload: Optional[dict] = None
         if stdout:
-            try:
-                parsed = json.loads(stdout)
-                if isinstance(parsed, dict):
-                    payload = parsed
-            except json.JSONDecodeError:
-                payload = None
+            for line in reversed(stdout.splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    if isinstance(parsed, dict):
+                        payload = parsed
+                        break
+                except json.JSONDecodeError:
+                    continue
         if completed.returncode != 0:
             if payload is not None:
                 return payload
             raise RuntimeError(_short_probe_message(stderr or stdout))
         if payload is None:
-            raise RuntimeError("mlx returned malformed json")
+            raise RuntimeError("mlx healthcheck returned malformed json")
         return payload
 
 
