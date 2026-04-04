@@ -808,6 +808,38 @@ class SmritiRecallFeedbackResult(BaseModel):
     message: str
 
 
+class AudioQueryRequest(BaseModel):
+    """Request body for POST /v1/audio/query."""
+    audio_base64: str = Field(description="Base64-encoded PCM float32 bytes or WAV file bytes")
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+    top_k: int = Field(default=10, ge=1, le=50)
+    session_id: Optional[str] = None
+    depth_stratum: Optional[str] = Field(default=None, description="foreground|midground|background")
+    person_filter: Optional[str] = None
+    confidence_min: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class AudioQueryResult(BaseModel):
+    """Single recall hit from audio-modal search."""
+    media_id: str
+    audio_score: float = Field(description="Cosine similarity in audio embedding space, 0.0-1.0")
+    rank: int = Field(ge=1)
+    thumbnail_path: Optional[str] = None
+    setu_descriptions: list[dict] = Field(default_factory=list)
+    audio_energy: Optional[float] = None
+    audio_duration_seconds: Optional[float] = None
+    gemma4_narration: Optional[str] = Field(default=None, description="Gemma4 description if available")
+
+
+class AudioQueryResponse(BaseModel):
+    """Response from POST /v1/audio/query."""
+    results: list[AudioQueryResult]
+    query_audio_energy: float
+    index_size: int = Field(description="Total audio embeddings in FAISS sub-index")
+    latency_ms: float
+    encoder: str = Field(default="audio_jepa_phase1")
+
+
 class SmritiTagPersonRequest(BaseModel):
     media_id: str
     person_name: str

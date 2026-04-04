@@ -23,6 +23,8 @@ from .observability import CorrelationContext, TokenBucketRateLimiter, get_logge
 from .service import RuntimeContainer
 from .models import (
     AnalyzeRequest,
+    AudioQueryRequest,
+    AudioQueryResponse,
     ChallengeEvaluateRequest,
     JEPAForecastRequest,
     LivingLensTickRequest,
@@ -501,6 +503,14 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         if not recall_limiter.allow(session_key):
             raise SmritiRateLimitError(endpoint="/v1/smriti/recall", retry_after_s=1.0)
         return await app.state.runtime.smriti_recall(payload)
+
+    @app.post("/v1/audio/query", dependencies=[Depends(require_auth)])
+    async def audio_query(payload: AudioQueryRequest) -> AudioQueryResponse:
+        """Endpoint for Audio-JEPA Phase 1 hum/mic retrieval."""
+        session_key = getattr(payload, "session_id", "default")
+        if not recall_limiter.allow(session_key):
+            raise SmritiRateLimitError(endpoint="/v1/audio/query", retry_after_s=1.0)
+        return await app.state.runtime.audio_query(payload)
 
     @app.post("/v1/smriti/recall/feedback", dependencies=[Depends(require_auth)])
     async def recall_feedback(payload: SmritiRecallFeedback) -> SmritiRecallFeedbackResult:

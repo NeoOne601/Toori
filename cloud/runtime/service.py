@@ -540,6 +540,111 @@ class RuntimeContainer:
             setu_ms=round((perf_counter() - started) * 1000.0, 3),
         )
 
+    async def audio_query(self, request: "AudioQueryRequest") -> "AudioQueryResponse":
+        """
+        Query Smriti using audio embedding (Phase 1: same-modal retrieval).
+        The same AudioEncoder used during ingestion is applied to the query audio,
+        ensuring consistent cosine similarity in the audio embedding space.
+        """
+        import time
+        t0 = time.perf_counter()
+
+        from .models import AudioQueryRequest, AudioQueryResponse, AudioQueryResult
+
+        try:
+            import base64
+            import numpy as np
+            pcm_bytes = base64.b64decode(request.audio_base64)
+        except Exception as e:
+            raise ValueError(f"Invalid audio_base64: {e}")
+
+        try:
+            from cloud.perception.audio_encoder import AudioEncoder
+            ae = AudioEncoder()
+            query_emb = ae.encode_bytes(pcm_bytes, sample_rate=request.sample_rate)
+            query_energy = float(np.mean(np.abs(query_emb)))
+        except ImportError:
+            # AudioEncoder unavailable (PyAV not installed) — return empty response gracefully
+            return AudioQueryResponse(
+                results=[],
+                query_audio_energy=0.0,
+                index_size=0,
+                latency_ms=(time.perf_counter() - t0) * 1000,
+                encoder="unavailable"
+            )
+
+        # Search audio FAISS sub-index
+        raw_hits = self.smriti_db.audio_faiss_search(query_emb, top_k=request.top_k)
+
+        # Enrich hits with media metadata
+        results = []
+        for hit in raw_hits:
+            media_id = hit["media_id"]
+            audio_score = hit["audio_score"]
+
+            # Apply confidence filter
+            if audio_score < request.confidence_min:
+                continue
+
+            # Fetch media record
+            try:
+                media_row = self.smriti_db.get_smriti_media(media_id)
+            except Exception:
+                media_row = None
+
+            setu_descs = []
+            thumbnail = None
+            audio_energy = None
+            audio_dur = None
+            gemma4_narration = None
+
+            if media_row:
+                thumbnail = getattr(media_row, 'thumbnail_path', None)
+                audio_energy = getattr(media_row, 'audio_energy', None)
+                audio_dur = getattr(media_row, 'audio_duration_seconds', None)
+                raw_setu = getattr(media_row, 'setu_descriptions', None) or []
+                if isinstance(raw_setu, str):
+                    try:
+                        import json
+                        raw_setu = json.loads(raw_setu)
+                    except Exception:
+                        raw_setu = []
+                setu_descs = raw_setu if isinstance(raw_setu, list) else []
+
+                # Apply depth_stratum filter
+                if request.depth_stratum and setu_descs:
+                    top_stratum = setu_descs[0].get('gate', {}).get('depth_stratum', '')
+                    if top_stratum and top_stratum != request.depth_stratum:
+                        continue
+
+                # Extract Gemma4 narration if present
+                for desc in setu_descs:
+                    if isinstance(desc, dict) and desc.get('gate', {}).get('narrator') == 'gemma4':
+                        gemma4_narration = desc.get('description', {}).get('text')
+                        break
+
+            results.append(AudioQueryResult(
+                media_id=media_id,
+                audio_score=round(audio_score, 4),
+                rank=len(results) + 1,
+                thumbnail_path=thumbnail,
+                setu_descriptions=setu_descs[:3],
+                audio_energy=audio_energy,
+                audio_duration_seconds=audio_dur,
+                gemma4_narration=gemma4_narration,
+            ))
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        index_size = len(getattr(self.smriti_db, '_audio_media_ids', []))
+
+        return AudioQueryResponse(
+            results=results,
+            query_audio_energy=round(query_energy, 4),
+            index_size=index_size,
+            latency_ms=round(elapsed_ms, 1),
+            encoder="audio_jepa_phase1"
+        )
+
     def smriti_recall_feedback(
         self,
         feedback: SmritiRecallFeedback,

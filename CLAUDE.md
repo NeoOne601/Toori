@@ -611,12 +611,13 @@ Update SDK when any of these change:
 
 ## Recommended Work Areas (Current State)
 
-1. **Audio-JEPA Phase 2** — same-modal audio retrieval via mic/hum query against Smriti audio sub-index
-2. **Federated Setu-2** — W-matrix is currently runtime-local and not persisted
-3. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
-4. **SDK coverage** — planning/recovery routes and WorldModelConfig endpoints need SDK clients
-5. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
-6. **Keep planning/recovery backend stable** before widening the client surface
+1. **Audio-JEPA Phase 1 (Completed)** — Implemented robust, non-blocking `AudioEncoder` (numpy/PyAV fixed seed `20260327`), migrated schema to v3, integrated FAISS sub-index, wired into `SmritiIngestionDaemon`, and added the `/v1/audio/query` API endpoint for same-modal retrieval.
+2. **Audio-JEPA Phase 2 (Next)** — Same-modal audio retrieval via mic/hum query against Smriti audio sub-index needs UI/Frontend wire-up to leverage the new `/v1/audio/query` API.
+3. **Federated Setu-2** — W-matrix is currently runtime-local and not persisted
+4. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
+5. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
+6. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
+7. **Keep planning/recovery backend stable** before widening the client surface
 
 ---
 
