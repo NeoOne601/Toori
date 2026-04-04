@@ -1,330 +1,642 @@
-# CLAUDE.md
+# CLAUDE.md — Toori Implementation Guide
 
-This repository is now an executable cross-platform project. Use this file as the first-stop implementation guide for future agents.
+This is the authoritative reference for every agent working in this repository.
+Read this entirely before making any change.
 
-## Overview
+---
 
-Toori is a JEPA proof surface with three client surfaces:
+## Mission & Vision
 
-- Electron desktop shell for the M1 iMac
-- SwiftUI iOS client source tree
-- Jetpack Compose Android client source tree
+**Mission:** Make JEPA-style world-model behavior inspectable in a real product.
+The key question is never just "did the system answer?" but also:
+- What did it expect?
+- What stayed stable?
+- What changed?
+- What persisted through occlusion or movement?
+- How does that compare with caption-only and retrieval-only baselines?
 
-The working runtime lives in Python and exposes a loopback-first API on `127.0.0.1:7777`. It stores real observations from camera input, computes local embeddings, maintains world-model state, runs guarded Smriti memory ingestion and recall, and optionally calls reasoning backends.
+**Vision:** A reusable world-state runtime powering many applications — desktop scientific demo, plugin runtime for other products, cross-platform perception-and-memory layer.
 
-## Mission And Vision
+**Differentiator:** Toori turns live scenes into a *measurable world state* and compares JEPA behavior against weaker baselines. It is not just another multimodal UI.
 
-### Mission
+---
 
-Make JEPA-style world-model behavior inspectable in a real product.
+## Repository Layout
 
-Future work in this repository should keep the proof legible to a human operator. The key question is never only “did the system answer?”, but also:
-
-- what did it expect?
-- what stayed stable?
-- what changed?
-- what persisted through occlusion or movement?
-- how did that compare with weaker baselines?
-
-### Vision
-
-Turn Toori into a reusable world-state runtime that can power many applications.
-
-The browser and desktop UI are only the first proof surfaces. The runtime, event model, and SDKs should evolve so Toori can become:
-
-- a desktop scientific demonstration of JEPA-style reasoning
-- a plugin/runtime for other products
-- a cross-platform perception-and-memory layer with consistent world-model semantics
-
-When deciding between “better captioning” and “better world-state evidence,” bias toward world-state evidence.
-
-## System Diagram
-
-```mermaid
-flowchart TB
-  Camera["Live Camera / File Upload"] --> Runtime["FastAPI Runtime"]
-  Runtime --> Perception["Primary Local Perception"]
-  Perception --> JEPA["JEPA Engine"]
-  JEPA --> EpistemicAtlas["Epistemic Atlas"]
-  JEPA --> Talker["Selective Talker"]
-  JEPA --> SmritiPipeline["TPDS → SAG → CWMA → ECGD → Setu-2"]
-  Talker --> Events["WebSocket Events"]
-  Perception --> Store["Observation Store"]
-  Store --> SmritiDB["SmritiDB"]
-  Store --> World["World Model Layer"]
-  World --> Metrics["Prediction / Continuity / Surprise / Persistence"]
-  World --> Living["Living Lens"]
-  SmritiDB --> SmritiUI["Smriti Tab / Recall / Journals / HUD"]
-  World --> Challenge["Challenge Evaluation"]
-  Challenge --> Baselines["Captioning + Retrieval Baselines"]
-  Runtime --> Reasoning["Optional Ollama / MLX / Cloud Reasoning"]
-  Reasoning --> Store
-  World --> Events
-  Events --> UI["Desktop / Browser / Mobile Clients"]
-  Events --> SDK["Plugin SDKs"]
+```
+toori/
+├── cloud/                     Python runtime (FastAPI, JEPA, Smriti)
+│   ├── api/                   FastAPI entrypoint + auth + tests
+│   │   ├── main.py            → imports create_app() from cloud.runtime.app
+│   │   ├── auth.py            API key middleware
+│   │   └── tests/             16 test files (272 tests total)
+│   ├── jepa_service/          JEPA engines, perceptual pipeline sub-services
+│   │   ├── engine.py          JEPAEngine (compat) + ImmersiveJEPAEngine (primary)
+│   │   ├── anchor_graph.py    SemanticAnchorGraph (SAG)
+│   │   ├── confidence_gate.py EpistemicConfidenceGate (ECGD)
+│   │   ├── depth_separator.py TemporalParallaxDepthSeparator (TPDS)
+│   │   └── world_model_alignment.py CrossModalWorldModelAligner (CWMA)
+│   ├── monitoring/            Prometheus metric tests
+│   ├── perception/            DINOv2 + MobileSAM + ONNX + V-JEPA2 encoder
+│   ├── runtime/               Core business logic (22 modules)
+│   │   ├── app.py             create_app(), all FastAPI routes
+│   │   ├── atlas.py           EpistemicAtlas (entity relationship graphs)
+│   │   ├── config.py          resolve_data_dir(), resolve_smriti_storage(), default_settings()
+│   │   ├── error_types.py     SmritiError hierarchy
+│   │   ├── events.py          WebSocket event bus
+│   │   ├── gemma4_bridge.py   Gemma4Bridge (anchor narration, query reformulation, alerts)
+│   │   ├── jepa_worker.py     JEPAWorkerPool (isolated JEPA off FastAPI event loop)
+│   │   ├── models.py          ALL Pydantic data models (single source of truth)
+│   │   ├── observability.py   CorrelationContext, PipelineTrace, TokenBucketRateLimiter,
+│   │   │                      MemoryCeilingManager, SchemaVersionManager, structlog wrapper
+│   │   ├── proof_report.py    PDF proof generation (WeasyPrint streaming)
+│   │   ├── providers.py       ProviderRegistry + all provider implementations
+│   │   │                      incl. MlxReasoningProvider (daemon architecture)
+│   │   ├── resilience.py      SmritiCircuitBreaker, FallbackChain, BackPressureQueue
+│   │   ├── service.py         RuntimeContainer — all analyze/query/settings/Smriti logic
+│   │   ├── setu2.py           Setu2Bridge (grounded region description)
+│   │   ├── smriti_gemma4_enricher.py  SmetiGemma4Enricher (Gemma4 inside ingestion/tick)
+│   │   ├── smriti_ingestion.py        SmritiIngestionDaemon + watch folder queue
+│   │   ├── smriti_migration.py        Copy-first Smriti data migration
+│   │   ├── smriti_storage.py          SmetiDB — SQLite + FAISS, recall, clusters, journals
+│   │   ├── storage.py                 ObservationStore + recovery benchmark persistence
+│   │   ├── talker.py                  SelectiveTalker (energy-gated events)
+│   │   └── world_model.py             Sprint 6 planning layer (entities, affordances, rollouts)
+│   └── search_service/        Compatibility search service
+├── desktop/electron/          Electron + React/Vite operator UI
+│   ├── main.js                Electron shell entrypoint
+│   └── src/
+│       ├── App.tsx            Root router (tab switcher)
+│       ├── types.ts           ALL TypeScript types (keep in sync with models.py)
+│       ├── styles.css         Global design tokens and component styles
+│       ├── constants.ts       API base URL, polling intervals
+│       ├── tabs/              LiveLensTab, LivingLensTab, SmritiTab, SettingsTab,
+│       │                      MemorySearchTab, SessionReplayTab, IntegrationsTab
+│       ├── components/        BaselineBattle, ConsumerMode, ForecastPanel,
+│       │                      Gemma4Panel, OcclusionPanel, SigRegGauge, SpatialCanvas3D
+│       │   └── smriti/        DeepdiveView, MandalaView, PerformanceHUD,
+│       │                      PersonJournal, RecallSurface, SmritiStorageSettings,
+│       │                      mandala-force-worker.ts
+│       ├── hooks/             useCameraStream, useLivingLens, useRuntimeBridge,
+│       │                      useSmritiState, useWorldState
+│       ├── state/             DesktopAppContext
+│       ├── panels/            ScientificReadout
+│       ├── layouts/           Shell layouts
+│       ├── lib/               Shared utilities
+│       └── widgets/           Small reusable widgets
+├── mobile/
+│   ├── ios/TooriApp/          SwiftUI client (TooriLensApp.swift entry)
+│   └── android/app/…          Jetpack Compose client (MainActivity.kt entry)
+├── sdk/                       python/, typescript/, swift/, kotlin/ SDKs
+├── scripts/
+│   ├── mlx_reasoner.py        Gemma-4 MLX daemon script (stdin/stdout JSON-lines)
+│   ├── setup_backend.py       Backend dependency installer
+│   ├── setup_frontend.py      Frontend dependency installer
+│   ├── download_desktop_models.py  ONNX model downloader
+│   └── e2e_test.py            End-to-end smoke test
+├── docs/                      system-design.md, user-manual.md, plugin-guide.md
+├── tests/test_readme.py       README contract guard
+├── requirements.txt           Core Python deps (fastapi, uvicorn, pydantic, numpy,
+│                              pillow, onnxruntime, websockets, weasyprint, structlog,
+│                              av>=12, watchdog>=4)
+├── conftest.py                Shared pytest fixtures
+├── AGENTS.md                  Codex agent guidance
+└── CLAUDE.md                  ← this file
 ```
 
-## Primary Entry Points
-
-- [cloud/api/main.py](/Users/macuser/toori/cloud/api/main.py): main runtime app
-- [cloud/jepa_service/engine.py](/Users/macuser/toori/cloud/jepa_service/engine.py): JEPA engine and spatial energy maps
-- [cloud/runtime/talker.py](/Users/macuser/toori/cloud/runtime/talker.py): selective talker event generator
-- [cloud/runtime/atlas.py](/Users/macuser/toori/cloud/runtime/atlas.py): epistemic atlas for entity tracking
-- [cloud/runtime/app.py](/Users/macuser/toori/cloud/runtime/app.py): app factory and routes
-- [cloud/runtime/service.py](/Users/macuser/toori/cloud/runtime/service.py): core analyze/query/settings logic
-- [cloud/runtime/smriti_storage.py](/Users/macuser/toori/cloud/runtime/smriti_storage.py): Smriti schema, recall index, and cluster export
-- [cloud/runtime/smriti_ingestion.py](/Users/macuser/toori/cloud/runtime/smriti_ingestion.py): ingestion daemon and folder watch queue
-- [cloud/runtime/jepa_worker.py](/Users/macuser/toori/cloud/runtime/jepa_worker.py): isolated JEPA worker pool
-- [cloud/runtime/setu2.py](/Users/macuser/toori/cloud/runtime/setu2.py): grounded Setu-2 query bridge
-- [cloud/runtime/smriti_migration.py](/Users/macuser/toori/cloud/runtime/smriti_migration.py): copy-first Smriti data migration service
-- [cloud/api/tests/test_smriti_production.py](/Users/macuser/toori/cloud/api/tests/test_smriti_production.py): authoritative production gate for Smriti regressions
-- [desktop/electron/src/components/smriti/mandala-force-worker.ts](/Users/macuser/toori/desktop/electron/src/components/smriti/mandala-force-worker.ts): Web Worker for Mandala force layout
-- [desktop/electron/src/components/smriti/SmritiStorageSettings.tsx](/Users/macuser/toori/desktop/electron/src/components/smriti/SmritiStorageSettings.tsx): Smriti storage configuration surface
-- [desktop/electron/src/components/smriti/DeepdiveView.tsx](/Users/macuser/toori/desktop/electron/src/components/smriti/DeepdiveView.tsx): accessible Smriti deepdive modal with patch overlay and neighbors
-- [desktop/electron/main.js](/Users/macuser/toori/desktop/electron/main.js): Electron shell entrypoint
-- [desktop/electron/src/App.tsx](/Users/macuser/toori/desktop/electron/src/App.tsx): desktop product UI
-- [desktop/electron/src/tabs/SmritiTab.tsx](/Users/macuser/toori/desktop/electron/src/tabs/SmritiTab.tsx): Smriti desktop surface
-- [mobile/ios/TooriApp/TooriLensApp.swift](/Users/macuser/toori/mobile/ios/TooriApp/TooriLensApp.swift): iOS app root
-- [mobile/android/app/src/main/java/com/toori/app/MainActivity.kt](/Users/macuser/toori/mobile/android/app/src/main/java/com/toori/app/MainActivity.kt): Android app root
+---
 
 ## Development Commands
 
-- Runtime dev server:
-  `TOORI_DATA_DIR=.toori python3 -m uvicorn cloud.api.main:app --host 127.0.0.1 --port 7777`
-- Verified Python tests:
-  `pytest -q cloud/api/tests cloud/jepa_service/tests cloud/search_service/tests cloud/monitoring/tests tests/test_readme.py`
-- Focused backend regression gate while iterating on Smriti:
-  `pytest -q cloud/api/tests cloud/jepa_service/tests`
-- Desktop typecheck:
-  `cd desktop/electron && npm run typecheck`
-- Desktop install and build:
-  `cd desktop/electron && npm install && npm run build`
-- Desktop launch:
-  `cd desktop/electron && npm start`
+```bash
+# Start runtime (loopback, port 7777)
+TOORI_DATA_DIR=.toori python3 -m uvicorn cloud.api.main:app --host 127.0.0.1 --port 7777
 
-## Architecture
+# Full verified test suite (272 pass, 11 skip as of Sprint 6 + MLX daemon)
+pytest -q cloud/api/tests cloud/jepa_service/tests cloud/search_service/tests cloud/monitoring/tests tests/test_readme.py
 
-### Runtime
+# Focused Smriti regression gate
+pytest -q cloud/api/tests cloud/jepa_service/tests
 
-- `RuntimeContainer` coordinates settings, provider health, observation storage, local similarity search, and event publication.
-- `JEPAEngine` computes purely numerical latent predictions (`||s - ŝ||²`) and spatial energy maps natively.
-- `JEPAWorkerPool` keeps JEPA work off the FastAPI event loop and exposes bounded queue/back-pressure metrics.
-- `SelectiveTalker` uses adaptive energy thresholds to gate logic without wasting LLM cycles.
-- `EpistemicAtlas` maintains in-memory entity relationship graphs tracking co-occurrence and persistence.
-- `ObservationStore` persists observations and settings in SQLite under `.toori/`.
-- `SmetiDB` extends observation storage with schema migrations, hybrid recall, cluster export, and person/location linking.
-- Smriti storage paths are user-configurable through runtime settings and are resolved via `resolve_smriti_storage(...)`.
-- `ProviderRegistry` selects perception and reasoning providers and enforces circuit-breaker fallback.
-- The proof-surface layer adds scene state, entity tracks, prediction windows, and challenge runs on top of observations.
-- The hybrid proof layer now also supports:
-  - grounded tool-state observations through `POST /v1/tool-state/observe`
-  - action-conditioned planning rollouts through `POST /v1/planning/rollout`
-  - closed-loop recovery benchmarks through `POST /v1/benchmarks/recovery/run`
-  - runtime V-JEPA2 config inspection and update through `GET/PUT /v1/world-model/config`
-- `WorldModelStatus` must stay truthful: it reports the configured encoder, the last tick encoder actually used, and explicit degradation reason/stage when V-JEPA2 falls back.
-- The V-JEPA2 encoder is now dynamically configured. Settings are written to a JSON mirror on disk by `_write_settings_mirror()` and re-read by `_resolve_model_id()` / `_resolve_n_frames()` on each load. Never hard-code encoder parameters in source.
-- `_reset_vjepa2_if_config_changed()` triggers a lazy reload of the encoder when model path or `n_frames` differ from the live settings mirror.
-- The Smriti pipeline layers are:
-  - `TPDS` depth strata from JEPA energy deltas
-  - `SAG` topology-aware anchor matching
-  - `CWMA` spatial prior alignment
-  - `ECGD` epistemic gating and uncertainty output
-  - `Setu-2` grounded query scoring and template descriptions
-- FastAPI lifecycle must use the lifespan context manager. Do not reintroduce `@app.on_event`.
+# Desktop
+cd desktop/electron && npm install
+cd desktop/electron && npm run typecheck
+cd desktop/electron && npm run build
+cd desktop/electron && npm start
 
-### Sprint 5 Smriti Additions
+# iOS (Xcode)
+xcodebuild -project mobile/ios/TooriLens.xcodeproj -scheme TooriLens \
+  -configuration Debug -sdk iphonesimulator \
+  -derivedDataPath .xcode-derived CODE_SIGNING_ALLOWED=NO build
 
-- `cloud/runtime/smriti_migration.py` must preserve this order: copy first, verify destination second, update config last.
-- Migration is non-destructive. Never delete source data as part of the migration flow.
-- `dry_run=True` must not create directories, copy files, or mutate runtime settings.
-- `desktop/electron/src/components/smriti/mandala-force-worker.ts` is Worker-only code. It uses `setTimeout(..., 33)` rather than `requestAnimationFrame`, imports no npm packages, and communicates with `postMessage`.
-- `cloud/api/tests/test_smriti_production.py` is the hard production gate. It currently contains 12 tests; the original Sprint 5 contract required 11 and the extra coverage is intentional. The telescope regression remains the permanent sentinel.
+# Android — open mobile/android in Android Studio
+```
 
-### Sprint 6 World Model Foundation
+---
 
-This sprint introduced a formal planning layer on top of the existing JEPA observation pipeline. The approach is deliberately **additive and non-breaking**: prior observation/recall/Smriti contracts are untouched; the new models extend `AnalyzeResponse` and sit in their own endpoint namespace.
+## Complete API Route Reference
 
-#### New data models (`cloud/runtime/models.py`)
-- `ActionToken` — a candidate action, scored by urgency and confidence.
-- `GroundedEntity` — a tracked scene element with a spatial domain label (e.g. `table_surface`, `hand`, `tool`).
-- `GroundedAffordance` — an affordance prediction (reachable, graspable, blocked …) linked to a `GroundedEntity`.
-- `PredictedAffordanceState` — the post-action predicted affordance state for a single entity.
-- `RolloutStep` — a single action step inside a rollout branch.
-- `RolloutBranch` — a scored sequence of `RolloutStep`s (plan A or plan B) with outcome confidence and uncertainty.
-- `RolloutComparison` — the top-level response for `POST /v1/planning/rollout`; holds two `RolloutBranch`es and a recommended branch.
-- `RecoveryScenario` / `RecoveryBenchmarkRun` — a persisted benchmark run that evaluates camera + tool planning across a recovery scenario set.
-- `ToolStateObserveRequest` / `ToolStateObserveResponse` — grounding browser/desktop tool state into the world-state pipeline.
-- `WorldModelStatus` — live diagnostic: configured encoder, encoder actually used on last tick, degradation reason and stage.
-- `WorldModelConfig` / `WorldModelConfigUpdate` — dynamic V-JEPA2 parameters (model path, `n_frames`) that can be read and written at runtime.
+All routes are defined in `cloud/runtime/app.py` via `create_app()`.
+Auth: `loopback` mode (default) passes all requests. `api-key` mode requires `X-Api-Key` header.
+Rate limiting: 20 req/s burst 60 globally; 5 req/s burst 10 for `/v1/smriti/recall`.
 
-#### New world model logic (`cloud/runtime/world_model.py`)
-- `_state_domain_from_metadata(metadata)` — infers the spatial domain of an entity from observation metadata.
-- `_validate_grounded_entities(raw)` / `_validate_affordances(raw)` — defensive validators for LLM-sourced grounding output.
-- `_grounded_entities_from_camera(frame, tick)` — derives grounded entities from a live JEPA tick.
-- `_default_affordances_for_domain(domain)` — returns sensible default affordances for a spatial domain when reasoning is unavailable.
-- `derive_grounded_entities(request)` — top-level function: returns a list of `GroundedEntity` objects for a `ToolStateObserveRequest`.
-- `default_candidate_actions(entities)` — seeds `ActionToken` candidates from grounded entities without requiring a reasoning backend.
-- `build_rollout_comparison(request, entities)` — constructs a `RolloutComparison` from grounded entities and a `PlanningRolloutRequest`.
-- `build_recovery_benchmark_run(request)` — assembles and persists a `RecoveryBenchmarkRun` from a `RecoveryBenchmarkRunRequest`.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/healthz` | Liveness probe → `{"status":"ok"}` |
+| GET | `/metrics` | Prometheus metrics (mounted ASGI app) |
+| GET | `/v1/settings` | Get `RuntimeSettings` |
+| PUT | `/v1/settings` | Update `RuntimeSettings` |
+| GET | `/v1/world-model/status` | `WorldModelStatus` (encoder, degradation) |
+| GET | `/v1/world-model/config` | `WorldModelConfig` (V-JEPA2 params) |
+| PUT | `/v1/world-model/config` | Update V-JEPA2 model_path + n_frames |
+| GET | `/v1/providers/health` | All provider health reports |
+| GET | `/v1/observations` | List observations (session_id, limit) |
+| GET | `/v1/file` | Serve a file from data_dir (path-restricted) |
+| POST | `/v1/analyze` | Analyze image → `AnalyzeResponse` |
+| POST | `/v1/living-lens/tick` | Living lens async tick → `LivingLensTickResponse` |
+| POST | `/v1/jepa/forecast` | JEPA forecast at horizon k |
+| POST | `/v1/query` | Text/image semantic query → `QueryResponse` |
+| GET | `/v1/world-state` | Get session world state |
+| POST | `/v1/tool-state/observe` | Ground tool state → `ToolStateObserveResponse` |
+| POST | `/v1/planning/rollout` | Action-conditioned rollout → `PlanningRolloutResponse` |
+| POST | `/v1/benchmarks/recovery/run` | Run recovery benchmark |
+| GET | `/v1/benchmarks/recovery/{id}` | Fetch stored benchmark |
+| POST | `/v1/challenges/evaluate` | Evaluate challenge run |
+| POST | `/v1/proof-report/generate` | Generate PDF proof report |
+| GET | `/v1/proof-report/latest` | Download latest PDF |
+| POST | `/v1/share/observation` | Build shareable observation payload |
+| POST | `/v1/share/observation/event` | Record share event |
+| WS | `/v1/events` | WebSocket event stream |
+| POST | `/v1/smriti/ingest` | Queue file or folder for ingestion |
+| GET | `/v1/smriti/status` | Ingestion daemon stats |
+| POST | `/v1/smriti/recall` | Semantic recall → `SmritiRecallResponse` |
+| POST | `/v1/smriti/recall/feedback` | W-matrix feedback (pos/neg pair) |
+| GET | `/v1/smriti/media/{id}` | Media record detail |
+| GET | `/v1/smriti/media/{id}/neighbors` | Nearest neighbors (top_k≤20) |
+| POST | `/v1/smriti/tag/person` | Tag person in media |
+| GET | `/v1/smriti/person/{name}/journal` | Person journal |
+| GET | `/v1/smriti/clusters` | Cluster graph for Mandala |
+| GET | `/v1/smriti/metrics` | Worker pool metrics |
+| GET | `/v1/smriti/storage` | `SmritiStorageConfig` |
+| PUT | `/v1/smriti/storage` | Update storage config |
+| GET | `/v1/smriti/storage/usage` | `StorageUsageReport` |
+| GET | `/v1/smriti/watch-folders` | List watch folder statuses |
+| POST | `/v1/smriti/watch-folders` | Add watch folder |
+| DELETE | `/v1/smriti/watch-folders` | Remove watch folder |
+| POST | `/v1/smriti/storage/prune` | Prune old/missing/failed media |
+| POST | `/v1/smriti/storage/migrate` | Copy-first data migration |
 
-#### New service methods (`cloud/runtime/service.py`)
-- `_settings_mirror_path()` — resolves the canonical path for the V-JEPA2 JSON settings mirror.
-- `_write_settings_mirror(settings)` — writes the active settings to the JSON mirror on save.
-- `_reset_vjepa2_if_config_changed(old, new)` — detects model path / n_frames drift and triggers a lazy encoder reload.
-- `get_vjepa2_settings()` → `WorldModelConfig` — reads the current dynamic config.
-- `update_vjepa2_settings(model_path, n_frames)` → `WorldModelConfig` — persists new config and reloads the encoder.
-- `_effective_vjepa2_model_id(settings)` — resolves the effective model ID from settings, falling back to the JSON mirror.
-- `get_world_model_status()` → `WorldModelStatus` — builds the live status diagnostic.
-- `observe_tool_state(request)` → `ToolStateObserveResponse` — grounds external tool state into the world pipeline.
-- `plan_rollout(request)` → `PlanningRolloutResponse` — runs the rollout comparison engine.
-- `run_recovery_benchmark(request)` → `RecoveryBenchmarkRun` — executes and stores a benchmark run.
-- `get_recovery_benchmark(benchmark_id)` → `Optional[RecoveryBenchmarkRun]` — fetches a stored benchmark run.
+---
 
-#### New storage methods (`cloud/runtime/storage.py`)
-- `save_recovery_benchmark_run(benchmark)` — persists a `RecoveryBenchmarkRun` to SQLite.
-- `get_recovery_benchmark_run(benchmark_id)` — retrieves a stored run by ID.
-- `recent_recovery_benchmark_runs(limit)` — returns the N most recent benchmark runs.
+## Provider System (`cloud/runtime/providers.py`)
 
-#### New API routes (`cloud/runtime/app.py`)
-- `GET /v1/world-model/status` → `WorldModelStatus`
-- `GET /v1/world-model/config` → `WorldModelConfig`
-- `PUT /v1/world-model/config` → `WorldModelConfig`
-- `POST /v1/tool-state/observe` → `ToolStateObserveResponse`
-- `POST /v1/planning/rollout` → `PlanningRolloutResponse`
-- `POST /v1/benchmarks/recovery/run` → `RecoveryBenchmarkRun`
-- `GET /v1/benchmarks/recovery/{id}` → `RecoveryBenchmarkRun`
+### Perception Providers (return embeddings)
+| Name | Class | Notes |
+|------|-------|-------|
+| `dinov2` | `DINOv2Provider` | Primary. DINOv2-ViT-S/14 + MobileSAM. Requires torch (perception/ only). Device: MPS by default. |
+| `onnx` | `OnnxProvider` | MobileNetV2 via ONNX Runtime. Fallback when DINOv2 unavailable. |
+| `basic` | `BasicProvider` | Classical pixel descriptor. Always available. Guaranteed fallback. |
+| `coreml` | `CoreMLProvider` | iOS/macOS only, disabled by default. |
+| `tflite` | `TFLiteProvider` | Android, disabled by default. |
 
-#### Desktop UI changes
-- `SettingsTab.tsx` — exposes V-JEPA2 model path and `n_frames` controls; reads/writes via the new `GET/PUT /v1/world-model/config` endpoints.
-- `LivingLensTab.tsx` — expanded to show `RolloutComparison`, `GroundedEntity` list, and Recovery Lab interactions.
-- `useWorldState.ts` — extended to fetch and cache `WorldModelStatus`, grounded entities, and rollout results.
-- `DesktopAppContext.tsx` — state providers updated to accommodate `WorldModelConfig` and rollout state.
-- `ScientificReadout.tsx` — updated readout panel surfaces new world-state metrics from the Sprint 6 models.
-- `SmritiStorageSettings.tsx` — minor schema alignment with updated `WorldModelConfig` payloads.
+### Reasoning Providers (return text answers)
+| Name | Class | Notes |
+|------|-------|-------|
+| `ollama` | `OllamaReasoningProvider` | Optional. HTTP to local Ollama. Default model: `gemma3:4b`. Disabled by default. |
+| `mlx` | `MlxReasoningProvider` | **Daemon architecture** (see below). Gemma-4 on Apple Silicon. Disabled by default. |
+| `cloud` | `CloudReasoningProvider` | OpenAI-compatible API. Default model: `gpt-4.1-mini`. Enabled by default. |
 
-#### Proof report
-- `cloud/runtime/proof_report.py` — refactored PDF generation to stream via `_render_pdf_bytes(html)` instead of writing to a temporary file path. The public `generate_proof_report()` signature is unchanged.
+### Search Providers
+| Name | Class | Notes |
+|------|-------|-------|
+| `local` | `LocalSearchProvider` | FAISS cosine search over stored observations. |
 
-### SETU-2 W-MATRIX FEEDBACK
+### MlxReasoningProvider — Daemon Architecture (Sprint 6 fix)
+The MLX provider runs `scripts/mlx_reasoner.py` as a **persistent `subprocess.Popen` daemon** (not per-call `subprocess.run`). This prevents the 8GB model-loading spike on every health check.
 
-- Feedback endpoint: `POST /v1/smriti/recall/feedback`
-- `confirmed=True` is treated as a positive pair; `confirmed=False` is treated as a negative pair.
-- Learning rate for Setu-2 W-matrix updates must never exceed `0.005`.
-- The W-matrix is runtime-local in Sprint 5. It is not persisted to disk yet.
-- Feedback is best-effort. Missing `media_id` returns `updated=False` rather than raising an HTTP error.
+Key methods:
+- `_ensure_daemon(config)` — lazy start, crash restart, thread-safe
+- `_send_receive(config, payload, timeout_s)` — JSON-lines over stdin/stdout, `select`-based timeout, `threading.Lock`
+- `_daemon_alive()` — checks `self._daemon.poll() is None`
+- `shutdown()` — `stdin.close()` → `terminate()` → `wait(5s)` → `kill()`. Registered via `atexit`.
+- `health(config)` — tiered: Tier 2 (daemon ping) if alive, Tier 1 (lightweight subprocess) otherwise. **30s TTL cache** prevents redundant probes.
+- `_run_healthcheck_subprocess(config)` — runs `mlx_reasoner.py --healthcheck` (no model load, valid JSON output)
+- `_format_prompt(prompt, context, has_image=False)` — `has_image` defaults to `False` (prevents TypeError)
 
-### Provider Policy
+`scripts/mlx_reasoner.py` daemon protocol:
+- Reads JSON lines from stdin: `{"prompt":…, "image_base64":…, "max_tokens":…}`
+- Healthcheck command: `{"type":"healthcheck"}` → responds `{"success":true,"message":"daemon alive (model)"}`
+- Responds with JSON: `{"text":…, "tokens_generated":…}` or `{"error":…}`
+- `--healthcheck` flag: validates environment without loading weights, exits with JSON
 
-- Primary local perception targets:
-  - desktop/runtime: DINOv2 + MobileSAM in `cloud/perception/`
-  - iOS: CoreML-compatible path in native client
-  - Android: TFLite-compatible path in native client
-- Guaranteed local fallback in the Python runtime:
-  - `basic` classical image descriptor over real pixels
-- Optional desktop reasoning:
-  - `ollama`
-  - MLX via configured shell command
-- Default reasoning fallback:
-  - OpenAI-compatible cloud provider
+### Provider Fallback Order
+`dinov2` → `onnx` → `basic` → `cloud`
 
-### Proof Surface Policy
+### Config Environment Variables
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `TOORI_DATA_DIR` | `.toori/` | Runtime data directory |
+| `TOORI_MLX_MODEL_PATH` | `/Volumes/Apple/AI Model/gemma-4-e4b-it-4bit` | MLX model path |
+| `TOORI_MLX_COMMAND` | `python3.11 scripts/mlx_reasoner.py` | MLX daemon command |
+| `TOORI_MLX_TIMEOUT` | `150` | MLX request timeout (s) |
+| `TOORI_OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
+| `TOORI_OLLAMA_MODEL` | `gemma3:4b` | Ollama model |
+| `TOORI_OPENAI_BASE_URL` | `https://api.openai.com/v1` | Cloud API base URL |
+| `TOORI_OPENAI_MODEL` | `gpt-4.1-mini` | Cloud model name |
+| `TOORI_OPENAI_API_KEY` | — | Cloud API key |
+| `TOORI_DINOV2_DEVICE` | `mps` | DINOv2 device |
+| `TOORI_ONNX_MODEL` | `models/vision/mobilenetv2-12.onnx` | ONNX model path |
+| `TOORI_SMRITI_DATA_DIR` | — | Override Smriti data dir |
+| `TOORI_PUBLIC_URL` | `https://github.com/NeoOne601/Toori` | Share CTA URL |
 
-- `Live Lens` is the operator/debug surface.
-- `Living Lens` is the scientific proof surface and should be treated as the primary demo path.
-- `Living Lens -> Recovery Lab` is where hybrid camera-plus-tool planning work should surface. Extend that workspace rather than creating a separate planner UI.
-- `Smriti` is the semantic memory surface for ingestion, recall, journals, cluster browsing, and pipeline transparency.
-- The proof surface must be understandable without reading research papers. Favor plain language, structured evidence, and guided interaction over jargon-heavy dashboards.
-- Latest observation sharing is copy-first: any share recap must stay grounded to a real stored observation, real world-state metrics, and the public repo URL.
-- The proof surface must expose:
-  - prediction consistency
-  - temporal continuity
-  - surprise
-  - persistence
-  - baseline comparison
-- The differentiator of Toori is not one more multimodal UI. The differentiator is that the runtime turns live scenes into a measurable world state and lets the user compare that behavior against caption-only and retrieval-only baselines.
-- In operator wording, `passive mode` means `continuous monitoring mode`: the camera stays live, the scene model keeps updating, and the user does not have to press capture each time.
-- Browser mode is the default proof-development surface until the Electron app is packaged as a signed macOS bundle.
+---
 
-### Clients
+## Data Models Reference (`cloud/runtime/models.py`)
 
-- Desktop UI is the most complete operator surface today.
-- Mobile sources are aligned to the same runtime contract and settings surface, but still need platform dependency installation and project wiring to build in native IDEs.
+This is the **single source of truth**. Keep `desktop/electron/src/types.ts` in sync.
 
-## Important Invariants
+### Core
+- `RuntimeSettings` — all operator settings (providers, perception, reasoning, storage, auth)
+- `ProviderConfig` — individual provider config (name, enabled, model, model_path, api_key, timeout_s, metadata)
+- `ProviderHealth` — health status (name, role, healthy, message, latency_ms)
+- `Observation` — stored observation (id, session_id, image_path, thumbnail_path, width, height, embedding, summary, tags, confidence, novelty)
+- `Answer` — reasoning result (text, provider, confidence)
+- `ReasoningTraceEntry` — per-provider reasoning attempt log
 
-- Never reintroduce placeholder zero-vector behavior in user-facing flows.
-- Search results must always refer to actual stored observations.
-- Smriti recall and journals must stay backed by real stored media; never fall back to invented results or placeholder memories.
-- Storage pruning must never delete original source media outside Smriti-managed storage directories.
-- Reasoning providers (Ollama/MLX) are selectively triggered or operate in query-only mode. Live tick paths must not invoke reasoners autonomously.
-- The JEPA engine must remain pure numpy-compatible (`float32`) without CUDA or PyTorch to ensure identical paths for M1/MPS users.
-- `torch` imports are forbidden in Smriti pipeline modules such as TPDS, SAG, CWMA, ECGD, and Setu-2.
-- `ollama` and MLX must remain optional and health-checked.
-- `ollama` and MLX are explanatory sidecars only. They must not overwrite or redefine the authoritative world-model metrics, rollout ranking, or recovery benchmark winner.
-- DINOv2 is the perception backbone for the desktop/runtime path; ONNX is compatibility-only.
-- `torch` imports are allowed only inside `cloud/perception/`.
-- Consumer Mode is the default on first launch via `localStorage["toori_mode"]="consumer"`.
-- The 3D proof overlay stays at `z-index:10` with `pointer-events:none`.
-- The SigReg gauge stays visible in Science Mode.
-- Ghost bounding boxes are stored and rendered in pixel coordinates, never patch indices.
-- Talker firing is gated by `Ē > μ_E + 2·σ_E`.
-- EMA updates happen before predictor forward with no exceptions.
-- V-JEPA2 encoder parameters must never be hard-coded. Read from the JSON settings mirror via `_resolve_model_id()` and `_resolve_n_frames()`. Write via `_write_settings_mirror()` on every settings save.
-- `WorldModelStatus` must stay truthful: report the configured encoder, the encoder *actually used* on the last tick, and explicit degradation reason/stage if V-JEPA2 falls back to surrogate.
-- `GroundedEntity`, `GroundedAffordance`, `ActionToken`, `RolloutBranch`, `RolloutComparison`, and `RecoveryBenchmarkRun` are additive extensions — they must not alter the existing `AnalyzeResponse` contract or break existing observe/recall/Smriti flows.
-- Recovery benchmark runs are persisted to SQLite via `save_recovery_benchmark_run()` and are retrievable by ID. Do not hold them only in memory.
-- The `_validate_grounded_entities()` and `_validate_affordances()` validators in `world_model.py` are the safety net for any LLM-sourced grounding output. Never skip them.
-- Forecast horizons `FE(k)` are expected to increase with `k`; flag non-monotonic behavior.
-- The Smriti telescope regression is a hard contract: a cylindrical background object must not be described as a body part.
-- Perception stays backbone-agnostic at the engine boundary; see `CONTRIBUTING.md`.
-- If a provider is unhealthy, the runtime must degrade gracefully instead of blocking capture/search.
-- macOS Camera privacy depends on a real app bundle identity; stock Electron CLI launches should not be treated as proof of permission support.
-- `TOORI_PUBLIC_URL` sets the public-facing URL used in share CTAs. Defaults to `https://github.com/NeoOne601/Toori`. Override for forks and enterprise deployments.
+### World Model (Sprint 6)
+- `ActionToken` — candidate action (id, verb, target_kind, parameters)
+- `GroundedEntity` — tracked entity with state domain (camera/browser/desktop/memory)
+- `GroundedAffordance` — affordance prediction (available/hidden/disabled/missing/error)
+- `PredictedAffordanceState` — post-action affordance for a single entity
+- `RolloutStep` — one action step in a branch
+- `RolloutBranch` — scored rollout sequence (risk_score, confidence, failure_predicates)
+- `RolloutComparison` — top-level rollout result with ranked branches + chosen_branch_id
+- `RecoveryScenario` / `RecoveryBenchmarkRun` — persisted benchmark (SQLite)
+- `SceneState` — full world state snapshot (entities, affordances, metrics, conditioned_rollouts)
+- `WorldModelStatus` — live encoder diagnostic (configured vs actual encoder, degradation)
+- `WorldModelConfig` — V-JEPA2 runtime config (model_path, n_frames, effective_model)
 
-### Torch Isolation Grep — Correct Pattern
+### JEPA
+- `JEPATick` — tick output dataclass (energy_map, entity_tracks, sigreg_loss, forecast_errors, depth_strata, anchor_matches, setu_descriptions, prediction_error, surprise_score, epistemic/aleatoric uncertainty, world_model_version, degraded/degrade_reason/degrade_stage, gemma4_alert)
+- `JEPATickPayload` — JSON-serializable form of JEPATick
+- `EntityTrack` — tracked entity (id, status: visible/occluded/re-identified/disappeared/violated prediction, cosine_history via metadata)
+- `WorldModelMetrics` — prediction_consistency, surprise_score, temporal_continuity_score, persistence_confidence, continuity_signal, persistence_signal
 
-Always use anchored grep to check for torch imports:
+### Smriti
+- `SmritiStorageConfig` — data_dir, frames_dir, thumbs_dir, templates_path, watch_folders, max_storage_gb
+- `SmritiRecallRequest/Response` — natural language recall with filters
+- `SmritiRecallItem` — recall hit with setu_score, hybrid_score, descriptions, anchor_basis
+- `SmritiRecallFeedback` — W-matrix feedback (confirmed=True → positive, False → negative)
+- `SmritiPruneRequest/Result` — prune by age, missing files, or clear-all
+- `SmritiMigrationRequest/Result` — copy-first migration with dry_run support
+
+### API Contracts
+- `AnalyzeRequest` — image_base64 or file_path + session_id + query + decode_mode
+- `AnalyzeResponse` — observation + hits + answer + provider_health + reasoning_trace
+- `LivingLensTickRequest` — extends AnalyzeRequest + proof_mode
+- `ToolStateObserveRequest` — current_url, view_id, visible_entities, affordances, screenshot
+- `QueryRequest` — query text or image + top_k + filters
+
+---
+
+## JEPA Engine Detail (`cloud/jepa_service/engine.py`)
+
+Two engines coexist:
+
+**`JEPAEngine`** (compatibility): Vector-first API for legacy tests. 4-layer MLP predictor. `tick(frame_embedding) → TickResult`.
+
+**`ImmersiveJEPAEngine`** (primary): DINOv2/SAM-backed session engine.
+- 14×14 patch grid (196 patches × 384 dims)
+- EMA update before predictor forward; no exceptions
+- Guard: when `||θ_tgt - θ_ctx||₂ < 0.01`, tau drops to 0.90 for 10 ticks
+- Talker gating: `Ē > μ_E + 2·σ_E`
+- Ghost bounding boxes in pixel coordinates (never patch indices)
+- V-JEPA2 encoder integrated (Sprint 6): `encode(frame) → (encoder_emb, predictor_emb)`; cross-tick prediction error = `||enc_emb_t - pred_emb_{t-1}||²`; surprise score = z-score normalized over 128-tick window, clamped to [0,1]
+- Surrogate fallback when V-JEPA2 fails; `degraded=True` + `degrade_reason/stage` in tick
+
+**Smriti Pipeline** (inside ImmersiveJEPAEngine):
+1. **TPDS** — `TemporalParallaxDepthSeparator` assigns foreground/midground/background strata from `energy_map` deltas
+2. **SAG** — `SemanticAnchorGraph` matches patch tokens to stored templates; returns anchor_matches with confidence, depth_stratum, patch_indices
+3. **CWMA** — `CrossModalWorldModelAligner` refines energy_map with anchor + depth alignment (lambda=0.15)
+4. **ECGD** — `EpistemicConfidenceGate` gates regions by consistency score; uncertainty map output
+5. **Setu-2** — `Setu2Bridge` generates grounded text descriptions per gated region
+
+**Anchor entity tracking:**
+- New track if best cosine < 0.72
+- `occluded` after ≥3 misses AND cosine < 0.65
+- `disappeared` after ≥5 misses
+- `re-identified` when occluded ghost cosine > 0.72 on detection
+- `violated prediction` when cosine < 0.5
+- Track pruned after ≥4 misses + 8s (disappeared/violated) or ≥10 misses + 20s (occluded)
+
+---
+
+## Smriti Memory System (`cloud/runtime/smriti_storage.py`)
+
+**SmetiDB** extends observation storage:
+- SQLite under `.toori/smriti/`
+- Schema versioned via `SchemaVersionManager` (no gap-skipping allowed)
+- FAISS index for vector similarity
+- Full-text search (FTS5) on descriptions
+- Hybrid recall: FAISS vector + FTS + Setu-2 scores combined via `W-matrix`
+- W-matrix updated from `POST /v1/smriti/recall/feedback`; LR ≤ 0.005; runtime-local (not persisted)
+- Cluster export (k-means on embeddings) for Mandala visualization
+- Person journal: chronological media for a named person
+- Watch folders: `watchdog` monitors directories; deduplicates by SHA-256 hash
+
+**SmritiIngestionDaemon** (`cloud/runtime/smriti_ingestion.py`):
+- Async background worker; starts/stops with FastAPI lifespan
+- Processes `SmritiMedia` jobs: decode, encode embeddings, run TPDS/SAG/CWMA/ECGD/Setu2, optionally Gemma-4 narration
+
+**Gemma4 integration in Smriti:**
+- `SmetiGemma4Enricher` plugs into ingestion (`_process_job`) and living-lens tick
+- Call sites: A) after setu_descriptions in ingestion B) before returning in living_lens_tick
+- Narration: anchor + depth evidence → 1-sentence description (max 20 words, max 8s timeout)
+- Query reformulation: natural language → structured JSON (depth_stratum, person_filter, time_hint)
+- Proactive alerts: surprise > 0.55 OR occluded tracks → short alert sentence (max 5s, max 15 words)
+
+---
+
+## Gemma4Bridge (`cloud/runtime/gemma4_bridge.py`)
+
+Evidence-first design: JEPA geometric evidence goes INTO the prompt. Gemma-4 narrates measurements, not imagination. This is why it cannot hallucinate a telescope into a body part.
+
+Four system prompts:
+- `_ANCHOR_SYSTEM` — precise spatial narrator; max 20 words; evidence-only
+- `_QUERY_SYSTEM` — search query parser; JSON output only
+- `_COREF_SYSTEM` — entity co-reference resolver; JSON output only
+- `_ALERT_SYSTEM` — safety narrator; max 15 words or "stable"
+
+Methods:
+- `narrate_anchor(anchor_matches, depth_strata, setu_descriptions, observation_id, image_base64)`
+- `reformulate_query(natural_query)` → `QueryReformulationResult`
+- `proactive_alert(scene_state, entity_tracks, jepa_tick)` — only fires when surprise > 0.55 or occluded tracks present
+
+---
+
+## Observability & Resilience
+
+**`cloud/runtime/observability.py`:**
+- `CorrelationContext` — async context-var correlation ID (`smriti_{hex12}`)
+- `get_logger(component)` — returns structlog or fallback JSON logger bound to correlation_id
+- `PipelineTrace` + `trace_stage(trace, stage)` — per-request stage timing
+- `with_fallback(fallback_value)` — decorator that logs and returns default on exception
+- `TokenBucketRateLimiter(rate_per_second, burst)` — in-process per-key rate limiting
+- `MemoryCeilingManager(ceiling_mb)` — RSS monitor; triggers `gc.collect()` at 90% of ceiling
+- `SchemaVersionManager(db_path)` — SQLite migration tracker; strict sequential versioning
+
+**`cloud/runtime/resilience.py`:**
+- `SmritiCircuitBreaker(name, failure_threshold=3, reset_timeout_s=30)` — closed → open → half-open
+- `FallbackChain(*handlers)` — tries handlers in sequence
+- `BackPressureQueue(maxsize, policy)` — policies: WAIT, LATEST_DROP, OLDEST_DROP
+
+**HTTP middleware (`app.py`):**
+- Every request gets a correlation ID (from header or generated)
+- Response includes `X-Correlation-ID` header
+- Structured JSON log on request completion
+- Rate limit → HTTP 429 with `Retry-After` header
+
+---
+
+## Desktop UI (`desktop/electron/`)
+
+**Tabs:**
+| Tab | File | Purpose |
+|-----|------|---------|
+| Live Lens | `LiveLensTab.tsx` | Operator/debug view; camera + quick capture |
+| Living Lens | `LivingLensTab.tsx` | **Primary scientific proof surface**; JEPA metrics, entity tracks, rollouts, Recovery Lab |
+| Smriti | `SmritiTab.tsx` | Semantic memory: Mandala, Recall, Deepdive, Journals, HUD |
+| Settings | `SettingsTab.tsx` | All RuntimeSettings + V-JEPA2 config + provider toggles |
+| Memory Search | `MemorySearchTab.tsx` | Direct recall search |
+| Session Replay | `SessionReplayTab.tsx` | Historical observation replay |
+| Integrations | `IntegrationsTab.tsx` | Plugin/SDK links |
+
+**Key hooks:**
+- `useCameraStream.ts` — camera device enumeration, stream, frame capture, diagnostics
+- `useWorldState.ts` — polls `/v1/world-state`, `/v1/world-model/status`, `/v1/providers/health`; manages `WorldModelConfig` and rollout state
+- `useSmritiState.ts` — Smriti section state, recall, mandala, journals
+- `useLivingLens.ts` — living lens session and proof metrics
+- `useRuntimeBridge.ts` — generic fetch/WebSocket helpers to `127.0.0.1:7777`
+
+**Smriti UI components:**
+- `MandalaView.tsx` — force-layout cluster graph using `mandala-force-worker.ts`
+- `DeepdiveView.tsx` — accessible modal (WCAG 2.1 AA focus trap, Escape to close)
+- `RecallSurface.tsx` — natural language recall with filter controls
+- `PersonJournal.tsx` — chronological person media gallery
+- `SmritiStorageSettings.tsx` — storage config, watch folders, usage, migration, pruning
+- `PerformanceHUD.tsx` — worker stats, queue depth, energy EMA
+
+**Canvas rules:**
+- All Smriti canvases use `getContext("2d")` only — WebGL/THREE.js/WebGPU prohibited here
+- Every draw loop: `ctx.clearRect(...)` first; `ctx.save()`/`ctx.restore()` around transforms
+- Resize: update `canvas.width`/`canvas.height`, then apply `devicePixelRatio`
+- Person journal co-occurrence: circular static layout only (no force simulation)
+
+**`mandala-force-worker.ts` rules:**
+- Worker-only code; uses `setTimeout(…, 33)` not `requestAnimationFrame`
+- No npm imports; communicates via `postMessage`
+
+**UI mode:**
+- `Consumer Mode` is default on first launch (`localStorage["toori_mode"]="consumer"`)
+- `Science Mode` shows SigReg gauge
+- 3D proof overlay: `z-index:10`, `pointer-events:none`
+- `passive mode` in operator language = continuous monitoring (camera stays live)
+
+---
+
+## V-JEPA2 Encoder (`cloud/perception/vjepa2_encoder.py`)
+
+- Dynamically configured; never hard-code model path or n_frames
+- Settings written to JSON mirror on disk by `_write_settings_mirror(settings)`
+- Read by `_resolve_model_id()` and `_resolve_n_frames()` on each load
+- `_reset_vjepa2_if_config_changed(old, new)` triggers lazy reload on drift
+- `WorldModelStatus` must be truthful: `configured_encoder`, `last_tick_encoder_type`, `degraded`, `degrade_reason`, `degrade_stage`
+- V-JEPA2 state belongs in `.toori/`; never commit to source control
+
+---
+
+## Test Architecture
+
+### Test Files
+| File | Coverage Area |
+|------|--------------|
+| `test_integration.py` | Full analyze/query request integration |
+| `test_smriti_production.py` | **Hard production gate (12 tests)** |
+| `test_mlx_daemon.py` | MLX daemon lifecycle, health tiers, protocol (45 tests) |
+| `test_atlas.py` | EpistemicAtlas entity tracking |
+| `test_talker.py` | SelectiveTalker energy gating |
+| `test_setu2_feedback.py` | W-matrix feedback endpoint |
+| `test_smriti_storage.py` | SmetiDB schema, FAISS, recall |
+| `test_smriti_storage_config.py` | Storage config resolution |
+| `test_smriti_ingestion_and_recall.py` | Full ingestion→recall pipeline |
+| `test_smriti_data_migration.py` | Copy-first migration |
+| `test_smriti_neighbors_and_journal.py` | Neighbor + journal APIs |
+| `test_surprise_indexing.py` | Surprise score indexing |
+| `test_world_model_routes.py` | Planning/rollout/benchmark routes |
+| `test_ws_schema_compat.py` | WebSocket payload schema |
+| `test_cross_cutting.py` | Error types, rate limiting, observability |
+| `test_auth.py` | Auth mode behavior |
+| `tests/test_readme.py` | README contract guard |
+
+### test_smriti_production.py Governance
+- Must pass before merging ANY Smriti pipeline change
+- 12 tests; the telescope regression is the permanent sentinel
+- `test_telescope_behind_person_not_described_as_body_part` failure = all feature work stops
+- Adding tests: encouraged when real regressions are found
+- Removing/weakening/renaming: requires explicit sign-off
+
+### Torch Isolation (Anchored Grep Pattern)
 ```bash
 # CORRECT — only matches actual import statements:
-grep -rn "^import torch\|^from torch" cloud/ --include="*.py" \
-  | grep -v "cloud/perception/"
+grep -rn "^import torch\|^from torch" cloud/ --include="*.py" | grep -v "cloud/perception/"
 
 # WRONG — matches string literals in tests (false positives):
 grep -r "import torch" cloud/ --include="*.py" | grep -v "cloud/perception/"
 ```
-The unanchored pattern matches `assert "torch" not in sys.modules`
-in test files, producing misleading "VIOLATION FOUND" output.
+`torch` is ONLY allowed inside `cloud/perception/`.
+`torch` is FORBIDDEN in: TPDS, SAG, CWMA, ECGD, Setu-2, any Smriti pipeline module.
 
-### DEEPDIVE FOCUS CONTRACT (WCAG 2.1 AA)
+---
 
-- On open, focus moves to the deepdive modal container.
-- While open, focus is trapped inside the modal with Tab and Shift+Tab cycling.
-- On close, focus returns to the element that launched the modal.
-- Escape closes the modal from anywhere inside it.
-- Every interactive control inside the modal must expose an accessible name.
+## World Model Layer (`cloud/runtime/world_model.py` + `service.py`)
 
-### ALL CANVAS ELEMENTS IN SMRITI
+### Functions (`world_model.py`)
+- `_state_domain_from_metadata(metadata)` — infers spatial domain from observation metadata
+- `_validate_grounded_entities(raw)` / `_validate_affordances(raw)` — safety net for LLM output; never skip
+- `_grounded_entities_from_camera(frame, tick)` — derives grounded entities from JEPA tick
+- `_default_affordances_for_domain(domain)` — sensible defaults when reasoning unavailable
+- `derive_grounded_entities(request)` — top-level; returns `list[GroundedEntity]`
+- `default_candidate_actions(entities)` — seeds ActionTokens without reasoning
+- `build_rollout_comparison(request, entities)` — constructs `RolloutComparison`
+- `build_recovery_benchmark_run(request)` — assembles + persists `RecoveryBenchmarkRun`
 
-- All Smriti canvases use `getContext("2d")` only. WebGL, THREE.js, and WebGPU are prohibited in Smriti components.
-- Every draw loop must call `ctx.clearRect(...)` before painting a new frame.
-- Use `ctx.save()` and `ctx.restore()` around transformed drawing code.
-- Resize handling must update `canvas.width` and `canvas.height`, then apply `devicePixelRatio` scaling.
-- Person journal co-occurrence layout stays circular and static. Do not introduce a force simulation there.
+### Service Methods (`service.py → RuntimeContainer`)
+- `get_vjepa2_settings()` → `WorldModelConfig`
+- `update_vjepa2_settings(model_path, n_frames)` → `WorldModelConfig`
+- `get_world_model_status()` → `WorldModelStatus`
+- `observe_tool_state(request)` → `ToolStateObserveResponse`
+- `plan_rollout(request)` → `PlanningRolloutResponse`
+- `run_recovery_benchmark(request)` → `RecoveryBenchmarkRun`
+- `get_recovery_benchmark(id)` → `Optional[RecoveryBenchmarkRun]`
 
-### test_smriti_production.py GOVERNANCE
+### Recovery Benchmark Storage (`storage.py`)
+- `save_recovery_benchmark_run(benchmark)` — persists to SQLite; do NOT hold in memory only
+- `get_recovery_benchmark_run(id)` — retrieve by ID
+- `recent_recovery_benchmark_runs(limit)` — N most recent
 
-- `cloud/api/tests/test_smriti_production.py` must pass before merging any Smriti pipeline change.
-- All production-gate tests must pass in CI before merge. The current file contains 12 tests.
-- Adding tests to that file is encouraged when real regressions are found.
-- Removing, weakening, or renaming production-gate tests requires explicit sign-off.
-- If `test_telescope_behind_person_not_described_as_body_part` fails, all feature work stops until it passes again.
+---
 
-## Recommended Work Areas
+## Smriti Migration Rules (`cloud/runtime/smriti_migration.py`)
+1. **Copy first** — source files copied to destination before any config change
+2. **Verify second** — destination verified after copy
+3. **Update config last** — runtime config updated only after successful verification
+4. **Non-destructive** — never delete source data during migration
+5. `dry_run=True` → NO directory creation, NO file copy, NO config mutation
 
-- Improve the Python runtime before adding more UI complexity.
-- Keep client models aligned with [cloud/runtime/models.py](/Users/macuser/toori/cloud/runtime/models.py). The Sprint 6 additions (`GroundedEntity`, `ActionToken`, `RolloutComparison`, `RecoveryBenchmarkRun`, `WorldModelStatus`, `WorldModelConfig`) are the current surface to keep in sync.
-- Keep desktop types in `desktop/electron/src/types.ts` aligned with the planning and world-model route payloads.
-- Extend SDKs in [sdk](/Users/macuser/toori/sdk) when public API changes — the new planning/recovery routes and `WorldModelConfig` endpoints need SDK coverage.
-- Update [docs/system-design.md](/Users/macuser/toori/docs/system-design.md), [docs/user-manual.md](/Users/macuser/toori/docs/user-manual.md), and [docs/plugin-guide.md](/Users/macuser/toori/docs/plugin-guide.md) whenever interfaces or workflows move.
-- When proof surfaces change, update the README and user manual so the browser-first workflow and packaged-macOS caveat stay explicit.
-- The next sprint should focus on: signed macOS bundle, federated Setu-2, and mobile client packaging. Keep the planning/recovery backend stable before widening the client surface.
+---
+
+## FastAPI Lifecycle Rule
+Use `@asynccontextmanager` lifespan in `create_app()`.
+**Do NOT** reintroduce `@app.on_event("startup")` or `@app.on_event("shutdown")`.
+
+Lifespan sequence:
+1. `runtime._load_sag_templates()`
+2. `smriti_daemon.start()`
+3. `runtime.restore_smriti_watch_folders()`
+4. Yield (serve requests)
+5. `smriti_daemon.stop()`
+6. `runtime._save_sag_templates()`
+7. `runtime.shutdown()`
+
+---
+
+## Proof Surface Policy
+
+| Surface | Purpose |
+|---------|---------|
+| **Live Lens** | Operator debug; raw camera + quick capture |
+| **Living Lens** | Primary scientific demo; world-model evidence, rollouts, baselines |
+| **Living Lens → Recovery Lab** | Hybrid camera+tool planning; extend here (no separate planner) |
+| **Smriti** | Semantic memory: ingestion, recall, journals, cluster browsing |
+
+The proof surface must expose: prediction consistency, temporal continuity, surprise, persistence, baseline comparison. Use plain language, not research jargon.
+
+"Latest observation sharing" must stay grounded to a real stored observation and real metrics. `TOORI_PUBLIC_URL` (default: `https://github.com/NeoOne601/Toori`) drives share CTAs.
+
+---
+
+## Critical Invariants (Never Violate)
+
+1. **No placeholder results** — search, recall, journals must map to real stored observations
+2. **No zero-vector embeddings** in user-facing flows
+3. **No torch outside `cloud/perception/`**
+4. **No hard-coded V-JEPA2 params** — always read from JSON mirror
+5. **`WorldModelStatus` must be truthful** — report actual encoder used, not configured
+6. **Reasoners are sidecars only** — Ollama/MLX must not overwrite authoritative world-model metrics, rollout ranking, or benchmark winner
+7. **DINOv2 is primary perception** for desktop/runtime; ONNX is compatibility-only
+8. **Ollama/MLX must remain optional and health-checked**
+9. **Reasoning providers must not be invoked autonomously on live tick paths**
+10. **Storage pruning must never delete original source media** outside Smriti-managed dirs
+11. **Migration is always copy-first, non-destructive**
+12. **`_validate_grounded_entities()` and `_validate_affordances()` must never be skipped**
+13. **Recovery benchmark runs must be persisted to SQLite** (not memory-only)
+14. **Ghost bounding boxes in pixel coordinates** — never patch indices
+15. **EMA update before predictor forward** — no exceptions
+16. **Forecast horizons `FE(k)` expected to increase with k** — flag non-monotonic
+17. **Talker gating: `Ē > μ_E + 2·σ_E`**
+18. **W-matrix feedback LR ≤ 0.005**
+19. **Telescope regression** = permanent sentinel. Fail = stop all feature work
+20. **Consumer Mode default** on first launch
+21. **3D proof overlay**: `z-index:10`, `pointer-events:none`
+22. **SigReg gauge visible in Science Mode**
+23. **FastAPI lifespan only** — no `@app.on_event`
+24. **Deepdive modal**: WCAG 2.1 AA — focus trap, Escape closes, focus returns to trigger
+25. **MLX daemon health cache: 30s TTL** — never probe on every UI poll
+
+---
+
+## SDK Surfaces (`sdk/`)
+
+Four SDK languages: `python/`, `typescript/`, `swift/`, `kotlin/`.
+Update SDK when any of these change:
+- Planning/rollout routes (`/v1/planning/rollout`, `/v1/tool-state/observe`)
+- Recovery benchmark routes (`/v1/benchmarks/recovery/*`)
+- `WorldModelConfig` endpoints (`GET/PUT /v1/world-model/config`)
+- Any new top-level API surface
+
+---
+
+## Recommended Work Areas (Current State)
+
+1. **Signed macOS bundle** — Camera privacy requires real app bundle identity; stock Electron CLI launches do not prove permission support
+2. **Federated Setu-2** — W-matrix is currently runtime-local and not persisted
+3. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
+4. **SDK coverage** — planning/recovery routes and WorldModelConfig endpoints need SDK clients
+5. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
+6. **Keep planning/recovery backend stable** before widening the client surface
+
+---
+
+## Mermaid System Diagram
+
+```mermaid
+flowchart TB
+  Camera["Live Camera / File Upload"] --> Runtime["FastAPI Runtime\n127.0.0.1:7777"]
+  Runtime --> Perception["Primary Local Perception\nDINOv2+MobileSAM / ONNX / basic"]
+  Perception --> JEPA["ImmersiveJEPAEngine\n14×14 patches, EMA, Guard"]
+  JEPA --> Pipeline["TPDS → SAG → CWMA → ECGD → Setu-2"]
+  JEPA --> VJ2["V-JEPA2 Encoder\n(cross-tick prediction error)"]
+  JEPA --> Talker["SelectiveTalker\nĒ > μ+2σ"]
+  JEPA --> Atlas["EpistemicAtlas\nentity tracks, co-occurrence"]
+  Pipeline --> SmritiDB["SmetiDB\nSQLite + FAISS + FTS5"]
+  SmritiDB --> Ingestion["SmritiIngestionDaemon\n+ Gemma4 narration"]
+  SmritiDB --> Recall["Smriti Recall\nhybrid score + W-matrix"]
+  Talker --> Events["WebSocket /v1/events"]
+  Runtime --> WorldModel["World Model Layer\nentities, affordances, rollouts, benchmarks"]
+  WorldModel --> SQLite["SQLite\nrecovery_benchmark_runs"]
+  Runtime --> Reasoning["Optional Reasoning\nMLX daemon / Ollama / Cloud"]
+  Reasoning --> Gemma4["Gemma4Bridge\nnarrate / reformulate / alert"]
+  Events --> UI["Desktop Electron UI\nLiveLens, LivingLens, Smriti, Settings"]
+  Events --> SDK["SDKs\npython / ts / swift / kotlin"]
+  UI --> Mobile["iOS SwiftUI / Android Compose"]
+```
