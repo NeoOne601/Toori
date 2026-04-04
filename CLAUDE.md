@@ -97,8 +97,10 @@ toori/
 ├── docs/                      system-design.md, user-manual.md, plugin-guide.md
 ├── tests/test_readme.py       README contract guard
 ├── requirements.txt           Core Python deps (fastapi, uvicorn, pydantic, numpy,
-│                              pillow, onnxruntime, websockets, weasyprint, structlog,
 │                              av>=12, watchdog>=4)
+├── cloud/perception/          Torch-isolated (numpy/onnx/coreml) perception models
+│   ├── audio_encoder.py       AudioEncoder (numpy Mel-spec, 384-dim, PyAV decode)
+│   └── ...                    (dinov2, sam, vjepa2)
 ├── conftest.py                Shared pytest fixtures
 ├── AGENTS.md                  Codex agent guidance
 └── CLAUDE.md                  ← this file
@@ -284,6 +286,7 @@ This is the **single source of truth**. Keep `desktop/electron/src/types.ts` in 
 
 ### Smriti
 - `SmritiStorageConfig` — data_dir, frames_dir, thumbs_dir, templates_path, watch_folders, max_storage_gb
+- `SmritiMedia` — Core record. Schema v3 includes audio columns: `audio_embedding_json` TEXT, `audio_energy` REAL, `audio_duration_seconds` REAL.
 - `SmritiRecallRequest/Response` — natural language recall with filters
 - `SmritiRecallItem` — recall hit with setu_score, hybrid_score, descriptions, anchor_basis
 - `SmritiRecallFeedback` — W-matrix feedback (confirmed=True → positive, False → negative)
@@ -577,7 +580,7 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 8. **Ollama/MLX must remain optional and health-checked**
 9. **Reasoning providers must not be invoked autonomously on live tick paths**
 10. **Storage pruning must never delete original source media** outside Smriti-managed dirs
-11. **Migration is always copy-first, non-destructive**
+11. **Migration is always copy-first, non-destructive**. Current SQLite schema version is `3` (Audio-JEPA Phase 1).
 12. **`_validate_grounded_entities()` and `_validate_affordances()` must never be skipped**
 13. **Recovery benchmark runs must be persisted to SQLite** (not memory-only)
 14. **Ghost bounding boxes in pixel coordinates** — never patch indices
@@ -608,7 +611,7 @@ Update SDK when any of these change:
 
 ## Recommended Work Areas (Current State)
 
-1. **Signed macOS bundle** — Camera privacy requires real app bundle identity; stock Electron CLI launches do not prove permission support
+1. **Audio-JEPA Phase 2** — same-modal audio retrieval via mic/hum query against Smriti audio sub-index
 2. **Federated Setu-2** — W-matrix is currently runtime-local and not persisted
 3. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
 4. **SDK coverage** — planning/recovery routes and WorldModelConfig endpoints need SDK clients

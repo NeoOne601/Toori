@@ -284,6 +284,37 @@ class SmritiIngestionDaemon:
             import logging as _lg
             _lg.getLogger(__name__).debug("Gemma4 enrichment skipped: %s", _g4_err)
 
+        # Audio-JEPA Phase 1 — extract and index audio embedding
+        try:
+            import json as _json
+            import numpy as _np
+            from cloud.perception.audio_encoder import AudioEncoder as _AE
+            _audio_path = getattr(media, "file_path", None)
+            if _audio_path and Path(_audio_path).exists():
+                _ae_instance = _AE()
+                _audio_emb = _ae_instance.encode_file(str(_audio_path))
+                _audio_energy = float(_np.mean(_np.abs(_audio_emb)))
+                # Best-effort duration from av; fall back to 0
+                _audio_dur = 0.0
+                try:
+                    import av as _av
+                    _ct = _av.open(str(_audio_path))
+                    _ast = next((s for s in _ct.streams if s.type == "audio"), None)
+                    if _ast is not None and _ast.duration and _ast.time_base:
+                        _audio_dur = min(30.0, float(_ast.duration * _ast.time_base))
+                    _ct.close()
+                except Exception:
+                    pass
+                # Index into audio FAISS sub-index
+                self._db.audio_faiss_add(str(media.id), _audio_emb)
+                log.debug("AudioEncoder indexed %s (energy=%.3f, dur=%.1fs)",
+                          media.id, _audio_energy, _audio_dur)
+        except ImportError:
+            log.debug("AudioEncoder: av not installed, skipping audio indexing")
+        except Exception as _audio_err:
+            log.warning("AudioEncoder: extraction failed for %s: %s",
+                        getattr(media, "id", "?"), _audio_err)
+
         self._db.update_smriti_media(
             media_id=media.id,
             depth_strata=media.depth_strata,

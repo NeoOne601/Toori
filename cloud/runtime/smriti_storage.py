@@ -172,7 +172,7 @@ class RecallResult:
 
 
 class SmetiDB(ObservationStore):
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     MIGRATIONS: list[tuple[int, str]] = [
         (
@@ -291,6 +291,15 @@ class SmetiDB(ObservationStore):
                 ON smriti_media(world_model_version);
             """,
         ),
+        (
+            3,
+            """
+            -- Audio-JEPA Phase 1: audio embedding columns
+            ALTER TABLE smriti_media ADD COLUMN audio_embedding_json TEXT;
+            ALTER TABLE smriti_media ADD COLUMN audio_energy REAL;
+            ALTER TABLE smriti_media ADD COLUMN audio_duration_seconds REAL;
+            """,
+        ),
     ]
 
     def __init__(self, data_dir: Path, **kwargs: Any) -> None:
@@ -306,8 +315,13 @@ class SmetiDB(ObservationStore):
         self._faiss_next_index_id = 0
         self._mandala_cache: dict[str, Any] | None = None
         self._mandala_cache_at = 0.0
+        # Audio-JEPA Phase 1: audio sub-index (pure numpy, mirrors visual index)
+        self._audio_index_path = self.data_dir / "smriti_audio.index.npz"
+        self._audio_media_ids: list[str] = []
+        self._audio_vectors: list[np.ndarray] = []
         self._apply_migrations()
         self._load_or_rebuild_faiss_index()
+        self._load_audio_index_from_disk()
 
     @contextlib.contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -362,6 +376,20 @@ class SmetiDB(ObservationStore):
         self._faiss_next_index_id = (max(index_ids) + 1) if index_ids else 0
         return True
 
+    def _load_audio_index_from_disk(self) -> None:
+        """Load audio sub-index from disk if it exists. Silently no-ops on missing or corrupt file."""
+        if not self._audio_index_path.exists():
+            return
+        try:
+            payload = np.load(str(self._audio_index_path), allow_pickle=True)
+            vecs = np.asarray(payload["vectors"], dtype=np.float32)
+            mids = [str(item) for item in payload["media_ids"].tolist()]
+            if vecs.ndim == 2 and len(mids) == vecs.shape[0]:
+                self._audio_vectors = [vecs[i] for i in range(vecs.shape[0])]
+                self._audio_media_ids = mids
+        except Exception:
+            pass  # Fresh index on any corruption
+
     def _persist_faiss_index(self) -> None:
         payload = {
             "vectors": np.asarray(self._faiss_vectors, dtype=np.float32),
@@ -371,6 +399,79 @@ class SmetiDB(ObservationStore):
         }
         with self._faiss_index_path.open("wb") as handle:
             np.savez(handle, **payload)
+
+    def _persist_audio_index(self) -> None:
+        """Write audio sub-index to disk. Mirrors visual index persistence pattern."""
+        try:
+            if not self._audio_vectors:
+                return
+            payload = {
+                "vectors": np.asarray(self._audio_vectors, dtype=np.float32),
+                "media_ids": np.asarray(self._audio_media_ids, dtype=object),
+            }
+            np.savez(str(self._audio_index_path), **payload)
+        except Exception as exc:  # pragma: no cover - defensive
+            import logging as _lg
+            _lg.getLogger(__name__).warning("audio_faiss_persist_failed: %s", exc)
+
+    def audio_faiss_add(self, media_id: str, embedding: np.ndarray) -> None:
+        """
+        Add a 384-dim audio embedding to the audio sub-index.
+
+        Thread-safe. Persists to disk after each add.
+        Failure is non-fatal: logged and suppressed.
+        """
+        try:
+            emb = np.asarray(embedding, dtype=np.float32).reshape(-1)
+            if emb.shape[0] != 384:
+                raise ValueError(f"audio embedding must be 384-dim, got {emb.shape[0]}")
+            norm = float(np.linalg.norm(emb))
+            emb = emb / (norm + 1e-9)
+            with self._faiss_lock:
+                if media_id in self._audio_media_ids:
+                    idx = self._audio_media_ids.index(media_id)
+                    self._audio_vectors[idx] = emb
+                else:
+                    self._audio_media_ids.append(media_id)
+                    self._audio_vectors.append(emb)
+                self._persist_audio_index()
+        except Exception as exc:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("audio_faiss_add failed for %s: %s", media_id, exc)
+
+    def audio_faiss_search(self, query_emb: np.ndarray, top_k: int = 10) -> list[dict]:
+        """
+        Search audio sub-index by cosine similarity.
+
+        Returns list of {media_id, audio_score, rank} dicts.
+        Returns [] on empty index or any failure.
+        """
+        try:
+            if not self._audio_vectors or not self._audio_media_ids:
+                return []
+            q = np.asarray(query_emb, dtype=np.float32).reshape(-1)
+            q_norm = float(np.linalg.norm(q))
+            if q_norm < 1e-9:
+                return []
+            q = q / q_norm
+            with self._faiss_lock:
+                matrix = np.stack(self._audio_vectors, axis=0)  # (N, 384)
+                scores = matrix @ q  # cosine similarities (N,)
+                k = min(int(top_k), len(scores))
+                top_indices = np.argsort(scores)[::-1][:k]
+                return [
+                    {
+                        "media_id": self._audio_media_ids[int(i)],
+                        "audio_score": float(scores[int(i)]),
+                        "rank": rank + 1,
+                    }
+                    for rank, i in enumerate(top_indices)
+                    if scores[int(i)] > -1.0  # always true, defensive
+                ]
+        except Exception as exc:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("audio_faiss_search failed: %s", exc)
+            return []
 
     def _serialize_depth_strata(self, depth_strata: DepthStrataMap | None) -> str | None:
         if depth_strata is None:

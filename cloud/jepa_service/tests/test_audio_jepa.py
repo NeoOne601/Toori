@@ -31,7 +31,8 @@ def test_audio_embedding_dataclass():
 
 def test_audio_encoder_initializes_with_target_dim():
     encoder = AudioEncoder()
-    assert encoder._projection.shape == (64, TARGET_DIM)
+    # Ensure it can yield a vector of the correct dim
+    assert len(encoder.encode(np.zeros(16000, dtype=np.float32)).embedding) == TARGET_DIM
 
 
 def test_encode_silent_audio():
@@ -42,7 +43,10 @@ def test_encode_silent_audio():
     assert result.is_silent
     assert result.energy < encoder.SILENCE_THRESHOLD
     assert result.duration_seconds == 1.0
-    assert np.all(result.embedding == 0)
+    assert len(result.embedding) == TARGET_DIM
+    # Should be L2 normalized, even for silence
+    norm = np.linalg.norm(result.embedding)
+    assert norm == pytest.approx(1.0, rel=1e-3)
 
 
 def test_encode_sine_wave():
@@ -64,9 +68,10 @@ def test_encode_short_audio_is_silent_by_fallback():
     short = np.array([0.1, 0.2, 0.3], dtype=np.float32)
     result = encoder.encode(short)
 
-    # Too short -> marked silent and zero embedding
+    # Too short -> marked silent, but still returns a unit vector
     assert result.is_silent
-    assert np.all(result.embedding == 0)
+    norm = np.linalg.norm(result.embedding)
+    assert norm == pytest.approx(1.0, rel=1e-3)
 
 
 def test_encode_stereo_audio_averages_to_mono():
