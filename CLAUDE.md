@@ -596,7 +596,10 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 22. **SigReg gauge visible in Science Mode**
 23. **FastAPI lifespan only** — no `@app.on_event`
 24. **Deepdive modal**: WCAG 2.1 AA — focus trap, Escape closes, focus returns to trigger
-25. **MLX daemon health cache: 30s TTL** — never probe on every UI poll
+26. **Perception filtering mathematically enforced**: `Dinov2Provider` strictly rejects proposals whose volumetric dimensions span > 60% of the screen area, structurally prohibiting background pixel clustering from masking targets.
+27. **Do not deduplicate bounding boxes by label key**: `ProviderRegistry.object_proposals` must preserve multiple independent coordinates of identically classified categories (e.g. tracking two separate "chairs") rather than using a single dictionary assignment.
+28. **Handle shutdown signals strictly in multiprocess worker pools**: `JEPAWorkerPool` subprocesses must be configured to gracefully ignore `SIGINT`, forcing them to process `.close()` teardowns originating internally from the parent thread. This avoids leaking ghost semaphores inside Apple Silicon.
+29. **Consumer UI scale matches Backend scale**: The desktop application (`DetectionOverlay`) actively respects backend constraints (e.g. `max_proposals=12`), prohibiting hardcoded `slice()` UI clamps overriding backend tuning values.
 
 ---
 
