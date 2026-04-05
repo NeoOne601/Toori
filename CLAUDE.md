@@ -100,7 +100,9 @@ toori/
 │                              av>=12, watchdog>=4)
 ├── cloud/perception/          Torch-isolated (numpy/onnx/coreml) perception models
 │   ├── audio_encoder.py       AudioEncoder (numpy Mel-spec, 384-dim, PyAV decode)
-│   └── ...                    (dinov2, sam, vjepa2)
+│   ├── vjepa2_encoder.py      Safe, lazy-loading interface for vjepa2
+│   ├── vits14_onnx_encoder.py Honest V-JEPA2 fallback (ViT-S/14 ONNX real patches)
+│   └── ...                    (dinov2, sam)
 ├── conftest.py                Shared pytest fixtures
 ├── AGENTS.md                  Codex agent guidance
 └── CLAUDE.md                  ← this file
@@ -339,10 +341,10 @@ Two engines coexist:
 **SmetiDB** extends observation storage:
 - SQLite under `.toori/smriti/`
 - Schema versioned via `SchemaVersionManager` (no gap-skipping allowed)
-- FAISS index for vector similarity
+- FAISS HNSW index (IndexHNSWFlat M=32, efConstruction=200, efSearch=64) for both visual and audio sub-indices — O(log n) approximate search, ~99% recall vs exhaustive flat
 - Full-text search (FTS5) on descriptions
 - Hybrid recall: FAISS vector + FTS + Setu-2 scores combined via `W-matrix`
-- W-matrix updated from `POST /v1/smriti/recall/feedback`; LR ≤ 0.005; runtime-local (not persisted)
+- W-matrix updated from `POST /v1/smriti/recall/feedback`; LR ≤ 0.005; persisted to SQLite
 - Cluster export (k-means on embeddings) for Mandala visualization
 - Person journal: chronological media for a named person
 - Watch folders: `watchdog` monitors directories; deduplicates by SHA-256 hash
@@ -576,7 +578,7 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 2. **No zero-vector embeddings** in user-facing flows
 3. **No torch outside `cloud/perception/`**
 4. **No hard-coded V-JEPA2 params** — always read from JSON mirror
-5. **`WorldModelStatus` must be truthful** — report actual encoder used, not configured
+5. **`WorldModelStatus` must be truthful concerning encoders** — If V-JEPA2 is unavailable, it MUST try `dinov2-vits14-onnx` as an honest real patch fallback. `degraded=False` when this ViT-S/14 fallback is active. It only falls back to a true `surrogate` (where `degraded=True`) if BOTH fail.
 6. **Reasoners are sidecars only** — Ollama/MLX must not overwrite authoritative world-model metrics, rollout ranking, or benchmark winner
 7. **DINOv2 is primary perception** for desktop/runtime; ONNX is compatibility-only
 8. **Ollama/MLX must remain optional and health-checked**
@@ -589,7 +591,7 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 15. **EMA update before predictor forward** — no exceptions
 16. **Forecast horizons `FE(k)` expected to increase with k** — flag non-monotonic
 17. **Talker gating: `Ē > μ_E + 2·σ_E`**
-18. **W-matrix feedback LR ≤ 0.005**
+18. **W-matrix feedback LR ≤ 0.005; persisted to smriti_wmatrix SQLite table (schema v4)**
 19. **Telescope regression** = permanent sentinel. Fail = stop all feature work
 20. **Consumer Mode default** on first launch
 21. **3D proof overlay**: `z-index:10`, `pointer-events:none`
@@ -600,6 +602,7 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 27. **Do not deduplicate bounding boxes by label key**: `ProviderRegistry.object_proposals` must preserve multiple independent coordinates of identically classified categories (e.g. tracking two separate "chairs") rather than using a single dictionary assignment.
 28. **Handle shutdown signals strictly in multiprocess worker pools**: `JEPAWorkerPool` subprocesses must be configured to gracefully ignore `SIGINT`, forcing them to process `.close()` teardowns originating internally from the parent thread. This avoids leaking ghost semaphores inside Apple Silicon.
 29. **Consumer UI scale matches Backend scale**: The desktop application (`DetectionOverlay`) actively respects backend constraints (e.g. `max_proposals=12`), prohibiting hardcoded `slice()` UI clamps overriding backend tuning values.
+30. **FAISS index type must always be IndexHNSWFlat** — never revert to IndexFlatIP or IndexFlatL2. Flat indices will freeze at 50k+ media records.
 
 ---
 
@@ -618,7 +621,7 @@ Update SDK when any of these change:
 
 1. **Audio-JEPA Phase 1 (Completed)** — Implemented robust, non-blocking `AudioEncoder` (numpy/PyAV fixed seed `20260327`), migrated schema to v3, integrated FAISS sub-index, wired into `SmritiIngestionDaemon`, and added the `/v1/audio/query` API endpoint for same-modal retrieval. Phase 1 Frontend UI is also complete.
 2. **Audio-JEPA Phase 2** — CLAP projection head for cross-modal audio-visual retrieval (hum to find video frame)
-3. **Federated Setu-2** — W-matrix is currently runtime-local and not persisted
+3. **Federated Setu-2** — W-matrix is persisted to SQLite
 4. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
 5. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
 6. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change

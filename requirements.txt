@@ -11,6 +11,7 @@ weasyprint
 structlog
 av>=12.0.0
 watchdog>=4.0.0
+faiss-cpu>=1.7.0
 
 # Optional perception stack. `scripts/setup_backend.py` installs these when
 # `TOORI_INSTALL_PERCEPTION_EXTRAS=1` is set so offline/test runs can keep the

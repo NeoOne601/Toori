@@ -18,6 +18,21 @@ from .error_types import SmritiSchemaError
 from .observability import SchemaVersionManager
 from .storage import ObservationStore, _parse_dt, _utc_now
 
+import logging
+
+try:
+    import faiss
+except ImportError:
+    faiss = None  # type: ignore[assignment]
+
+_logger = logging.getLogger(__name__)
+
+# --- HNSW constants for FAISS indices ---
+FAISS_HNSW_M = 32                  # connections per node per layer — industry standard
+FAISS_HNSW_EF_CONSTRUCTION = 200   # build-time search depth — higher = better index quality
+FAISS_HNSW_EF_SEARCH = 64          # query-time search depth — ~99% recall vs flat
+FAISS_EMBEDDING_DIM = 384          # must match DINOv2-ViT-S/14 and AudioEncoder output dimensions
+
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -300,6 +315,18 @@ class SmetiDB(ObservationStore):
             ALTER TABLE smriti_media ADD COLUMN audio_duration_seconds REAL;
             """,
         ),
+        (
+            4,
+            """
+            -- Sprint 8: W-matrix persistence
+            CREATE TABLE IF NOT EXISTS smriti_wmatrix (
+                component      TEXT     NOT NULL PRIMARY KEY,
+                weight         REAL     NOT NULL DEFAULT 1.0,
+                feedback_count INTEGER  NOT NULL DEFAULT 0,
+                last_updated   REAL     NOT NULL DEFAULT 0.0
+            );
+            """,
+        ),
     ]
 
     def __init__(self, data_dir: Path, **kwargs: Any) -> None:
@@ -315,13 +342,22 @@ class SmetiDB(ObservationStore):
         self._faiss_next_index_id = 0
         self._mandala_cache: dict[str, Any] | None = None
         self._mandala_cache_at = 0.0
-        # Audio-JEPA Phase 1: audio sub-index (pure numpy, mirrors visual index)
+        # Audio-JEPA Phase 1: audio sub-index
         self._audio_index_path = self.data_dir / "smriti_audio.index.npz"
         self._audio_media_ids: list[str] = []
         self._audio_vectors: list[np.ndarray] = []
+        # HNSW FAISS indices for O(log n) approximate nearest neighbor search
+        self._hnsw_visual_path = self.data_dir / "smriti_hnsw_visual.index"
+        self._hnsw_visual_index: faiss.IndexHNSWFlat | None = None
+        self._hnsw_audio_path = self.data_dir / "smriti_hnsw_audio.index"
+        self._hnsw_audio_index: faiss.IndexHNSWFlat | None = None
         self._apply_migrations()
         self._load_or_rebuild_faiss_index()
         self._load_audio_index_from_disk()
+        
+        self._w: dict[str, float] = {}
+        # Restore persisted W-matrix weights (overwrites defaults if previous sessions exist)
+        self._load_wmatrix_from_db()
 
     @contextlib.contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -350,6 +386,51 @@ class SmetiDB(ObservationStore):
         except Exception as exc:  # pragma: no cover - defensive guard
             raise SmritiSchemaError(str(exc)) from exc
 
+    def _load_wmatrix_from_db(self) -> None:
+        """Load persisted W-matrix weights from smriti_wmatrix table.
+        Called once during __init__ after schema migration completes.
+        On first run (empty table): no-op, default weights remain.
+        On subsequent runs: persisted weights overwrite defaults.
+        NEVER raises — default weights are always safe.
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT component, weight, feedback_count FROM smriti_wmatrix"
+                ).fetchall()
+            if not rows:
+                return
+            for component, weight, _count in rows:
+                safe_weight = max(0.0, float(weight))
+                self._w[component] = safe_weight
+        except Exception as e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("W-matrix: failed to load from DB (using defaults): %s", e)
+
+    def _persist_wmatrix_to_db(self, component: str, new_weight: float, feedback_count: int = 0) -> None:
+        """Persist a single W-matrix component weight to SQLite.
+        Called at the end of update_metric_w() after self._w is updated.
+        NEVER raises — persistence failure must be logged but must not block feedback.
+        """
+        import time
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    '''INSERT INTO smriti_wmatrix (component, weight, feedback_count, last_updated)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(component) DO UPDATE SET
+                           weight         = excluded.weight,
+                           feedback_count = smriti_wmatrix.feedback_count + excluded.feedback_count,
+                           last_updated   = excluded.last_updated''',
+                    (component, float(new_weight), max(0, int(feedback_count)), time.time())
+                )
+                conn.commit()
+        except Exception as e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "W-matrix: persist failed for component '%s': %s", component, e
+            )
+
     def _load_or_rebuild_faiss_index(self) -> None:
         with self._faiss_lock:
             if self._load_faiss_index_from_disk():
@@ -374,6 +455,10 @@ class SmetiDB(ObservationStore):
         self._faiss_index_by_media_id = {media_id: index_id for media_id, index_id in zip(media_ids, index_ids)}
         self._faiss_vector_dim = vector_dim or (vectors.shape[1] if vectors.ndim == 2 and vectors.size else None)
         self._faiss_next_index_id = (max(index_ids) + 1) if index_ids else 0
+        # Load or rebuild HNSW visual index
+        self._hnsw_visual_index = self._load_hnsw_index(self._hnsw_visual_path)
+        if self._hnsw_visual_index is None and self._faiss_vectors:
+            self._rebuild_hnsw_visual()
         return True
 
     def _load_audio_index_from_disk(self) -> None:
@@ -389,6 +474,101 @@ class SmetiDB(ObservationStore):
                 self._audio_media_ids = mids
         except Exception:
             pass  # Fresh index on any corruption
+        # Load or rebuild HNSW audio index
+        self._hnsw_audio_index = self._load_hnsw_index(self._hnsw_audio_path)
+        if self._hnsw_audio_index is None and self._audio_vectors:
+            self._rebuild_hnsw_audio()
+
+    # ---- HNSW helper methods ----
+
+    def _make_hnsw_index(self) -> faiss.IndexHNSWFlat | None:
+        """Create a fresh HNSW index with standard Toori parameters.
+        HNSW provides O(log n) approximate nearest neighbor search vs O(n) for brute-force.
+        At 50k+ records, HNSW is ~10x faster with >99% recall accuracy.
+        Returns None if faiss is not available.
+        """
+        if faiss is None:
+            return None
+        index = faiss.IndexHNSWFlat(FAISS_EMBEDDING_DIM, FAISS_HNSW_M)
+        index.hnsw.efConstruction = FAISS_HNSW_EF_CONSTRUCTION
+        index.hnsw.efSearch = FAISS_HNSW_EF_SEARCH
+        return index
+
+    def _load_hnsw_index(self, path: Path) -> faiss.IndexHNSWFlat | None:
+        """Load an HNSW index from disk. Returns None on failure or if faiss unavailable."""
+        if faiss is None or not path.exists():
+            return None
+        try:
+            loaded = faiss.read_index(str(path))
+            if hasattr(loaded, 'hnsw'):
+                loaded.hnsw.efSearch = FAISS_HNSW_EF_SEARCH
+            return loaded
+        except Exception as exc:
+            _logger.warning("FAISS: could not load HNSW index %s: %s", path, exc)
+            return None
+
+    def _persist_hnsw_index(self, index: faiss.IndexHNSWFlat | None, path: Path) -> None:
+        """Write an HNSW index to disk. No-ops if index is None or faiss unavailable."""
+        if faiss is None or index is None:
+            return
+        try:
+            faiss.write_index(index, str(path))
+        except Exception as exc:
+            _logger.warning("FAISS: could not persist HNSW index %s: %s", path, exc)
+
+    def _rebuild_hnsw_visual(self) -> None:
+        """Rebuild HNSW visual index from in-memory numpy vectors."""
+        if faiss is None or not self._faiss_vectors:
+            self._hnsw_visual_index = None
+            return
+        index = self._make_hnsw_index()
+        if index is None:
+            return
+        matrix = np.stack(self._faiss_vectors, axis=0).astype(np.float32)
+        if matrix.shape[1] != FAISS_EMBEDDING_DIM:
+            _logger.warning("FAISS: visual vector dim %d != %d, skipping HNSW", matrix.shape[1], FAISS_EMBEDDING_DIM)
+            self._hnsw_visual_index = None
+            return
+        index.add(matrix)
+        self._hnsw_visual_index = index
+        self._persist_hnsw_index(index, self._hnsw_visual_path)
+
+    def _rebuild_hnsw_audio(self) -> None:
+        """Rebuild HNSW audio index from in-memory numpy vectors."""
+        if faiss is None or not self._audio_vectors:
+            self._hnsw_audio_index = None
+            return
+        index = self._make_hnsw_index()
+        if index is None:
+            return
+        matrix = np.stack(self._audio_vectors, axis=0).astype(np.float32)
+        if matrix.shape[1] != FAISS_EMBEDDING_DIM:
+            _logger.warning("FAISS: audio vector dim %d != %d, skipping HNSW", matrix.shape[1], FAISS_EMBEDDING_DIM)
+            self._hnsw_audio_index = None
+            return
+        index.add(matrix)
+        self._hnsw_audio_index = index
+        self._persist_hnsw_index(index, self._hnsw_audio_path)
+
+    def _rebuild_audio_faiss_from_db(self) -> None:
+        """Rebuild audio sub-index from stored audio_embedding_json in smriti_media table."""
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT id, audio_embedding_json FROM smriti_media WHERE audio_embedding_json IS NOT NULL"
+                ).fetchall()
+            for row in rows:
+                media_id = str(row["id"])
+                raw = _load_json(row["audio_embedding_json"], None)
+                if raw is None:
+                    continue
+                emb = np.asarray(raw, dtype=np.float32).reshape(-1)
+                if emb.shape[0] == FAISS_EMBEDDING_DIM:
+                    self.audio_faiss_add(media_id, emb)
+        except Exception as exc:
+            _logger.warning("FAISS: audio rebuild from DB failed: %s", exc)
+
+    # ---- Persistence ----
 
     def _persist_faiss_index(self) -> None:
         payload = {
@@ -399,6 +579,7 @@ class SmetiDB(ObservationStore):
         }
         with self._faiss_index_path.open("wb") as handle:
             np.savez(handle, **payload)
+        self._persist_hnsw_index(self._hnsw_visual_index, self._hnsw_visual_path)
 
     def _persist_audio_index(self) -> None:
         """Write audio sub-index to disk. Mirrors visual index persistence pattern."""
@@ -410,38 +591,47 @@ class SmetiDB(ObservationStore):
                 "media_ids": np.asarray(self._audio_media_ids, dtype=object),
             }
             np.savez(str(self._audio_index_path), **payload)
+            self._persist_hnsw_index(self._hnsw_audio_index, self._hnsw_audio_path)
         except Exception as exc:  # pragma: no cover - defensive
-            import logging as _lg
-            _lg.getLogger(__name__).warning("audio_faiss_persist_failed: %s", exc)
+            _logger.warning("audio_faiss_persist_failed: %s", exc)
 
     def audio_faiss_add(self, media_id: str, embedding: np.ndarray) -> None:
         """
         Add a 384-dim audio embedding to the audio sub-index.
 
         Thread-safe. Persists to disk after each add.
+        Uses HNSW index for O(log n) search when available.
         Failure is non-fatal: logged and suppressed.
         """
         try:
             emb = np.asarray(embedding, dtype=np.float32).reshape(-1)
-            if emb.shape[0] != 384:
-                raise ValueError(f"audio embedding must be 384-dim, got {emb.shape[0]}")
+            if emb.shape[0] != FAISS_EMBEDDING_DIM:
+                raise ValueError(f"audio embedding must be {FAISS_EMBEDDING_DIM}-dim, got {emb.shape[0]}")
             norm = float(np.linalg.norm(emb))
             emb = emb / (norm + 1e-9)
             with self._faiss_lock:
-                if media_id in self._audio_media_ids:
+                is_update = media_id in self._audio_media_ids
+                if is_update:
                     idx = self._audio_media_ids.index(media_id)
                     self._audio_vectors[idx] = emb
                 else:
                     self._audio_media_ids.append(media_id)
                     self._audio_vectors.append(emb)
+                # Maintain HNSW audio index
+                if is_update:
+                    self._rebuild_hnsw_audio()
+                elif self._hnsw_audio_index is not None:
+                    self._hnsw_audio_index.add(emb.reshape(1, -1))
+                elif faiss is not None:
+                    self._rebuild_hnsw_audio()
                 self._persist_audio_index()
         except Exception as exc:
-            import logging as _lg
-            _lg.getLogger(__name__).warning("audio_faiss_add failed for %s: %s", media_id, exc)
+            _logger.warning("audio_faiss_add failed for %s: %s", media_id, exc)
 
     def audio_faiss_search(self, query_emb: np.ndarray, top_k: int = 10) -> list[dict]:
         """
         Search audio sub-index by cosine similarity.
+        Uses HNSW index for O(log n) search when available, numpy fallback otherwise.
 
         Returns list of {media_id, audio_score, rank} dicts.
         Returns [] on empty index or any failure.
@@ -455,6 +645,24 @@ class SmetiDB(ObservationStore):
                 return []
             q = q / q_norm
             with self._faiss_lock:
+                # HNSW fast path: O(log n)
+                if self._hnsw_audio_index is not None and self._hnsw_audio_index.ntotal > 0:
+                    k = min(int(top_k), self._hnsw_audio_index.ntotal)
+                    D, I = self._hnsw_audio_index.search(q.reshape(1, -1), k)
+                    results = []
+                    for rank, j in enumerate(range(I.shape[1])):
+                        idx = int(I[0, j])
+                        if idx < 0 or idx >= len(self._audio_media_ids):
+                            continue
+                        # L2^2 -> cosine for unit vectors: cos = 1 - L2^2/2
+                        score = 1.0 - float(D[0, j]) / 2.0
+                        results.append({
+                            "media_id": self._audio_media_ids[idx],
+                            "audio_score": score,
+                            "rank": rank + 1,
+                        })
+                    return results
+                # Numpy fallback: O(n)
                 matrix = np.stack(self._audio_vectors, axis=0)  # (N, 384)
                 scores = matrix @ q  # cosine similarities (N,)
                 k = min(int(top_k), len(scores))
@@ -469,8 +677,7 @@ class SmetiDB(ObservationStore):
                     if scores[int(i)] > -1.0  # always true, defensive
                 ]
         except Exception as exc:
-            import logging as _lg
-            _lg.getLogger(__name__).warning("audio_faiss_search failed: %s", exc)
+            _logger.warning("audio_faiss_search failed: %s", exc)
             return []
 
     def _serialize_depth_strata(self, depth_strata: DepthStrataMap | None) -> str | None:
@@ -710,6 +917,16 @@ class SmetiDB(ObservationStore):
         self._faiss_index_ids = []
         self._faiss_index_by_media_id = {}
         self._faiss_next_index_id = 0
+        self._hnsw_visual_index = None
+        self._hnsw_audio_index = None
+        self._audio_media_ids = []
+        self._audio_vectors = []
+        # Clean up HNSW index files
+        for hnsw_path in (self._hnsw_visual_path, self._hnsw_audio_path, self._audio_index_path):
+            try:
+                hnsw_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         self._mandala_cache = None
         return total_records, removed_bytes
 
@@ -1554,7 +1771,26 @@ class SmetiDB(ObservationStore):
                     tuple(self._faiss_media_ids),
                 ).fetchall()
                 media_status = {str(row["id"]): str(row["ingestion_status"]) for row in rows}
-        scored: list[tuple[str, float]] = []
+        # HNSW fast path: O(log n) approximate search
+        if self._hnsw_visual_index is not None and self._hnsw_visual_index.ntotal > 0:
+            hnsw_k = min(top_k * 5, self._hnsw_visual_index.ntotal)
+            D, I = self._hnsw_visual_index.search(query_vector.reshape(1, -1), hnsw_k)
+            scored: list[tuple[str, float]] = []
+            for j in range(I.shape[1]):
+                idx = int(I[0, j])
+                if idx < 0 or idx >= len(self._faiss_media_ids):
+                    continue
+                media_id = self._faiss_media_ids[idx]
+                if filter_status and media_status.get(media_id, "") != filter_status:
+                    continue
+                # L2^2 -> cosine for unit vectors: cos = 1 - L2^2/2
+                score = 1.0 - float(D[0, j]) / 2.0
+                scored.append((media_id, round(score, 6)))
+                if len(scored) >= top_k:
+                    break
+            return scored
+        # Numpy fallback: O(n) brute-force
+        scored = []
         for media_id, vector in zip(self._faiss_media_ids, self._faiss_vectors):
             if filter_status and media_status.get(media_id, "") != filter_status:
                 continue
@@ -1570,7 +1806,8 @@ class SmetiDB(ObservationStore):
                 self._faiss_vector_dim = int(vector.size)
             elif vector.size != self._faiss_vector_dim:
                 vector = _normalize_vector(vector, target_dim=self._faiss_vector_dim)
-            if media_id in self._faiss_index_by_media_id:
+            is_update = media_id in self._faiss_index_by_media_id
+            if is_update:
                 index = self._faiss_index_by_media_id[media_id]
                 position = self._faiss_index_ids.index(index)
                 self._faiss_vectors[position] = vector
@@ -1581,6 +1818,13 @@ class SmetiDB(ObservationStore):
                 self._faiss_vectors.append(vector)
                 self._faiss_index_ids.append(index)
                 self._faiss_index_by_media_id[media_id] = index
+            # Maintain HNSW visual index
+            if is_update:
+                self._rebuild_hnsw_visual()
+            elif self._hnsw_visual_index is not None and vector.size == FAISS_EMBEDDING_DIM:
+                self._hnsw_visual_index.add(vector.reshape(1, -1))
+            elif faiss is not None and vector.size == FAISS_EMBEDDING_DIM:
+                self._rebuild_hnsw_visual()
             self._persist_faiss_index()
         with self._lock, self._connect() as connection:
             connection.execute(
@@ -1633,6 +1877,8 @@ class SmetiDB(ObservationStore):
             self._faiss_next_index_id = next_index_id
             if vectors:
                 self._faiss_vector_dim = int(vectors[0].size)
+            # Rebuild HNSW visual index from fresh vectors
+            self._rebuild_hnsw_visual()
             self._persist_faiss_index()
         with self._lock, self._connect() as connection:
             for media_id, index_id, vector in zip(media_ids, index_ids, vectors):

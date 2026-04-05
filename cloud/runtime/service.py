@@ -681,7 +681,16 @@ class RuntimeContainer:
             )
 
         if self._setu2_bridge is None:
-            self._setu2_bridge = Setu2Bridge()
+            w_diag = np.ones(128, dtype=np.float32)
+            for k, v in getattr(self.smriti_db, '_w', {}).items():
+                if k.startswith("dim_"):
+                    try:
+                        idx = int(k[4:])
+                        if 0 <= idx < 128:
+                            w_diag[idx] = float(v)
+                    except ValueError:
+                        pass
+            self._setu2_bridge = Setu2Bridge(w_diagonal=w_diag)
         bridge = self._setu2_bridge
 
         if feedback.confirmed:
@@ -828,7 +837,16 @@ class RuntimeContainer:
         from cloud.runtime.setu2 import Setu2Bridge
 
         if self._setu2_bridge is None:
-            self._setu2_bridge = Setu2Bridge()
+            w_diag = np.ones(128, dtype=np.float32)
+            for k, v in getattr(self.smriti_db, '_w', {}).items():
+                if k.startswith("dim_"):
+                    try:
+                        idx = int(k[4:])
+                        if 0 <= idx < 128:
+                            w_diag[idx] = float(v)
+                    except ValueError:
+                        pass
+            self._setu2_bridge = Setu2Bridge(w_diagonal=w_diag)
         corpus = self.smriti_db.get_all_embeddings(limit=500)
         matrix = np.asarray(corpus["embeddings"], dtype=np.float32)
         if matrix.shape[0] <= 1:
@@ -984,9 +1002,24 @@ class RuntimeContainer:
                 n_frames = encoder.n_frames
             except Exception as exc:
                 get_logger("runtime").warning("world_model_status_fallback", error=str(exc))
-                degraded = True
-                degrade_reason = str(exc)
-                degrade_stage = "status"
+                # Check for ViT-S/14 ONNX honest fallback
+                try:
+                    from cloud.perception.vits14_onnx_encoder import ViTS14OnnxEncoder
+                    if ViTS14OnnxEncoder.is_available():
+                        encoder_type = "dinov2-vits14-onnx"
+                        model_id = ViTS14OnnxEncoder.default_model_path()
+                        model_loaded = True
+                        last_tick_encoder_type = "dinov2-vits14-onnx"
+                        degraded = False
+                        degrade_reason = "vjepa2_unavailable_dinov2_vits14_active"
+                    else:
+                        degraded = True
+                        degrade_reason = "vjepa2_and_vits14_unavailable"
+                        degrade_stage = "status"
+                except Exception:
+                    degraded = True
+                    degrade_reason = str(exc)
+                    degrade_stage = "status"
         else:
             model_id = "mobilenetv2-12.onnx"
 
@@ -1007,6 +1040,8 @@ class RuntimeContainer:
             degrade_stage = latest_tick.degrade_stage
             if latest_tick.world_model_version == "vjepa2":
                 encoder_type = "vjepa2"
+            elif latest_tick.world_model_version == "dinov2-vits14-onnx":
+                encoder_type = "dinov2-vits14-onnx"
             if latest_tick.world_model_version == "surrogate" and not test_mode:
                 encoder_type = "surrogate"
 
@@ -1981,7 +2016,16 @@ class RuntimeContainer:
         from cloud.runtime.setu2 import Setu2Bridge
 
         if self._setu2_bridge is None:
-            self._setu2_bridge = Setu2Bridge()
+            w_diag = np.ones(128, dtype=np.float32)
+            for k, v in getattr(self.smriti_db, '_w', {}).items():
+                if k.startswith("dim_"):
+                    try:
+                        idx = int(k[4:])
+                        if 0 <= idx < 128:
+                            w_diag[idx] = float(v)
+                    except ValueError:
+                        pass
+            self._setu2_bridge = Setu2Bridge(w_diagonal=w_diag)
 
         candidate_pairs: list[tuple[Any, np.ndarray]] = []
         for result in results:

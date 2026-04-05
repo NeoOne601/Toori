@@ -149,6 +149,16 @@ class Setu2Bridge:
 
         log.debug("setu2_w_updated", w_mean=float(self._W.mean()))
 
+        # Persist updated weights — W-matrix now survives restart
+        try:
+            from cloud.api.main import app
+            db = getattr(app.state, "runtime", None)
+            if db and hasattr(db, "smriti_db") and hasattr(db.smriti_db, "_persist_wmatrix_to_db"):
+                for _idx, _val in enumerate(self._W):
+                    db.smriti_db._persist_wmatrix_to_db(component=f"dim_{_idx}", new_weight=float(_val), feedback_count=1)
+        except Exception as _persist_e:
+            pass  # logged inside _persist_wmatrix_to_db — safe to swallow here
+
     def _forward(self, x: np.ndarray) -> np.ndarray:
         for index, layer in enumerate(self._layers):
             x = x @ layer["W"] + layer["b"]

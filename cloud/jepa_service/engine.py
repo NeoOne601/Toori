@@ -329,6 +329,10 @@ class ImmersiveJEPAEngine:
         self._vjepa2_loaded = False
         self._last_world_model_failure: Optional[dict[str, str]] = None
         self._last_tick_encoder_type = "surrogate"
+        # Sprint 7: ViT-S/14 ONNX honest fallback (real patch encoder, NOT surrogate)
+        self._fallback_encoder = None
+        self._fallback_encoder_type = "none"
+        self._is_true_surrogate = True
         if not _is_test_environment():
             try:
                 self._vjepa2 = get_vjepa2_encoder()
@@ -339,6 +343,25 @@ class ImmersiveJEPAEngine:
                     "reason": "encoder initialization failed",
                     "stage": "init",
                 }
+            # Attempt ViT-S/14 ONNX as the honest fallback (real patch encoder, not surrogate)
+            if self._vjepa2 is None:
+                try:
+                    from cloud.perception.vits14_onnx_encoder import ViTS14OnnxEncoder
+                    if ViTS14OnnxEncoder.is_available():
+                        self._fallback_encoder = ViTS14OnnxEncoder(ViTS14OnnxEncoder.default_model_path())
+                        self._fallback_encoder_type = "dinov2-vits14-onnx"
+                        self._is_true_surrogate = False
+                        self._last_tick_encoder_type = "dinov2-vits14-onnx"
+                    else:
+                        self._fallback_encoder = None
+                        self._fallback_encoder_type = "none"
+                        self._is_true_surrogate = True
+                except Exception as _e:
+                    import logging as _lg
+                    _lg.getLogger(__name__).warning("ViT-S/14 fallback init failed: %s", _e)
+                    self._fallback_encoder = None
+                    self._fallback_encoder_type = "none"
+                    self._is_true_surrogate = True
         self._prev_predictor_embs: dict[str, np.ndarray] = {}  # per-session
         self._surprise_windows: dict[str, deque] = {}  # per-session running window
 
@@ -437,11 +460,60 @@ class ImmersiveJEPAEngine:
                 }
                 self._last_tick_encoder_type = "surrogate"
         else:
-            if self._last_world_model_failure is not None:
+            # V-JEPA2 unavailable — try ViT-S/14 ONNX honest fallback
+            if self._fallback_encoder is not None:
+                try:
+                    enc_emb, patch_tokens = self._fallback_encoder.encode(frame)
+                    wm_encoder_emb = enc_emb
+                    # predictor_emb: use spatial mean as an honest approximation
+                    wm_predictor_emb = patch_tokens.mean(axis=0).astype(np.float32)
+                    wm_version = self._fallback_encoder_type
+                    # NOT degraded — ViT-S/14 is a real patch encoder
+                    degraded = False
+                    degrade_reason = "vjepa2_unavailable_dinov2_vits14_active"
+                    degrade_stage = None
+                    self._last_tick_encoder_type = self._fallback_encoder_type
+
+                    # Cross-tick prediction error
+                    if session_id in self._prev_predictor_embs:
+                        prev_pred = self._prev_predictor_embs[session_id]
+                        wm_prediction_error = float(np.sum((enc_emb - prev_pred) ** 2))
+                    else:
+                        wm_prediction_error = 0.0
+                    self._prev_predictor_embs[session_id] = wm_predictor_emb.copy()
+
+                    # Surprise normalization
+                    if session_id not in self._surprise_windows:
+                        self._surprise_windows[session_id] = deque(maxlen=128)
+                    self._surprise_windows[session_id].append(wm_prediction_error)
+                    window = list(self._surprise_windows[session_id])
+                    if len(window) >= 3:
+                        mu = float(np.mean(window))
+                        std = float(np.std(window)) + 1e-8
+                        wm_surprise = float(np.clip((wm_prediction_error - mu) / std, -3.0, 3.0))
+                        wm_surprise = float((wm_surprise + 3.0) / 6.0)
+                    else:
+                        wm_surprise = 0.5
+                    wm_epistemic = float(min(wm_prediction_error, 1.0))
+                    if len(self._energy_history) >= 3:
+                        wm_aleatoric = float(min(np.var(list(self._energy_history)[-8:]), 1.0))
+                    else:
+                        wm_aleatoric = 0.5
+                except Exception as _fb_exc:
+                    import logging as _lg
+                    _lg.getLogger(__name__).warning("ViT-S/14 fallback encode failed: %s", _fb_exc)
+                    degraded = True
+                    degrade_reason = f"vjepa2_and_vits14_unavailable: {_fb_exc}"
+                    degrade_stage = "fallback_encode"
+                    self._last_tick_encoder_type = "none"
+            elif self._last_world_model_failure is not None:
                 degraded = True
-                degrade_reason = self._last_world_model_failure.get("reason")
+                degrade_reason = "vjepa2_and_vits14_unavailable"
                 degrade_stage = self._last_world_model_failure.get("stage")
-            self._last_tick_encoder_type = "surrogate"
+                self._last_tick_encoder_type = "none"
+            else:
+                # Test mode or no encoder configured
+                self._last_tick_encoder_type = "surrogate"
 
         # Update TPDS with prediction error if available
         if wm_prediction_error is not None:
