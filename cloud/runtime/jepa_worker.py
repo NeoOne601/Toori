@@ -226,6 +226,17 @@ class JEPAWorkerPool:
             if worker.process.is_alive():
                 worker.process.terminate()
                 worker.process.join(timeout=1.0)
+            
+            try:
+                worker.request_queue.close()
+                worker.request_queue.cancel_join_thread()
+            except Exception:
+                pass
+            try:
+                worker.result_queue.close()
+                worker.result_queue.cancel_join_thread()
+            except Exception:
+                pass
 
     def _result_dispatcher(self, worker: _WorkerHandle) -> None:
         while not self._dispatcher_stop.is_set() or worker.pending_order:
@@ -372,5 +383,29 @@ def _worker_process_main(
     """
     Runs in a subprocess. Owns its own ImmersiveJEPAEngine.
     """
+    import signal
 
-    _process_work_item(worker_id, request_queue, result_queue, shutdown_event)
+    # 1. Ignore SIGINT in the worker process. The parent will catch it
+    # and set shutdown_event, allowing for a graceful multiprocess teardown.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception:
+        pass
+
+    try:
+        _process_work_item(worker_id, request_queue, result_queue, shutdown_event)
+    except Exception as exc:
+        get_logger("jepa_worker").warning("worker_process_crash", error=str(exc))
+    finally:
+        # 2. Prevent semaphore leaks at shutdown by closing our queues
+        try:
+            request_queue.close()
+            request_queue.cancel_join_thread()
+        except Exception:
+            pass
+        try:
+            result_queue.close()
+            result_queue.cancel_join_thread()
+        except Exception:
+            pass
+

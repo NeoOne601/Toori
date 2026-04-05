@@ -165,12 +165,14 @@ def _region_saliency(crop: Image.Image) -> float:
 
 
 def _grid_regions(image: Image.Image) -> list[tuple[BoundingBox, float]]:
+    """Return salient candidate regions from a 5x5 grid for finer small-object coverage."""
     width, height = image.size
     regions: list[tuple[BoundingBox, float]] = []
-    cell_width = 1.0 / 3.0
-    cell_height = 1.0 / 3.0
-    for row in range(3):
-        for col in range(3):
+    cols, rows = 5, 5
+    cell_width = 1.0 / cols
+    cell_height = 1.0 / rows
+    for row in range(rows):
+        for col in range(cols):
             left = col * cell_width
             top = row * cell_height
             box = BoundingBox(x=left, y=top, width=cell_width, height=cell_height)
@@ -344,24 +346,37 @@ class DinoV2PerceptionProvider:
             "patch_grid": [14, 14],
         }
 
-    def object_proposals(self, image: Image.Image, config: ProviderConfig, *, max_proposals: int = 5) -> list[BoundingBox]:
+    def object_proposals(self, image: Image.Image, config: ProviderConfig, *, max_proposals: int = 12) -> list[BoundingBox]:
         pipeline = self._ensure_pipeline(config)
         _, masks = pipeline.encode(image)
         width, height = image.size
         proposals: list[BoundingBox] = []
-        for index, mask in enumerate(masks[:max_proposals]):
+        for index, mask in enumerate(masks):
             bbox = mask.bbox_pixels
+            w_norm = float(bbox["width"]) / max(width, 1)
+            h_norm = float(bbox["height"]) / max(height, 1)
+            
+            # Physically reject any masks whose bounding box spans more than 60% of the screen area
+            # (this prevents scattered background pixels from creating massive 100% boundary squares)
+            if w_norm * h_norm > 0.60 or mask.area_fraction > 0.85:
+                continue
+                
+            # Penalize the score of remaining large masks to prioritize target-locking individual entities
+            adjusted_score = float(mask.confidence) * (1.0 - (mask.area_fraction * 0.4))
+            
             proposals.append(
                 BoundingBox(
                     x=float(bbox["x"]) / max(width, 1),
                     y=float(bbox["y"]) / max(height, 1),
-                    width=float(bbox["width"]) / max(width, 1),
-                    height=float(bbox["height"]) / max(height, 1),
+                    width=w_norm,
+                    height=h_norm,
                     label=f"entity-{index + 1}",
-                    score=round(float(mask.confidence), 4),
+                    score=round(adjusted_score, 4),
                 )
             )
-        return proposals
+            
+        proposals.sort(key=lambda p: float(p.score or 0.0), reverse=True)
+        return proposals[:max_proposals]
 
     def _ensure_pipeline(self, config: ProviderConfig) -> PerceptionPipeline:
         device = str(config.metadata.get("device", "mps"))
@@ -869,30 +884,41 @@ class ProviderRegistry:
         image: Image.Image,
         *,
         provider_name: str,
-        max_proposals: int = 5,
+        max_proposals: int = 12,
     ) -> list[BoundingBox]:
-        boxes = self._proposal_candidates(image, max_proposals=max_proposals)
         providers = settings.providers
+        candidates: list[tuple[BoundingBox, float]] = []
+
+        # 1. Gather proposal regions
         if provider_name == "dinov2":
             config = providers.get("dinov2", ProviderConfig(name="dinov2", enabled=False))
             proposals = self.dinov2.object_proposals(image, config, max_proposals=max_proposals)
             if proposals:
-                return proposals
-        if not boxes:
+                candidates = [(p, p.score or 1.0) for p in proposals]
+
+        if not candidates:
+            candidates = self._proposal_candidates(image, max_proposals=max_proposals)
+
+        if not candidates:
             return []
-        classifier_name = provider_name if provider_name in {"onnx", "basic"} else "basic"
-        if classifier_name == "onnx":
-            config = providers.get("onnx", ProviderConfig(name="onnx", enabled=False))
-            if not self.onnx.health(config).healthy:
-                classifier_name = "basic"
+
+        # 2. Label the regions using the active classifier (ONNX or basic)
+        classifier_name = "onnx" if providers.get("onnx", ProviderConfig(name="onnx", enabled=False)).enabled else "basic"
+        if classifier_name == "onnx" and not self.onnx.health(providers["onnx"]).healthy:
+            classifier_name = "basic"
         config = providers.get(classifier_name, ProviderConfig(name=classifier_name, enabled=classifier_name == "basic"))
-        scored: dict[str, BoundingBox] = {}
+        
+        scored: list[BoundingBox] = []
         width, height = image.size
-        for region, saliency in boxes:
+        
+        for index, (region, saliency) in enumerate(candidates):
             left = int(round(region.x * width))
             top = int(round(region.y * height))
             right = int(round((region.x + region.width) * width))
             bottom = int(round((region.y + region.height) * height))
+            if right <= left or bottom <= top:
+                continue
+                
             crop = image.crop((left, top, right, bottom))
             try:
                 if classifier_name == "onnx":
@@ -901,9 +927,11 @@ class ProviderRegistry:
                     _, confidence, metadata = self.basic.perceive(crop)
             except Exception:
                 continue
+                
             label = _meaningful_label(metadata.get("top_label") or metadata.get("descriptor") or "")
             if not label:
-                continue
+                label = f"{region.label}" if region.label else f"entity-{index + 1}"
+                
             score = _label_rank(label, confidence, saliency)
             proposal = BoundingBox(
                 x=region.x,
@@ -911,17 +939,18 @@ class ProviderRegistry:
                 width=region.width,
                 height=region.height,
                 label=label,
-                score=round(score, 4),
+                score=round(float(saliency if provider_name == "dinov2" else score), 4),
             )
-            existing = scored.get(label)
-            if existing is None or float(existing.score or 0.0) < float(proposal.score or 0.0):
-                scored[label] = proposal
-        proposals = sorted(scored.values(), key=lambda item: float(item.score or 0.0), reverse=True)
-        # Filter out weak proposals so we don't always show max_proposals boxes
-        proposals = [p for p in proposals if float(p.score or 0.0) >= 0.25]
-        return proposals[:max_proposals]
+            # Keep all spatially distinct proposals, do NOT deduplicate by label!
+            scored.append(proposal)
+                
+        # Filter weak proposals immediately
+        scored = [p for p in scored if float(p.score or 0.0) >= 0.15]
+        scored = sorted(scored, key=lambda item: float(item.score or 0.0), reverse=True)
+        return scored[:max_proposals]
 
-    def _proposal_candidates(self, image: Image.Image, *, max_proposals: int = 5) -> list[tuple[BoundingBox, float]]:
+
+    def _proposal_candidates(self, image: Image.Image, *, max_proposals: int = 12) -> list[tuple[BoundingBox, float]]:
         regions = _grid_regions(image)
         if not regions:
             return []

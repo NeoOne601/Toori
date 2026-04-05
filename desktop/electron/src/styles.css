@@ -2833,9 +2833,9 @@ textarea {
   inset: 0;
   z-index: 5;
   display: grid;
-  grid-template-columns: repeat(14, minmax(0, 1fr));
-  grid-template-rows: repeat(14, minmax(0, 1fr));
-  gap: 1px;
+  grid-template-columns: repeat(28, minmax(0, 1fr));
+  grid-template-rows: repeat(28, minmax(0, 1fr));
+  gap: 0;
   pointer-events: none;
   border-radius: 20px;
   overflow: hidden;
@@ -2843,11 +2843,11 @@ textarea {
 }
 
 .spatial-heatmap__cell {
-  transition: opacity 300ms ease, background-color 300ms ease;
+  transition: opacity 280ms ease, background-color 280ms ease;
 }
 
 .spatial-heatmap__cell.is-active {
-  box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 6px rgba(255, 255, 255, 0.18);
 }
 
 .forecast-panel__timings {
