@@ -817,6 +817,10 @@ class AudioQueryRequest(BaseModel):
     depth_stratum: Optional[str] = Field(default=None, description="foreground|midground|background")
     person_filter: Optional[str] = None
     confidence_min: float = Field(default=0.0, ge=0.0, le=1.0)
+    cross_modal: bool = Field(
+        default=False,
+        description="If True: project audio into visual embedding space (CLAP) and search visual memories. Enables 'hum to find video frame'. Requires CLAPProjector weights."
+    )
 
 
 class AudioQueryResult(BaseModel):

@@ -31,6 +31,19 @@ _ALERT_SYSTEM = (
     "You are a proactive safety narrator for live scene monitoring. "
     "One short alert if notable, else output exactly: stable. Max 15 words."
 )
+_ROLLOUT_SYSTEM = (
+    "You are a concise layout and physics narrator. Explain the system's "
+    "primary planned action (Plan A) and its fallback (Plan B) in simple, "
+    "natural language. Explain why Plan B exists if Plan A is risky. "
+    "Maximum 2 sentences."
+)
+_PROOF_REPORT_SYSTEM = (
+    "You are a technical analyst summarizing a session's visual memory performance. "
+    "You will receive aggregated metrics (ticks, energy, recoveries, etc) and must "
+    "produce a highly detailed 1-2 paragraph natural language summary "
+    "evaluating the session's stability and object tracking success."
+)
+
 
 @dataclass
 class AnchorNarrationResult:
@@ -112,6 +125,54 @@ class Gemma4Bridge:
         text = (r.get("text") or "stable").strip()
         is_alert = text.lower() not in ("stable","","no alert","normal")
         return AlertResult(text,is_alert,ms)
+
+    async def narrate_rollout(self, rollout_comparison: dict):
+        branches = rollout_comparison.get("ranked_branches", [])
+        if not branches:
+            return "No rollout plans available to narrate."
+        plan_a = branches[0]
+        plan_b = branches[1] if len(branches) > 1 else None
+        
+        def _get_verb(plan):
+            return plan.get("candidate_action", {}).get("verb", "unknown")
+            
+        a_verb = _get_verb(plan_a).replace("_", " ")
+        a_risk = plan_a.get("risk_score", 0.0)
+        a_blockers = ", ".join(plan_a.get("failure_predicates", [])) or "none"
+        
+        prompt = (f"Plan A: {a_verb} (Risk: {a_risk:.2f}, Blockers: {a_blockers})\n")
+        if plan_b:
+            b_verb = _get_verb(plan_b).replace("_", " ")
+            b_risk = plan_b.get("risk_score", 0.0)
+            prompt += f"Plan B fallback: {b_verb} (Risk: {b_risk:.2f})\n"
+            
+        prompt += "\nExplain this action plan easily to a user."
+        
+        t0 = time.perf_counter()
+        r = await self._call(prompt=prompt, image_base64=None, system=_ROLLOUT_SYSTEM, max_tokens=128)
+        ms = (time.perf_counter()-t0)*1000; self._n+=1; self._ms+=ms
+        
+        text = (r.get("text") or "").strip()
+        return text if text else "Rollout plan calculated safely."
+
+    async def narrate_proof_report(self, summary_stats: dict) -> str:
+        prompt = (
+            "Session Metrics Summary:\n"
+            f"- Data points captured: {summary_stats.get('total_ticks', 0)}\n"
+            f"- Average structural surprise score: {summary_stats.get('mean_surprise', 0):.2f}\n"
+            f"- Talker events localized: {', '.join(summary_stats.get('talker_events', [])) or 'None'}\n"
+            f"- Entity occlusion/recovery operations: {summary_stats.get('recoveries', 0)} "
+            f"out of {summary_stats.get('occlusions', 0)} attempts\n"
+            f"- Average planning latency: {summary_stats.get('planning_latency', 0):.2f}ms\n\n"
+            "Analyze these performance statistics and write a coherent, highly detailed paragraph summarizing the session's stability and overall perception quality."
+        )
+
+        t0 = time.perf_counter()
+        r = await self._call(prompt=prompt, image_base64=None, system=_PROOF_REPORT_SYSTEM, max_tokens=256)
+        ms = (time.perf_counter()-t0)*1000; self._n+=1; self._ms+=ms
+        
+        text = (r.get("text") or "").strip()
+        return text if text else "No narration could be generated for this proof report."
 
     @property
     def mean_latency_ms(self): return self._ms/self._n if self._n else 0.0

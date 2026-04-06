@@ -680,6 +680,42 @@ class SmetiDB(ObservationStore):
             _logger.warning("audio_faiss_search failed: %s", exc)
             return []
 
+    def cross_modal_audio_to_visual(self, projected_emb_384: np.ndarray, top_k: int = 10) -> list[dict]:
+        """Search the VISUAL FAISS index using an audio embedding projected into visual space.
+
+        This is the 'hum to find video frame' capability.
+        The projected_emb_384 must be pre-computed by CLAPProjector.project().
+        Returns same schema as visual search results with cross_modal=True marker.
+        """
+        if self._hnsw_visual_index is None or len(self._faiss_media_ids) == 0:
+            return []
+        query = projected_emb_384.astype(np.float32).reshape(1, -1)
+        query = query / (np.linalg.norm(query) + 1e-9)
+        try:
+            k = min(top_k, len(self._faiss_media_ids))
+            if self._hnsw_visual_index.ntotal == 0:
+                return []
+            k = min(k, self._hnsw_visual_index.ntotal)
+            scores, indices = self._hnsw_visual_index.search(query, k)
+            results = []
+            for i in range(indices.shape[1]):
+                idx = int(indices[0][i])
+                if idx < 0 or idx >= len(self._faiss_media_ids):
+                    continue
+                # HNSW uses L2 distance; convert to cosine for unit vectors: cos = 1 - L2^2/2
+                score = 1.0 - float(scores[0][i]) / 2.0
+                results.append({
+                    'media_id': self._faiss_media_ids[idx],
+                    'score': score,
+                    'rank': len(results) + 1,
+                    'modality': 'audio-to-visual',
+                    'cross_modal': True,
+                })
+            return results
+        except Exception as e:
+            _logger.warning("cross_modal_audio_to_visual: search failed: %s", e)
+            return []
+
     def _serialize_depth_strata(self, depth_strata: DepthStrataMap | None) -> str | None:
         if depth_strata is None:
             return None

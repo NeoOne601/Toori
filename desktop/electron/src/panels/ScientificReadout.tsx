@@ -136,9 +136,10 @@ export default function ScientificReadout({
         )}
         {rollout ? (
           <div className="camera-health panel--comparison">
-            <strong>{rollout.summary}</strong>
-            <p>
-              Passive continuity stays visible above. This layer compares the current best action branch against fallback recovery routes without relying on cloud reasoning.
+            <span className="chip chip--narrator">Gemma 4 Narrator</span>
+            <strong style={{ display: "block", marginTop: "var(--space-xs)" }}>{rollout.summary}</strong>
+            <p className="muted" style={{ marginTop: "var(--space-xs)" }}>
+              The world model compares the current best action branch (Plan A) against fallback recovery routes (Plan B) to ensure continuity without relying on cloud reasoning.
             </p>
           </div>
         ) : null}

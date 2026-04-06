@@ -1317,7 +1317,7 @@ textarea {
   align-items: end;
   justify-content: center;
   gap: 0.22rem;
-  min-height: 132px;
+  height: 132px;
   width: 100%;
   border-radius: 18px;
   padding: 0.45rem 0.35rem 0.15rem;

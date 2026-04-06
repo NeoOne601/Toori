@@ -296,6 +296,32 @@ export function useWorldState({
             }
           : current,
       );
+      
+      if (result.comparison) {
+        runtimeRequest<{ summary: string }>("/v1/planning/rollout/narrate", "POST", result)
+          .then((narrated) => {
+            if (narrated?.summary && !narrated.summary.startsWith("Gemma 4 narrator is visually unavailable") && !narrated.summary.startsWith("Rollout plan calculated safely")) {
+              setLatestRollout((current) => 
+                current ? { ...current, summary: narrated.summary } : current
+              );
+              setWorldState((current) => {
+                if (!current?.current?.conditioned_rollouts) return current;
+                return {
+                  ...current,
+                  current: {
+                    ...current.current,
+                    conditioned_rollouts: {
+                      ...current.current.conditioned_rollouts,
+                      summary: narrated.summary
+                    }
+                  }
+                };
+              });
+            }
+          })
+          .catch((e) => console.warn("Rollout narration skipped:", e));
+      }
+
       setStatus(result.comparison.summary || "Rollout updated");
       return result;
     } catch (error) {

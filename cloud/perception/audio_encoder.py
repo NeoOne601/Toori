@@ -205,22 +205,37 @@ class AudioEncoder:
     # Silence detection threshold (RMS)
     SILENCE_THRESHOLD: float = 0.001
 
-    def encode_array(self, pcm: np.ndarray, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    def encode_array(self, pcm: np.ndarray, sample_rate: int = SAMPLE_RATE, project_to_visual: bool = False) -> np.ndarray:
         """
         Encode a float32 PCM waveform to a 384-dim unit embedding.
 
         Args:
-            pcm:         1-D (or 2-D mono/stereo) float32 numpy array.
-            sample_rate: Original sample rate; resampled to 16000 internally.
+            pcm:              1-D (or 2-D mono/stereo) float32 numpy array.
+            sample_rate:      Original sample rate; resampled to 16000 internally.
+            project_to_visual: If True, project the audio embedding into DINOv2
+                              visual space via CLAPProjector (cross-modal retrieval).
+                              Requires CLAPProjector weights to be available.
+                              Falls back to same-modal embedding on failure.
 
         Returns:
             np.ndarray shape (384,), float32, L2-normalized.
         """
         try:
-            return _encode_array(pcm, sample_rate)
+            mel_embedding = _encode_array(pcm, sample_rate)
         except Exception as exc:
             _log.warning("AudioEncoder.encode_array failed: %s", exc)
             raise ValueError(f"AudioEncoder failed: {exc}") from exc
+
+        if project_to_visual:
+            try:
+                from cloud.perception.clap_projector import CLAPProjector
+                if CLAPProjector.is_available():
+                    projector = CLAPProjector(CLAPProjector.default_weights_path())
+                    return projector.project(mel_embedding)
+            except Exception as e:
+                import logging as _lg
+                _lg.getLogger(__name__).debug("CLAP projection failed, returning same-modal embedding: %s", e)
+        return mel_embedding
 
     def encode(self, waveform: np.ndarray, sample_rate: int = SAMPLE_RATE) -> AudioEmbedding:
         """Compatibility endpoint for Sprint 6 tests."""

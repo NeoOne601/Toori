@@ -542,9 +542,10 @@ class RuntimeContainer:
 
     async def audio_query(self, request: "AudioQueryRequest") -> "AudioQueryResponse":
         """
-        Query Smriti using audio embedding (Phase 1: same-modal retrieval).
-        The same AudioEncoder used during ingestion is applied to the query audio,
-        ensuring consistent cosine similarity in the audio embedding space.
+        Query Smriti using audio embedding.
+        Phase 1 (default): same-modal retrieval in audio embedding space.
+        Phase 2 (cross_modal=True): project audio into visual embedding space via CLAP,
+        then search visual FAISS index — enables 'hum to find video frame'.
         """
         import time
         t0 = time.perf_counter()
@@ -573,14 +574,35 @@ class RuntimeContainer:
                 encoder="unavailable"
             )
 
-        # Search audio FAISS sub-index
-        raw_hits = self.smriti_db.audio_faiss_search(query_emb, top_k=request.top_k)
+        # Cross-modal or same-modal search
+        if request.cross_modal:
+            try:
+                from cloud.perception.clap_projector import CLAPProjector
+                if CLAPProjector.is_available():
+                    projector = CLAPProjector(CLAPProjector.default_weights_path())
+                    # CLAPProjector expects 512-dim CLAP embedding; pad 384-dim audio embedding
+                    clap_input = np.zeros(512, dtype=np.float32)
+                    clap_input[:query_emb.shape[0]] = query_emb
+                    projected_emb = projector.project(clap_input)
+                    raw_hits = self.smriti_db.cross_modal_audio_to_visual(projected_emb, top_k=request.top_k)
+                    encoder_label = "clap-cross-modal"
+                else:
+                    raw_hits = self.smriti_db.audio_faiss_search(query_emb, top_k=request.top_k)
+                    encoder_label = "audio-same-modal-fallback-no-clap"
+            except Exception as e:
+                get_logger("runtime").warning("cross_modal_query_failed", error=str(e))
+                raw_hits = self.smriti_db.audio_faiss_search(query_emb, top_k=request.top_k)
+                encoder_label = "audio-same-modal-fallback-exception"
+        else:
+            raw_hits = self.smriti_db.audio_faiss_search(query_emb, top_k=request.top_k)
+            encoder_label = "audio_jepa_phase1"
 
         # Enrich hits with media metadata
         results = []
         for hit in raw_hits:
             media_id = hit["media_id"]
-            audio_score = hit["audio_score"]
+            # Cross-modal hits use 'score', same-modal use 'audio_score'
+            audio_score = hit.get("audio_score", hit.get("score", 0.0))
 
             # Apply confidence filter
             if audio_score < request.confidence_min:
@@ -642,7 +664,7 @@ class RuntimeContainer:
             query_audio_energy=round(query_energy, 4),
             index_size=index_size,
             latency_ms=round(elapsed_ms, 1),
-            encoder="audio_jepa_phase1"
+            encoder=encoder_label
         )
 
     def smriti_recall_feedback(
@@ -1428,11 +1450,24 @@ class RuntimeContainer:
             ready=bool(prediction.size),
         )
 
-    def generate_proof_report(self, session_id: str, chart_b64: str | None = None) -> ProofReportResponse:
-        from .proof_report import generate_proof_report
+    async def generate_proof_report(self, session_id: str, chart_b64: str | None = None) -> ProofReportResponse:
+        from .proof_report import generate_proof_report, aggregate_stats
 
         ticks = list(self._jepa_ticks_by_session.get(session_id, deque()))
-        path = generate_proof_report(ticks=ticks, session_id=session_id, chart_b64=chart_b64)
+        stats = aggregate_stats(ticks)
+        
+        narration_text = "Analysis skipped due to provider unavailability."
+        try:
+            mlx_p = self.providers.get("mlx")
+            if mlx_p and mlx_p.ready:
+                from .gemma4_bridge import Gemma4Bridge
+                bridge = Gemma4Bridge(mlx_p)
+                narration_text = await bridge.narrate_proof_report(stats)
+        except Exception as e:
+            get_logger("runtime").warning("proof_report_narration_failed", error=str(e))
+            narration_text = f"Analysis failed: {e}"
+
+        path = generate_proof_report(ticks=ticks, session_id=session_id, narration_text=narration_text, chart_b64=chart_b64)
         self._latest_proof_report = Path(path)
         return ProofReportResponse(session_id=session_id, path=str(path), generated=True)
 

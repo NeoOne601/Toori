@@ -373,6 +373,24 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         return app.state.runtime.plan_rollout(payload)
 
     @app.post(
+        "/v1/planning/rollout/narrate",
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("planning.rollout.narrate"))],
+    )
+    async def narrate_rollout(payload: dict):
+        try:
+            from .gemma4_bridge import Gemma4Bridge
+            mlx_p = app.state.runtime.providers.get("mlx")
+            if not mlx_p:
+                return {"summary": "Gemma 4 narrator is visually unavailable."}
+            bridge = Gemma4Bridge(mlx_p)
+            text = await bridge.narrate_rollout(payload)
+            return {"summary": text}
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Narrate rollout failed: %s", e)
+            return {"summary": "Rollout plan calculated safely."}
+
+    @app.post(
         "/v1/benchmarks/recovery/run",
         response_model=RecoveryBenchmarkRun,
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("benchmarks.recovery.run"))],
@@ -402,8 +420,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         "/v1/proof-report/generate",
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("proof_report.generate"))],
     )
-    def generate_proof_report(payload: ProofReportGenerateRequest):
-        return app.state.runtime.generate_proof_report(payload.session_id, payload.chart_b64)
+    async def generate_proof_report(payload: ProofReportGenerateRequest):
+        return await app.state.runtime.generate_proof_report(payload.session_id, payload.chart_b64)
 
     @app.post(
         "/v1/share/observation",

@@ -100,6 +100,7 @@ toori/
 │                              av>=12, watchdog>=4)
 ├── cloud/perception/          Torch-isolated (numpy/onnx/coreml) perception models
 │   ├── audio_encoder.py       AudioEncoder (numpy Mel-spec, 384-dim, PyAV decode)
+│   ├── clap_projector.py      CLAPProjector (CLAP 512→DINOv2 384 cross-modal projection, numpy)
 │   ├── vjepa2_encoder.py      Safe, lazy-loading interface for vjepa2
 │   ├── vits14_onnx_encoder.py Honest V-JEPA2 fallback (ViT-S/14 ONNX real patches)
 │   └── ...                    (dinov2, sam)
@@ -187,6 +188,7 @@ Rate limiting: 20 req/s burst 60 globally; 5 req/s burst 10 for `/v1/smriti/reca
 | GET | `/v1/smriti/watch-folders` | List watch folder statuses |
 | POST | `/v1/smriti/watch-folders` | Add watch folder |
 | DELETE | `/v1/smriti/watch-folders` | Remove watch folder |
+| POST | `/v1/audio/query` | Audio query; `cross_modal=true` enables CLAP audio→visual retrieval |
 | POST | `/v1/smriti/storage/prune` | Prune old/missing/failed media |
 | POST | `/v1/smriti/storage/migrate` | Copy-first data migration |
 
@@ -620,12 +622,13 @@ Update SDK when any of these change:
 ## Recommended Work Areas (Current State)
 
 1. **Audio-JEPA Phase 1 (Completed)** — Implemented robust, non-blocking `AudioEncoder` (numpy/PyAV fixed seed `20260327`), migrated schema to v3, integrated FAISS sub-index, wired into `SmritiIngestionDaemon`, and added the `/v1/audio/query` API endpoint for same-modal retrieval. Phase 1 Frontend UI is also complete.
-2. **Audio-JEPA Phase 2** — CLAP projection head for cross-modal audio-visual retrieval (hum to find video frame)
-3. **Federated Setu-2** — W-matrix is persisted to SQLite
-4. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
-5. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
-6. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
-7. **Keep planning/recovery backend stable** before widening the client surface
+2. **Audio-JEPA Phase 2 (Completed)** — `CLAPProjector` (`cloud/perception/clap_projector.py`) maps LAION-CLAP 512-dim embeddings into DINOv2-ViT-S/14 384-dim visual space via a 2-layer MLP (Linear→LeakyReLU→LayerNorm→Linear→L2-norm). Pure numpy inference, no torch. `cross_modal=true` on `/v1/audio/query` projects audio into visual space and searches the visual FAISS HNSW index — enabling 'hum to find video frame'. Random-init weights available via `scripts/train_clap_projector.py --random-init`. Falls back gracefully to same-modal audio search when CLAP weights unavailable.
+3. **CLAP training data collection** — Gather paired (audio, video frame) datasets for contrastive training (`scripts/train_clap_projector.py --audio-dir --frames-dir`) to unlock true cross-modal semantics beyond the random-init baseline.
+4. **Federated Setu-2** — W-matrix is persisted to SQLite
+5. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
+6. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
+7. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
+8. **Keep planning/recovery backend stable** before widening the client surface
 
 ---
 

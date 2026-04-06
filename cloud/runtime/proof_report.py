@@ -1,103 +1,112 @@
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+from fpdf import FPDF
 
 from .models import JEPATick
 
 
-def _html_escape(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
+class ProofReportPDF(FPDF):
+    def header(self):
+        self.set_font("Helvetica", "B", 18)
+        self.cell(0, 10, "Toori Proof Report", align="C")
+        self.ln(15)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Helvetica", "I", 8)
+        self.cell(0, 10, f"Page {self.page_no()}", align="C")
 
 
-def _build_html(ticks: Iterable[JEPATick], session_id: str, chart_b64: str | None = None) -> str:
-    ticks = list(ticks)
+def aggregate_stats(ticks: list[JEPATick]) -> dict:
     mean_energy = [float(tick.mean_energy) for tick in ticks]
     sigreg = [float(tick.sigreg_loss) for tick in ticks]
     talker_events = [tick.talker_event for tick in ticks if tick.talker_event]
     recovered = sum(1 for tick in ticks for track in tick.entity_tracks if track.status == "re-identified")
     occluded = sum(1 for tick in ticks for track in tick.entity_tracks if track.status == "occluded")
     planning = [float(tick.planning_time_ms) for tick in ticks]
-    fingerprint_dim = len(ticks[-1].session_fingerprint) if ticks else 0
-    chart_html = ""
+    
+    return {
+        "total_ticks": len(ticks),
+        "mean_surprise": np.mean(mean_energy) if mean_energy else 0.0,
+        "mean_sigreg": np.mean(sigreg) if sigreg else 0.0,
+        "talker_events": talker_events,
+        "recoveries": recovered,
+        "occlusions": occluded,
+        "planning_latency": np.mean(planning) if planning else 0.0,
+        "fingerprint_dim": len(ticks[-1].session_fingerprint) if ticks else 0
+    }
+
+
+def generate_proof_report(
+    ticks: list[JEPATick],
+    session_id: str,
+    narration_text: str,
+    chart_b64: str | None = None
+) -> Path:
+    stats = aggregate_stats(ticks)
+    
+    pdf = ProofReportPDF()
+    pdf.add_page()
+    
+    # Session ID
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 10, f"Session ID: {session_id}")
+    pdf.ln(12)
+    
+    # Gemma 4 Analysis Section
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(0, 10, " Gemma 4 Analysis Report", fill=True)
+    pdf.ln(12)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 6, narration_text)
+    pdf.ln(10)
+    
+    # Mathematical Metrics Section
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, " Core Metrics Details", fill=True)
+    pdf.ln(10)
+
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 8, f"- Ticks captured: {stats['total_ticks']}")
+    pdf.ln(6)
+    pdf.cell(0, 8, f"- Mean spatial surprise: {stats['mean_surprise']:.3f}")
+    pdf.ln(6)
+    pdf.cell(0, 8, f"- Mean SIGReg health: {stats['mean_sigreg']:.3f}")
+    pdf.ln(6)
+    pdf.cell(0, 8, f"- Tracker occlusion recoveries: {stats['recoveries']} out of {stats['occlusions']} observed")
+    pdf.ln(6)
+    talkers = ", ".join(stats["talker_events"][:10]) if stats["talker_events"] else "None recorded"
+    if len(stats["talker_events"]) > 10:
+        talkers += "..."
+    pdf.cell(0, 8, f"- Talker event log: {talkers}")
+    pdf.ln(6)
+    pdf.cell(0, 8, f"- Average JEPA planning time: {stats['planning_latency']:.2f} ms")
+    pdf.ln(6)
+    pdf.cell(0, 8, f"- Structural fingerprint dimensions: {stats['fingerprint_dim']}")
+    pdf.ln(12)
+
+    # Chart
     if chart_b64:
-        chart_html = f'<img alt="Chart" style="max-width:100%;border-radius:12px;" src="data:image/png;base64,{chart_b64}" />'
-    return f"""
-    <html>
-      <body style="font-family:Arial,sans-serif;padding:24px;color:#101828;">
-        <h1>Toori Proof Report</h1>
-        <p><strong>Session:</strong> {_html_escape(session_id)}</p>
-        <h2>Summary</h2>
-        <p>Ticks captured: {len(ticks)} | Mean surprise: {np.mean(mean_energy) if mean_energy else 0.0:.3f}</p>
-        <h2>SigReg Health</h2>
-        <p>Mean SIGReg: {np.mean(sigreg) if sigreg else 0.0:.3f}</p>
-        <h2>Talker Event Log</h2>
-        <p>{_html_escape(', '.join(talker_events) if talker_events else 'No talker events recorded')}</p>
-        <h2>Occlusion Recovery</h2>
-        <p>Occluded tracks observed: {occluded} | Recoveries observed: {recovered}</p>
-        <h2>Baseline Chart</h2>
-        {chart_html or '<p>No external chart snapshot supplied.</p>'}
-        <h2>Fingerprint</h2>
-        <p>Fingerprint dimensionality: {fingerprint_dim}</p>
-        <h2>Planning Speed</h2>
-        <p>Average JEPA planning time: {np.mean(planning) if planning else 0.0:.2f} ms</p>
-      </body>
-    </html>
-    """
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, " JEPA Rollout / Baseline Tracking Chart", fill=True)
+        pdf.ln(15)
+        try:
+            chart_bytes = base64.b64decode(chart_b64)
+            img = io.BytesIO(chart_bytes)
+            # Center the image roughly
+            pdf.image(img, x=15, w=180)
+        except Exception:
+            pdf.set_font("Helvetica", "I", 10)
+            pdf.cell(0, 10, "Error rendering chart image.")
 
-
-def _fallback_pdf_bytes(html: str) -> bytes:
-    text = html.replace("\n", " ").strip()[:4000]
-    text = text.replace("(", "[").replace(")", "]")
-    body = f"BT /F1 10 Tf 40 760 Td ({text}) Tj ET"
-    objects = [
-        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
-        "2 0 obj << /Type /Pages /Count 1 /Kids [3 0 R] >> endobj",
-        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj",
-        f"4 0 obj << /Length {len(body)} >> stream\n{body}\nendstream endobj",
-        "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
-    ]
-    pdf = "%PDF-1.4\n"
-    offsets = [0]
-    for obj in objects:
-        offsets.append(len(pdf.encode("latin-1")))
-        pdf += f"{obj}\n"
-    xref_offset = len(pdf.encode("latin-1"))
-    pdf += f"xref\n0 {len(objects) + 1}\n"
-    pdf += "0000000000 65535 f \n"
-    for offset in offsets[1:]:
-        pdf += f"{offset:010d} 00000 n \n"
-    pdf += f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF"
-    return pdf.encode("latin-1", errors="ignore")
-
-
-def _render_pdf_bytes(html: str) -> bytes:
-    try:
-        from weasyprint import HTML
-
-        pdf_bytes = HTML(string=html).write_pdf()
-        if not isinstance(pdf_bytes, (bytes, bytearray)):
-            raise TypeError("write_pdf() returned a non-bytes payload")
-        pdf_bytes = bytes(pdf_bytes)
-        if not pdf_bytes.startswith(b"%PDF"):
-            raise ValueError("write_pdf() did not return a valid PDF")
-        return pdf_bytes
-    except Exception:
-        return _fallback_pdf_bytes(html)
-
-
-def generate_proof_report(ticks: list[JEPATick], session_id: str, chart_b64: str | None = None) -> Path:
     output_path = Path(f"/tmp/toori_proof_{session_id}.pdf")
-    html = _build_html(ticks=ticks, session_id=session_id, chart_b64=chart_b64)
-    pdf_bytes = _render_pdf_bytes(html)
-    output_path.write_bytes(pdf_bytes)
+    pdf.output(str(output_path))
     return output_path
