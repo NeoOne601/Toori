@@ -43,6 +43,15 @@ def _is_test_environment() -> bool:
     return env == "test"
 
 
+def _is_vjepa2_disabled() -> bool:
+    return os.environ.get("TOORI_VJEPA2_DISABLE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 DEFAULT_MODEL_ID = "facebook/vjepa2-vitl-fpc64-256"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 
@@ -74,23 +83,59 @@ def _resolve_model_id() -> str:
     env_val = os.environ.get("TOORI_VJEPA2_MODEL", "").strip()
     if env_val:
         if env_val.startswith(("~", "/")):
-            resolved = Path(env_val).expanduser()
-            if resolved.exists():
-                return str(resolved.resolve())
-            return DEFAULT_MODEL_ID
+            return str(Path(env_val).expanduser().resolve())
         return env_val
 
     settings = _load_settings_json()
     configured = str(settings.get("vjepa2_model_path", "") or "").strip()
     if configured:
         if configured.startswith(("~", "/")):
-            resolved = Path(configured).expanduser()
-            if resolved.exists():
-                return str(resolved.resolve())
-            return DEFAULT_MODEL_ID
+            return str(Path(configured).expanduser().resolve())
         return configured
 
     return DEFAULT_MODEL_ID
+
+
+def _resolve_cache_dir() -> Path:
+    env_val = os.environ.get("TOORI_VJEPA2_CACHE_DIR", "").strip()
+    if env_val:
+        return Path(env_val).expanduser().resolve()
+
+    settings = _load_settings_json()
+    configured = str(settings.get("vjepa2_cache_dir", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    return DEFAULT_CACHE_DIR
+
+
+def _cache_roots(cache_dir: Path) -> list[Path]:
+    resolved = cache_dir.expanduser().resolve()
+    if resolved.name == "hub":
+        return [resolved]
+    return [resolved, resolved / "hub"]
+
+
+def has_local_vjepa2_weights(
+    model_id: str | None = None,
+    cache_dir: Path | None = None,
+) -> bool:
+    if _is_vjepa2_disabled():
+        return False
+    resolved_model = model_id or _resolve_model_id()
+    if resolved_model.startswith(("~", "/")):
+        return Path(resolved_model).expanduser().exists()
+
+    resolved_cache_dir = cache_dir or _resolve_cache_dir()
+    repo_key = resolved_model.replace("/", "--")
+    for root in _cache_roots(resolved_cache_dir):
+        snapshots_dir = root / f"models--{repo_key}" / "snapshots"
+        try:
+            if snapshots_dir.exists() and any(path.is_dir() for path in snapshots_dir.iterdir()):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _resolve_n_frames() -> int:
@@ -114,6 +159,9 @@ def _resolve_n_frames() -> int:
         if n != 0:
             return n
 
+    forced_device = os.environ.get("TOORI_VJEPA2_DEVICE", "").strip().lower()
+    if forced_device == "cpu":
+        return 4
     return 4 if _is_test_environment() else 8
 
 
@@ -138,6 +186,8 @@ _encoder_singleton: Optional["VJepa2Encoder"] = None
 
 def get_vjepa2_encoder() -> "VJepa2Encoder":
     global _encoder_singleton
+    if _is_vjepa2_disabled():
+        raise RuntimeError("V-JEPA2 disabled by TOORI_VJEPA2_DISABLE")
     if _encoder_singleton is None:
         _encoder_singleton = VJepa2Encoder()
     return _encoder_singleton
@@ -171,11 +221,13 @@ class VJepa2Encoder:
         from cloud.runtime.observability import get_logger
         self.log = get_logger("vjepa2_encoder")
         self._model_id = _resolve_model_id()
+        self._cache_dir = _resolve_cache_dir()
         self._n_frames = _resolve_n_frames()
         self.device = _get_device()
         self._model = None
         self._processor = None
         self._loaded = False
+        self._load_error: str | None = None
 
         rng = np.random.default_rng(PROJECTION_SEED)
         proj = rng.standard_normal((1024, TARGET_DIM)).astype(np.float32)
@@ -187,6 +239,7 @@ class VJepa2Encoder:
             device=str(self.device),
             n_frames=self._n_frames,
             model=self._model_id,
+            cache_dir=str(self._cache_dir),
             test_mode=_is_test_environment(),
             message="V-JEPA 2 encoder initialized (lazy load — weights load on first encode())",
         )
@@ -194,14 +247,44 @@ class VJepa2Encoder:
     def _load(self) -> None:
         if self._loaded:
             return
+        if self._load_error is not None:
+            raise RuntimeError(self._load_error)
         import torch
         from transformers import AutoVideoProcessor, AutoModel
 
         self.log.info("vjepa2_loading", model=self._model_id)
-        self._processor = AutoVideoProcessor.from_pretrained(self._model_id)
-        self._model = AutoModel.from_pretrained(
-            self._model_id, dtype=torch.float16,
-        ).to(self.device).eval()
+        try:
+            self._processor = AutoVideoProcessor.from_pretrained(
+                self._model_id,
+                cache_dir=str(self._cache_dir),
+                local_files_only=True,
+            )
+            self._model = AutoModel.from_pretrained(
+                self._model_id,
+                dtype=torch.float16,
+                cache_dir=str(self._cache_dir),
+                local_files_only=True,
+            ).to(self.device).eval()
+        except Exception as exc:
+            if self._model is not None:
+                del self._model
+                self._model = None
+            if self._processor is not None:
+                del self._processor
+                self._processor = None
+            _force_full_gc()
+            if str(self._model_id).startswith(("~", "/")):
+                self._load_error = (
+                    f"V-JEPA2 local weights unavailable at {self._model_id}. "
+                    "Configure a valid local model path or use the ViT-S/14 ONNX fallback."
+                )
+            else:
+                self._load_error = (
+                    f"V-JEPA2 weights for {self._model_id} are not cached locally. "
+                    "Remote Hugging Face downloads are disabled at runtime; use cached/local weights or the ViT-S/14 ONNX fallback."
+                )
+            self.log.warning("vjepa2_local_load_failed", model=self._model_id, error=str(exc))
+            raise RuntimeError(self._load_error) from exc
 
         dummy = np.zeros((self._n_frames, FRAME_RES, FRAME_RES, 3), dtype=np.uint8)
         dummy_in = self._processor(dummy, return_tensors="pt").to(self.device)
@@ -220,6 +303,7 @@ class VJepa2Encoder:
         _force_full_gc()
 
         self._loaded = True
+        self._load_error = None
         self.log.info("vjepa2_loaded", model=self._model_id, device=str(self.device),
                  n_frames=self._n_frames, encoder_dim=enc_dim)
 
@@ -240,6 +324,7 @@ class VJepa2Encoder:
             self._projection = None
         _force_full_gc()
         self._loaded = False
+        self._load_error = None
 
     def _flush_after_forward(self, *tensors_to_delete) -> None:
         import torch

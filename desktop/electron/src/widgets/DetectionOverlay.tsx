@@ -34,7 +34,7 @@ export default function DetectionOverlay({
 
   const visibleBoxes =
     uiMode === "consumer"
-      ? [...boxes].sort((left, right) => (right.score ?? 0) - (left.score ?? 0)).slice(0, 12)
+      ? [...boxes].sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
       : boxes;
 
   return (

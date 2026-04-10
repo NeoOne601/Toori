@@ -2,8 +2,19 @@ import { TABS } from "../constants";
 import { useDesktopApp } from "../state/DesktopAppContext";
 import { Gemma4StatusBadge } from "../components/Gemma4Panel";
 
+function featureStateLabel(item: { enabled: boolean; healthy: boolean; message?: string | null }) {
+  if (!item.enabled) {
+    return "off";
+  }
+  if (item.healthy) {
+    return "active";
+  }
+  return /awaiting|warmup|warming up|connecting/i.test(item.message || "") ? "waiting" : "degraded";
+}
+
 export default function NavSidebar() {
   const app = useDesktopApp();
+  const runtimeAvailable = app.world.runtimeAvailable;
 
   return (
     <aside className="nav">
@@ -28,11 +39,11 @@ export default function NavSidebar() {
             </div>
             <div className="status-metric">
               <span>Providers</span>
-              <strong>{app.readyProviders} ready / {app.world.health.length || 0}</strong>
+              <strong>{runtimeAvailable ? `${app.readyProviders} ready / ${app.world.health.length || 0}` : app.runtimeConnectionLabel}</strong>
             </div>
             <div className="status-metric">
-              <span>Fallbacks</span>
-              <strong>{app.degradedProviders}</strong>
+              <span>Degraded</span>
+              <strong>{runtimeAvailable ? app.degradedProviders : "—"}</strong>
             </div>
           </div>
           <button className="secondary-link" onClick={() => app.setActiveTab("Integrations")}>
@@ -53,7 +64,7 @@ export default function NavSidebar() {
         <div className="sidebar-health">
           {(() => {
             const mlxHealth = app.world.health?.find((h: any) => h.name === "mlx");
-            const isAvailable = mlxHealth?.healthy ?? false;
+            const isAvailable = runtimeAvailable && (mlxHealth?.healthy ?? false);
             return (
               <Gemma4StatusBadge 
                 available={isAvailable}
@@ -67,6 +78,12 @@ export default function NavSidebar() {
             <div key={item.name} className="health-badge" data-healthy={item.healthy}>
               <span>{item.name}</span>
               <strong>{item.healthy ? "ready" : "degraded"}</strong>
+            </div>
+          ))}
+          {app.topFeatureHealth.map((item) => (
+            <div key={item.name} className="health-badge" data-healthy={item.healthy}>
+              <span>{item.name}</span>
+              <strong>{featureStateLabel(item)}</strong>
             </div>
           ))}
         </div>

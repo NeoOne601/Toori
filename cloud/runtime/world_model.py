@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+import re
 from statistics import mean
 from typing import Iterable
 from uuid import uuid4
@@ -60,6 +61,33 @@ STOP_WORDS = {
 }
 
 NON_ENTITY_TOKENS = {
+    "entity",
+    "object",
+    "objects",
+    "thing",
+    "things",
+    "tracked",
+    "track",
+    "tracks",
+    "region",
+    "regions",
+    "proposal",
+    "proposals",
+    "box",
+    "boxes",
+    "candidate",
+    "candidates",
+    "descriptor",
+    "descriptors",
+    "label",
+    "labels",
+    "rgb",
+    "histogram",
+    "histograms",
+    "basic",
+    "onnx",
+    "perception",
+    "vector",
     "bright",
     "dark",
     "balanced",
@@ -88,8 +116,6 @@ NON_ENTITY_TOKENS = {
     "occluded",
     "reidentified",
     "re-identified",
-    "onnx",
-    "basic",
     "cloud",
     "mlx",
     "coreml",
@@ -98,6 +124,33 @@ NON_ENTITY_TOKENS = {
     "perception",
     "reasoning",
 }
+
+RELATION_PHRASES = (
+    " near ",
+    " behind ",
+    " left of ",
+    " right of ",
+    " above ",
+    " below ",
+    " in front of ",
+    " next to ",
+    " beside ",
+    " with ",
+    " on top of ",
+)
+
+ABSURD_LABELS = {
+    "hot dog near velvet",
+    "hand plane near windsor tie",
+    "lemon near bra",
+    "rgb histogram+edge histogram",
+    "rgb histogram edge histogram",
+    "dominant color",
+    "brightness label",
+    "edge label",
+}
+
+PLACEHOLDER_LABEL_RE = re.compile(r"^(?:entity|proposal|candidate|tracked(?: region| object)?|object)\s*[-_ ]*\d*$")
 
 LIVE_CHALLENGE_GUIDE = [
     "Show a stable object to the lens for a few ticks.",
@@ -201,18 +254,33 @@ def _metadata_labels(observation: Observation) -> list[str]:
     metadata = _metadata_dict(observation)
     labels: list[str] = []
     primary = metadata.get("primary_object_label")
-    if primary:
-        labels.append(str(primary))
+    primary_label = _meaningful_label(primary)
+    if primary_label:
+        labels.append(primary_label)
     summary_candidates = metadata.get("summary_candidates")
     if isinstance(summary_candidates, list):
-        labels.extend(str(item) for item in summary_candidates if item)
-    labels.extend(box.label for box in _metadata_boxes(observation) if box.label)
+        labels.extend(_meaningful_label(item) for item in summary_candidates if _meaningful_label(item))
+    labels.extend(_meaningful_label(box.label) for box in _metadata_boxes(observation) if _meaningful_label(box.label))
     return ordered_unique(normalize_token(label) for label in labels if label)
 
 
 def _meaningful_label(label: object) -> str:
-    tokens = [token for token in normalize_token(str(label or "")).split() if len(token) >= 3 and token not in NON_ENTITY_TOKENS]
-    return " ".join(tokens)
+    normalized = normalize_token(str(label or ""))
+    if not normalized:
+        return ""
+    if normalized in ABSURD_LABELS or PLACEHOLDER_LABEL_RE.match(normalized):
+        return ""
+    if any(phrase in normalized for phrase in RELATION_PHRASES):
+        return ""
+    if "histogram" in normalized or "descriptor" in normalized:
+        return ""
+    tokens = [token for token in normalized.split() if len(token) >= 3 and token not in NON_ENTITY_TOKENS]
+    if not tokens:
+        return ""
+    candidate = " ".join(tokens[:4])
+    if candidate in ABSURD_LABELS or PLACEHOLDER_LABEL_RE.match(candidate):
+        return ""
+    return candidate
 
 
 def _strip_caption_boilerplate(text: str) -> str:
@@ -262,11 +330,12 @@ def build_object_summary(
         if box.label and _meaningful_label(box.label)
     )
     full_label = _meaningful_label(provider_metadata.get("top_label") or "")
+    metadata_labels = _metadata_labels(observation)
     candidate_labels = ordered_unique(
         [
-            *proposal_labels,
             full_label,
-            *[label for label in _metadata_labels(observation) if label not in proposal_labels],
+            *metadata_labels,
+            *[label for label in proposal_labels if label not in metadata_labels],
         ]
     )
     primary_label = candidate_labels[0] if candidate_labels else ""
@@ -278,21 +347,13 @@ def build_object_summary(
             if "person" in primary_label and any(label in {"chair", "seat", "sofa", "couch"} for label in secondary_labels):
                 seat = next(label for label in secondary_labels if label in {"chair", "seat", "sofa", "couch"})
                 summary = f"{primary_label} seated on {seat}"
-            elif secondary_labels[0] not in primary_label:
-                summary = f"{primary_label} near {secondary_labels[0]}"
-        source = "proposals" if proposal_labels else "perception"
+        source = "perception" if full_label else ("metadata" if metadata_labels else "proposals")
     elif answer_text:
         summary = _compress_answer_text(answer_text)
         source = "answer"
     else:
-        descriptor_bits = [
-            str(provider_metadata.get("dominant_color") or "").strip(),
-            str(provider_metadata.get("brightness_label") or "").strip(),
-            str(provider_metadata.get("edge_label") or "").strip(),
-        ]
-        summary = " ".join(bit for bit in descriptor_bits if bit).strip()
-        summary = f"{summary} scene".strip()
-        source = "descriptor"
+        summary = "Observed scene"
+        source = "scene"
 
     if not summary:
         summary = "Observed scene"
@@ -300,6 +361,7 @@ def build_object_summary(
     summary_metadata = {
         "primary_object_label": primary_label or None,
         "secondary_object_labels": secondary_labels,
+        "spatial_relation_candidates": [],
         "summary_candidates": candidate_labels[:6],
         "summary_source": source,
         "proposal_labels": proposal_labels,
@@ -312,14 +374,15 @@ def extract_observed_elements(observation: Observation) -> list[str]:
     perception = metadata.get("perception") if isinstance(metadata, dict) else None
     perception = perception if isinstance(perception, dict) else {}
     values: list[str] = []
-    top_label = str(perception.get("top_label") or "").replace("_", " ").strip()
+    top_label = _meaningful_label(perception.get("top_label"))
     if top_label:
         values.append(top_label)
     primary_object_label = metadata.get("primary_object_label")
-    if primary_object_label:
-        values.append(str(primary_object_label))
+    primary_label = _meaningful_label(primary_object_label)
+    if primary_label:
+        values.append(primary_label)
     values.extend(_metadata_labels(observation))
-    values.extend(observation.tags)
+    values.extend(_meaningful_label(tag) for tag in observation.tags if _meaningful_label(tag))
     values.extend(text_tokens(observation.summary)[:6])
     return ordered_unique(normalize_token(value) for value in values if value)
 
@@ -378,8 +441,20 @@ def _validate_affordances(raw_affordances: object) -> list[GroundedAffordance]:
 
 
 def _label_from_entity_track(track: EntityTrack) -> str:
-    label = _meaningful_label(track.label) or normalize_token(track.label)
-    return label or f"entity {track.id[-4:]}"
+    label = _meaningful_label(track.label)
+    if label:
+        return label
+    metadata = track.metadata if isinstance(track.metadata, dict) else {}
+    for candidate in (
+        metadata.get("caption"),
+        metadata.get("top_label"),
+        metadata.get("open_vocab_label"),
+        metadata.get("primary_object_label"),
+    ):
+        label = _meaningful_label(candidate)
+        if label:
+            return label
+    return "object"
 
 
 def _grounded_entities_from_camera(
@@ -913,7 +988,7 @@ def build_scene_state(
         affordances=affordances,
         candidate_actions=candidate_actions,
     )
-    primary_object_label = str(metadata.get("primary_object_label") or "").strip() or None
+    primary_object_label = _meaningful_label(metadata.get("primary_object_label")) or None
 
     predicted = prediction_window.predicted_tags
     stable_elements = [element for element in observed_elements if element in predicted]
@@ -954,6 +1029,7 @@ def build_scene_state(
     metrics = WorldModelMetrics(
         prediction_consistency=round(prediction_consistency, 4),
         surprise_score=round(clamp_unit(1.0 - prediction_consistency), 4),
+        energy_activation_score=0.0,
         temporal_continuity_score=round(temporal_continuity_score, 4),
         persistence_confidence=round(persistence_signal.persistence_confidence, 4),
         occlusion_recovery_score=round(occlusion_recovery_score, 4),
@@ -1114,6 +1190,7 @@ def build_challenge_run(
     proof_mode: str,
     observations: list[Observation],
     scene_states: list[SceneState],
+    window_label: str | None = None,
 ) -> ChallengeRun:
     comparison = build_baseline_comparison(observations, scene_states)
     success_criteria = {
@@ -1130,9 +1207,42 @@ def build_challenge_run(
         "jepa_hybrid_outperforms_baselines": comparison.winner == "jepa_hybrid",
     }
     met = sum(1 for value in success_criteria.values() if value)
+    resolved_window_label = (
+        window_label
+        or (
+            "live session window"
+            if challenge_set == "live"
+            else "stored challenge window"
+            if challenge_set == "curated"
+            else "latest session window"
+        )
+    )
     summary = (
-        f"Challenge evaluated over {len(scene_states)} world states; {met}/{len(success_criteria)} JEPA criteria met. "
+        f"{resolved_window_label.capitalize()} scored over {len(scene_states)} world states; "
+        f"{met}/{len(success_criteria)} JEPA criteria met. "
         f"{comparison.summary}"
+    )
+    watches: list[str] = []
+    if not success_criteria["surprise_increases_on_change"]:
+        watches.append("introduce a clearer change to separate surprise from steady motion")
+    if not success_criteria["continuity_survives_occlusion"]:
+        watches.append("hold the object steady through partial occlusion before revealing it again")
+    if not success_criteria["identity_recovers_after_reappearance"]:
+        watches.append("return the same object to roughly the same location after occlusion")
+    if not success_criteria["jepa_hybrid_outperforms_baselines"]:
+        watches.append("capture a longer temporal sequence so persistence gains have room to appear")
+    if comparison.winner == "jepa_hybrid":
+        lead = "JEPA / Hybrid leads this run, with stronger continuity memory than the baselines."
+    else:
+        lead = f"{comparison.winner.replace('_', ' ')} leads this run, so the sequence is not yet proving JEPA's temporal advantage."
+    watch_text = (
+        f" Next best action: {watches[0]}."
+        if watches
+        else " The sequence shows the expected change, continuity, and recovery pattern."
+    )
+    narration = (
+        f"{resolved_window_label.capitalize()} reviewed {len(scene_states)} world states. "
+        f"{lead}{watch_text}"
     )
     return ChallengeRun(
         id=f"challenge_{uuid4().hex[:12]}",
@@ -1145,7 +1255,9 @@ def build_challenge_run(
         guide_steps=LIVE_CHALLENGE_GUIDE,
         success_criteria=success_criteria,
         baseline_comparison=comparison,
+        window_label=resolved_window_label,
         summary=summary,
+        narration=narration,
     )
 
 

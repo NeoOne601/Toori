@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Gemma4AlertBanner } from "../components/Gemma4Panel";
 import BaselineBattle from "../components/BaselineBattle";
 import ConsumerMode from "../components/ConsumerMode";
+import EnergySpectrumLegend from "../components/EnergySpectrumLegend";
 import ForecastPanel from "../components/ForecastPanel";
 import OcclusionPanel from "../components/OcclusionPanel";
 import { LIVING_SECTIONS } from "../constants";
@@ -26,15 +27,17 @@ export default function LivingLensTab() {
   const [toolErrors, setToolErrors] = useState("");
   const [toolBusy, setToolBusy] = useState(false);
   const cameraStateLabel =
-    app.cameraConnectionState === "live"
-      ? "Live"
+    app.cameraConnectionState === "blocked"
+      ? "Permission blocked"
       : app.cameraConnectionState === "reconnecting"
         ? "Reconnecting"
-        : app.cameraConnectionState === "blocked"
-          ? "Blocked"
-          : app.cameraConnectionState === "degraded"
-            ? "Degraded"
-            : "Offline";
+        : app.cameraConnectionState === "degraded"
+          ? "Camera degraded"
+          : app.cameraStatusLabel === "camera warming up"
+            ? "Warming up"
+            : app.cameraConnectionState === "live"
+              ? "Live"
+              : "Offline";
 
   const scienceMonitorFooter = (
     <div className="signal-grid">
@@ -72,7 +75,9 @@ export default function LivingLensTab() {
             <input
               type="checkbox"
               checked={app.showEnergyMap}
-              onChange={(event) => app.setShowEnergyMap(event.target.checked)}
+              onChange={(event) => {
+                void app.setShowEnergyMap(event.target.checked);
+              }}
             />
             <span>Energy Map</span>
           </label>
@@ -80,7 +85,9 @@ export default function LivingLensTab() {
             <input
               type="checkbox"
               checked={app.showEntities}
-              onChange={(event) => app.setShowEntities(event.target.checked)}
+              onChange={(event) => {
+                void app.setShowEntities(event.target.checked);
+              }}
             />
             <span>Entities</span>
           </label>
@@ -126,9 +133,10 @@ export default function LivingLensTab() {
           </button>
         </div>
       </header>
+      {app.showEnergyMap ? <EnergySpectrumLegend /> : null}
 
       {app.uiMode === "consumer" ? (
-        <section className="panel-grid lens-grid">
+        <section className="consumer-two-pane">
           <SceneMonitor
             title="Consumer Mode"
             subtitle={app.consumerText}
@@ -139,6 +147,8 @@ export default function LivingLensTab() {
             showEntities={app.showEntities}
             showEnergyMap={app.showEnergyMap}
             energyMap={app.currentJepaTick?.energy_map || []}
+            energyWarmup={Boolean(app.currentJepaTick?.warmup)}
+            energyStatusLabel={app.energyHeatmapStatus}
             ghosts={app.ghostBoxes}
             anchors={app.energyAnchors}
             uiMode="consumer"
@@ -200,6 +210,8 @@ export default function LivingLensTab() {
                   showEntities={app.showEntities}
                   showEnergyMap={app.showEnergyMap}
                   energyMap={app.currentJepaTick?.energy_map || []}
+                  energyWarmup={Boolean(app.currentJepaTick?.warmup)}
+                  energyStatusLabel={app.energyHeatmapStatus}
                   ghosts={app.ghostBoxes}
                   anchors={app.energyAnchors}
                   uiMode="science"
@@ -226,7 +238,7 @@ export default function LivingLensTab() {
                 />
                 <ScenePulse
                   sceneState={app.currentSceneState}
-                  continuitySignal={app.continuitySignal}
+                  continuitySignal={app.continuitySignal ?? undefined}
                 />
               </div>
               <div className="ll-row ll-row--4kpi">
@@ -337,16 +349,16 @@ export default function LivingLensTab() {
                         <strong>{app.currentRollout?.ranked_branches.length || 0}</strong>
                       </div>
                       <div className="status-metric">
-                        <span>Last tick</span>
-                        <strong>{app.world.worldModelStatus?.last_tick_encoder_type || "waiting"}</strong>
+                        <span>Active backend</span>
+                        <strong>{app.world.worldModelStatus?.active_backend || app.world.worldModelStatus?.last_tick_encoder_type || "waiting"}</strong>
                       </div>
                     </div>
                     <div className="camera-health panel--stable">
                       <strong>{app.currentRollout?.summary || "Action-conditioned rollout is ready to rank Plan A vs Plan B."}</strong>
                       <p>
-                        {app.world.worldModelStatus?.degraded
-                          ? `World model degraded at ${app.world.worldModelStatus.degrade_stage || "runtime"}: ${app.world.worldModelStatus.degrade_reason || "fallback active"}`
-                          : "Use this lab to compare the current best action path against fallback recovery branches."}
+                    {app.world.worldModelStatus?.degraded
+                          ? `World model degraded at ${app.world.worldModelStatus.degrade_stage || "runtime"}: ${app.world.worldModelStatus.degrade_reason || "degraded continuity active"}`
+                          : "Use this lab to compare the current best action path against recovery branches."}
                       </p>
                     </div>
                     <div className="button-row">
@@ -575,6 +587,8 @@ export default function LivingLensTab() {
                   history={app.challengeHistory}
                   rollout={app.currentRollout}
                   benchmark={app.currentBenchmark}
+                  cameraConnectionState={app.cameraConnectionState}
+                  cameraStatusLabel={app.cameraStatusLabel}
                 />
               </div>
               <div className="ll-row ll-row--full">

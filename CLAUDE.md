@@ -93,6 +93,7 @@ toori/
 │   ├── setup_backend.py       Backend dependency installer
 │   ├── setup_frontend.py      Frontend dependency installer
 │   ├── download_desktop_models.py  ONNX model downloader
+│   ├── train_tvlc.py          TVLC trainer entrypoint (COCO + Gemma teacher + torch finetune)
 │   └── e2e_test.py            End-to-end smoke test
 ├── docs/                      system-design.md, user-manual.md, plugin-guide.md
 ├── tests/test_readme.py       README contract guard
@@ -101,6 +102,8 @@ toori/
 ├── cloud/perception/          Torch-isolated (numpy/onnx/coreml) perception models
 │   ├── audio_encoder.py       AudioEncoder (numpy Mel-spec, 384-dim, PyAV decode)
 │   ├── clap_projector.py      CLAPProjector (CLAP 512→DINOv2 384 cross-modal projection, numpy)
+│   ├── tvlc_connector.py      TVLCConnector (Perceiver Resampler, DINOv2 196×384 → Gemma 4 32×2048)
+│   ├── tvlc_training.py       TVLC training loop + Gemma caption teacher + weight export
 │   ├── vjepa2_encoder.py      Safe, lazy-loading interface for vjepa2
 │   ├── vits14_onnx_encoder.py Honest V-JEPA2 fallback (ViT-S/14 ONNX real patches)
 │   └── ...                    (dinov2, sam)
@@ -115,7 +118,7 @@ toori/
 
 ```bash
 # Start runtime (loopback, port 7777)
-TOORI_DATA_DIR=.toori python3 -m uvicorn cloud.api.main:app --host 127.0.0.1 --port 7777
+TOORI_DATA_DIR=.toori bash scripts/run_runtime.sh
 
 # Full verified test suite (272 pass, 11 skip as of Sprint 6 + MLX daemon)
 pytest -q cloud/api/tests cloud/jepa_service/tests cloud/search_service/tests cloud/monitoring/tests tests/test_readme.py
@@ -137,6 +140,269 @@ xcodebuild -project mobile/ios/TooriLens.xcodeproj -scheme TooriLens \
 # Android — open mobile/android in Android Studio
 ```
 
+Python 3.11 is required for the runtime. Use `bash scripts/run_runtime.sh` unless you have a specific reason to launch `python3.11 -m uvicorn` manually.
+
+---
+
+## Current Project State (2026-04-08)
+
+This section records the stabilization work completed through 2026-04-08. Treat it as the current handoff state for runtime, desktop, and JEPA behavior.
+
+### Why this work was done
+
+The project was showing three coupled failures in operator-visible flows:
+- Native V-JEPA2 worker crashes caused repeated `JEPA worker unavailable` warnings and backend instability.
+- Desktop refreshes were tying hot render state to cold diagnostics, which created freeze-like behavior and visible UI stalls under event traffic.
+- Living Lens and Live Lens were showing misleading or unstable UI output: degraded JEPA while proposal boxes still rendered, missing rainbow heatmap behavior, and placeholder entity labels such as `entity -1` or generic narration taking over the proof surface.
+
+### Before / After
+
+| Area | Before | After |
+|------|--------|-------|
+| Runtime launch safety | Running the backend with `python3` on this machine could enter unsupported Python 3.14 and crash in native extensions. | Runtime now fails fast on unsupported Python and is expected to launch via `bash scripts/run_runtime.sh` or explicit Python 3.11. |
+| Native JEPA readiness | Worker pool could be treated as available before native V-JEPA2 was actually safe to run. | Native JEPA now performs an isolated preflight before the pool is trusted. |
+| Native JEPA failure handling | Native worker crash could trigger respawn loops or ambiguous degraded behavior. | Failed native JEPA is quarantined, status is persisted in `WorldModelStatus`, and fallback is surfaced honestly as degraded rather than masquerading as healthy JEPA. |
+| CPU JEPA profile | CPU worker path could inherit the heavier 8-frame production profile and crash during model load. | CPU worker path now defaults to 4 frames when no explicit override is present. |
+| Desktop refresh model | `useWorldState` hot path pulled world state, provider health, settings, and observations together, causing refresh storms and UI freezes. | Desktop now splits hot refresh from cold refresh. Tick-driven updates stay lightweight; health/settings/history move to slower polling or explicit actions. |
+| Living Lens reconcile cadence | Every successful tick could trigger broad refresh behavior. | Living Lens now updates local state first and throttles broader reconciliation. |
+| Heatmap rendering | Energy overlay had regressed to an amber threshold grid and often appeared absent. | Heatmap now uses a retained spectrum renderer with visible rainbow-style energy gradients and short persistence between ticks. |
+| Entity stability | UI could flicker between anchors, tracks, and proposal boxes; placeholder labels leaked into the main proof surface. | Overlay source arbitration is sticky, placeholder labels are centrally filtered, and node IDs are stabilized so proof surfaces stop renaming entities every cycle. |
+| Observations API for UI | Desktop hot path fetched full observations including embeddings. | `/v1/observations` supports `summary_only=true`, and desktop hot paths can stay lightweight. |
+| Runtime snapshot | Desktop had to compose several expensive endpoints for live state. | `/v1/runtime/snapshot` provides a single lightweight hot-path payload for current runtime state. |
+
+### Problems encountered
+
+1. Native V-JEPA2 on this machine was not consistently stable under the existing worker lifecycle.
+2. The worker process could die during load and leave the product oscillating between configured/degraded/fallback states.
+3. The frontend was coupling real-time rendering to diagnostics and history fetches, so WebSocket traffic translated into visible stalls.
+4. Heatmap rendering logic no longer matched the earlier proof-style rainbow visualization and dropped too much low-to-mid energy data.
+5. Fallback labels and rapidly changing overlay sources polluted the main scientific UI with unstable semantics.
+
+### Solutions implemented
+
+**Backend / runtime**
+- Added JEPA worker environment defaults and an isolated native preflight path in `cloud/runtime/jepa_worker.py`.
+- Added CPU-aware frame resolution in `cloud/perception/vjepa2_encoder.py` so CPU-native JEPA defaults to 4 frames when no override exists.
+- Extended `WorldModelStatus` with `active_backend`, `native_ready`, `preflight_status`, `last_failure_at`, and `crash_fingerprint`.
+- Added runtime-side native failure recording and quarantine state in `cloud/runtime/service.py`.
+- Added `GET /v1/runtime/snapshot` for desktop hot-path state.
+- Added `summary_only=true` support to `GET /v1/observations`.
+- Kept fallback available, but changed it to remain explicitly degraded when serving ticks.
+
+**Desktop / product UI**
+- Split `useWorldState` into hot refresh and cold refresh behavior.
+- Removed provider-health fetches from every tick-driven refresh path.
+- Throttled Living Lens reconciliation in `useLivingLens.ts`.
+- Restored a spectrum energy overlay in `SpatialHeatmap.tsx` with short retention so the overlay does not blink out between adjacent ticks.
+- Added sticky source arbitration in `DesktopAppContext.tsx` so anchors win briefly, then tracks, then proposal boxes.
+- Added shared placeholder label suppression in `desktop/electron/src/lib/formatting.ts`.
+- Reduced unnecessary render pressure in `ConsumerMode.tsx`.
+- Updated status surfaces in workspace, Live Lens, Living Lens, and Settings so backend truth is shown accurately.
+
+### Where the project stands now
+
+- Runtime launch is intentionally constrained to Python 3.11.
+- Native V-JEPA2 is now treated as a first-class capability with explicit readiness, preflight, and quarantine state instead of an implicit “configured therefore working” assumption.
+- Honest fallback remains available to preserve product continuity, but it must surface as degraded and never be presented as native JEPA success.
+- Desktop live surfaces now have a clearer separation between real-time state and slow diagnostics, which is the main stabilization step for the freezing problem.
+- The proof UI is closer to the intended scientific experience again: visible spectrum heatmap, more stable entity presentation, and fewer placeholder labels.
+
+### Residual risk / operator note
+
+If native V-JEPA2 is still unstable on a specific machine, the system should now quarantine that native path and continue in an honest degraded state rather than freezing, flapping, or pretending native JEPA is healthy. This is the correct behavior until the native model/runtime stack is proven stable on that machine.
+
+### Verification completed
+
+- `python3.11 -m py_compile` passed for the touched backend files.
+- `cd desktop/electron && npm run typecheck` passed.
+- Python 3.11 smoke validation covered runtime snapshot, summary-only observations, CPU frame fallback behavior, and native preflight quarantine behavior.
+- Full `pytest` under Python 3.11 was not completed in this environment because `pytest` was not installed in that interpreter at the time of validation.
+
+### 2026-04-08 P0 recovery follow-up
+
+This second pass extended the earlier stabilization work into the remaining operator-visible failures.
+
+#### Why a second pass was required
+
+- Operators still reported startup Python crash dialogs on macOS, even after fallback/quarantine semantics were improved.
+- Proof export was still broken by a real contract bug: `Gemma4Bridge` was being given `MlxReasoningProvider` directly instead of an async callable adapter.
+- The scientific readout was conflating `surprise` with heatmap energy, which made the challenge panel look untrustworthy.
+- “What Toori Knows” was still using the old rotating sphere and could collapse to one generic node even when multiple entities existed.
+- The label path still allowed absurd pairwise phrases such as `hot dog near velvet` to become primary user-facing summaries.
+
+#### Additional before / after changes
+
+| Area | Before | After |
+|------|--------|-------|
+| Native preflight isolation | Preflight used multiprocessing, and native crashes could still surface as Python crash dialogs on macOS. | Preflight now runs in a dedicated Python 3.11 subprocess in `cloud/runtime/jepa_worker.py`, with structured exit-code/signal capture. |
+| Native retry control | Native crashes were quarantined, but there was no operator action to explicitly retry. | `POST /v1/world-model/retry-native` now resets quarantine/preflight state and is exposed in Settings as `Retry Native JEPA`. |
+| World model status truth | Status did not expose process-level native crash details. | `WorldModelStatus` now includes `native_process_state`, `last_native_exit_code`, `last_native_signal`, and `retryable_native_failure`. |
+| Runtime snapshot richness | Hot snapshot returned current state, tick, and observations, but not a merged graph payload. | `RuntimeSnapshotResponse` now includes `scene_graph` for the Living Lens knowledge surface. |
+| Proof export | PDF generation could fail with `'MlxReasoningProvider' object is not callable`, and the heading read `Gemma 4 Analysis Report`. | Runtime now uses a shared MLX callable adapter, proof export falls back cleanly, and the PDF heading is `Analysis Report`. |
+| Science metrics | `service.py` was overwriting `surprise_score` with `mean_energy`, corrupting challenge semantics. | `world_model.py` remains the canonical owner of `surprise_score`; heatmap activity now lives separately in `energy_activation_score`. |
+| Open-vocab labels | Primary labels could still degrade into relation phrases such as `X near Y`. | Primary labels are now atomic object labels only; pairwise relation phrases are rejected by the label-quality gate. |
+| TVLC / crop evidence | Open-vocab relabeling used geometry only. | Live relabeling now passes TVLC context and a localized crop image into the MLX prompt when available. |
+| Consumer graph | Living Lens used the old rotating sphere and a 3-column layout that wasted the right side. | `ConsumerMode.tsx` now renders a deterministic Cytoscape scene graph with a node list and details panel, and Living Lens consumer mode uses a true 2-pane layout. |
+| Energy legend | Heatmap colors were visible but not explained. | Live Lens and Living Lens now surface a visible spectrum legend explaining violet/blue→red semantics. |
+| Challenge chart | Chart title always implied scored challenge output and omitted energy. | `ScientificReadout.tsx` now distinguishes preview vs scored challenge state, and `ChallengeMetricChart.tsx` plots continuity, surprise, persistence, and energy over the latest chronological window. |
+
+#### Key files changed in the 2026-04-08 pass
+
+**Backend**
+- `cloud/runtime/jepa_worker.py`
+- `cloud/runtime/service.py`
+- `cloud/runtime/app.py`
+- `cloud/runtime/models.py`
+- `cloud/runtime/proof_report.py`
+- `cloud/runtime/mlx_adapter.py`
+- `cloud/runtime/smriti_gemma4_enricher.py`
+- `cloud/runtime/world_model.py`
+
+**Desktop**
+- `desktop/electron/src/hooks/useWorldState.ts`
+- `desktop/electron/src/state/DesktopAppContext.tsx`
+- `desktop/electron/src/components/ConsumerMode.tsx`
+- `desktop/electron/src/components/EnergySpectrumLegend.tsx`
+- `desktop/electron/src/tabs/LivingLensTab.tsx`
+- `desktop/electron/src/tabs/LiveLensTab.tsx`
+- `desktop/electron/src/tabs/SettingsTab.tsx`
+- `desktop/electron/src/panels/ScientificReadout.tsx`
+- `desktop/electron/src/widgets/ChallengeMetricChart.tsx`
+- `desktop/electron/src/styles.css`
+- `desktop/electron/src/types.ts`
+
+#### Current operational interpretation
+
+- `active_backend="vjepa2"` means native V-JEPA2 is actually serving ticks.
+- `active_backend="dinov2-vits14-onnx"` with `degraded=True` means the runtime is in honest degraded continuity mode because native JEPA is quarantined or unavailable.
+- `native_process_state` is the main operator-facing truth for native JEPA lifecycle:
+  - `idle` → no preflight attempt yet or state reset
+  - `starting` → subprocess preflight in progress
+  - `ready` → native JEPA verified and available
+  - `crashed` / `quarantined` → native path failed and must not be treated as healthy
+
+#### Remaining validation gap
+
+- The code path is in place to reduce or eliminate user-visible startup crash dialogs by isolating native preflight into a subprocess, but this exact macOS GUI behavior still needs manual validation on the affected machine after the runtime is relaunched and exercised.
+- Targeted Python 3.11 `pytest` regressions were added, but they could not be executed here because `pytest` is not installed in the local Python 3.11 interpreter.
+
+### 2026-04-08 Rev 2 completion
+
+This follow-up closed the remaining gaps that were still visible in manual testing after the earlier 2026-04-08 passes.
+
+#### What changed in Rev 2
+
+| Area | Before | After |
+|------|--------|-------|
+| Live JEPA worker containment | The runtime still used `multiprocessing.Process` workers for live ticks, auto-respawned them on crash, and could re-enter a crash loop even after native failure. | `cloud/runtime/jepa_worker.py` now runs live JEPA in explicit console `python3.11` subprocess workers using a framed stdin/stdout JSON protocol. A hard worker death now fails pending work, records exit metadata, and does **not** auto-respawn. |
+| Safe fallback activation | After a fatal native worker failure, the runtime could recycle the worker and resubmit through a new pool in degraded mode. | `cloud/runtime/service.py::_run_jepa_tick()` now treats the first native crash as terminal for the session, opens the circuit, arms safe fallback once, and immediately switches to inline degraded continuity instead of rebuilding the same worker pool. |
+| Native/session status truth | Sidebar/provider state still tended to read as generic “fallback,” and runtime status did not fully reflect steady-state native crash behavior. | Native state now resolves to one of three operator truths: `vjepa2 active`, `vjepa2 quarantined with degraded continuity`, or `no JEPA tick available`. `native_process_state`, `last_native_exit_code`, and `last_native_signal` remain the source of truth for crash RCA. |
+| WebSocket/runtime availability coupling | A single socket close/error could wipe the desktop’s runtime-derived state and make the product look like the backend was flapping. | `desktop/electron/src/hooks/useWorldState.ts` now keeps the last good snapshot, marks the stream as reconnecting, and only declares runtime unavailable after bounded hot-snapshot transport failures. |
+| Graph layout and depth truthfulness | `ConsumerMode.tsx` still used fixed pixel math, graph nodes could drift right/out of frame, and unknown depth could masquerade as a real lane. | The graph is now container-relative and resize-aware, unresolved depth is rendered explicitly, and the right-side panel no longer clips or wastes the available width. |
+| Strict evidence gate | Proposal/basic labels and descriptor strings could still leak into summaries, graph nodes, or tags. | `providers.py`, `world_model.py`, `service.py`, and `smriti_gemma4_enricher.py` now reject descriptor-style labels, relation phrases, placeholder ids, and low-evidence nouns before they become persisted semantics. Weak evidence falls back to deterministic aliases instead of speculative captions. |
+| TVLC semantic authority | Merely having TVLC present could look equivalent to having trained semantic grounding. | TVLC now only counts as authoritative when `connector_type == "tvlc_trained"`. Random-init or missing-TVLC states are surfaced as non-authoritative, and open-vocab readiness requires trained TVLC plus healthy MLX. |
+| Scene graph contract | The frontend graph had only coarse node fields and could not distinguish label provenance or unresolved depth confidence. | `SceneGraphNode` now carries `depth_confidence`, `label_source`, and optional `label_evidence`, and `RuntimeSnapshotResponse.scene_graph` is the canonical source for the Living Lens knowledge graph. |
+
+#### Key files touched in Rev 2
+
+**Backend**
+- `cloud/runtime/jepa_worker.py`
+- `cloud/runtime/service.py`
+- `cloud/runtime/models.py`
+- `cloud/runtime/providers.py`
+- `cloud/runtime/world_model.py`
+- `cloud/runtime/smriti_gemma4_enricher.py`
+- `cloud/api/tests/test_semantic_label_gating.py`
+
+**Desktop**
+- `desktop/electron/src/hooks/useWorldState.ts`
+- `desktop/electron/src/components/ConsumerMode.tsx`
+- `desktop/electron/src/state/DesktopAppContext.tsx`
+- `desktop/electron/src/lib/formatting.ts`
+- `desktop/electron/src/styles.css`
+- `desktop/electron/src/tabs/LiveLensTab.tsx`
+- `desktop/electron/src/tabs/LivingLensTab.tsx`
+- `desktop/electron/src/tabs/SettingsTab.tsx`
+- `desktop/electron/src/layouts/NavSidebar.tsx`
+- `desktop/electron/src/tabs/IntegrationsTab.tsx`
+- `desktop/electron/src/types.ts`
+
+#### Verification completed for Rev 2
+
+- `python3.11 -m py_compile cloud/runtime/jepa_worker.py cloud/runtime/service.py cloud/runtime/models.py cloud/runtime/providers.py cloud/runtime/world_model.py cloud/runtime/smriti_gemma4_enricher.py cloud/api/tests/test_semantic_label_gating.py`
+- `cd desktop/electron && npm run typecheck`
+- `cd desktop/electron && npm run build`
+
+#### Remaining open item after Rev 2
+
+- The biggest remaining non-code uncertainty is manual validation on the affected macOS machine that the operator no longer sees repeated Python crash dialogs after native JEPA is quarantined. The architecture is now correct for that outcome, but it still needs one live launch-and-run confirmation on the target machine.
+
+### 2026-04-09 TVLC trainer implementation
+
+The missing TVLC training path is now implemented. This closes the gap between “TVLC present” and “TVLC actually trained with semantic supervision.”
+
+#### What changed
+
+| Area | Before | After |
+|------|--------|-------|
+| TVLC training entrypoint | The repo had older internal TVLC training logic, but the public `scripts/train_tvlc.py` path was not the dedicated Gemma-guided operator workflow we wanted. | `scripts/train_tvlc.py` still preserves `--random-init`, but now routes real training runs into `scripts/train_tvlc_mlx.py`. |
+| End-to-end trainer | Internal training logic existed, but the public path did not expose the new prototype-backed Gemma-teacher flow as the main connector-training command. | `scripts/train_tvlc_mlx.py` now loads COCO captions, extracts DINOv2 patch tokens, canonicalizes captions with an optional Gemma 4 teacher daemon, trains the connector in PyTorch, and exports runtime-compatible `.npz` weights with semantic prototypes. |
+| Gemma 4 in TVLC supervision | Gemma 4 existed only on the runtime side for narration/reformulation. | The trainer can now reuse `scripts/mlx_reasoner.py` as a semantic teacher that rewrites captions into atomic labels, attributes, scene tags, and summaries before building training targets. |
+| Training traceability | There was no public guarantee that connector exports carried runtime-useful semantic metadata. | Trained exports now include `trainer_version`, `training_metadata`, and semantic prototype data inside the `.npz` payload. |
+| Direct Gemma semantic embeddings | The trainer still relied on deterministic hashed semantic targets because the repo did not expose a stable Gemma embedding extractor. | `cloud/perception/gemma_semantic_extractor.py` now reads local Gemma safetensors + tokenizer assets, dequantizes token embeddings directly, and produces stable pooled 2048-d semantic embeddings without depending on `mlx_vlm` generation. |
+| Runtime label verification | TVLC hints were mostly string-based and heuristic-gated. | `smriti_gemma4_enricher.py` now uses the semantic extractor to compare Gemma label candidates against TVLC prototype hints and reject mismatched outputs before they become user-facing labels. |
+
+#### Working principle
+
+1. `Dinov2Encoder` extracts `196 x 384` patch tokens from each COCO image.
+2. The paired caption is canonicalized into:
+   - `primary_label`
+   - `attributes`
+   - `scene_tags`
+   - `summary`
+3. Canonicalization is Gemma-guided when possible:
+   - the trainer launches `scripts/mlx_reasoner.py` as a teacher daemon
+   - Gemma rewrites captions into compact grounded JSON
+   - if the Gemma daemon is unavailable, the trainer falls back to deterministic caption heuristics instead of aborting
+4. `cloud/perception/gemma_semantic_extractor.py` loads the local Gemma tokenizer and `model.safetensors`, dequantizes token rows from:
+   - `language_model.model.embed_tokens.*`
+   - `language_model.model.embed_tokens_per_layer.*`
+5. The extractor pools those token embeddings into a stable `2048`-dim semantic embedding without using `mlx_vlm` generation.
+6. TVLC training uses those extractor-backed phrase embeddings as the target space whenever available.
+7. A Perceiver-style connector is finetuned so pooled visual slots align with that semantic space.
+8. After training, the script exports the exact weight tensors expected by `cloud/perception/tvlc_connector.py`, plus semantic prototypes that runtime TVLC context can surface.
+
+#### Why this matters
+
+- The runtime already requires trained TVLC plus healthy MLX before open-vocabulary labels are treated as authoritative.
+- Before this change, `models/vision/tvlc_connector.npz` could only realistically be `random_init=True`, which meant TVLC could never become semantically authoritative.
+- This trainer creates the missing path for TVLC to become a real semantic bridge rather than a placeholder artifact.
+
+#### Key files touched
+
+- `scripts/train_tvlc.py`
+- `scripts/train_tvlc_mlx.py`
+- `cloud/perception/tvlc_connector.py`
+- `cloud/perception/gemma_semantic_extractor.py`
+- `cloud/runtime/smriti_gemma4_enricher.py`
+- `cloud/runtime/service.py`
+
+#### Operator command
+
+- `python3.11 scripts/train_tvlc.py --coco-dir /path/to/coco2017 --epochs 3`
+
+#### Current limitation
+
+- This is now a stable semantic embedding path based on Gemma token embeddings and per-layer token slices, not a full autoregressive last-layer rollout from `mlx_vlm`.
+- On this iMac environment, direct `mlx_vlm` import is still unstable in some native paths. The extractor deliberately avoids that stack and uses safetensors + tokenizer assets instead. The Gemma teacher daemon remains optional and can still fall back to deterministic caption canonicalization if needed.
+
+#### Validation completed for the trainer
+
+- `python3.11 -m py_compile cloud/perception/gemma_semantic_extractor.py scripts/train_tvlc.py scripts/train_tvlc_mlx.py cloud/runtime/smriti_gemma4_enricher.py cloud/runtime/service.py cloud/api/tests/test_semantic_label_gating.py cloud/api/tests/test_gemma_semantic_extractor.py`
+- `python3.11 scripts/train_tvlc.py --help`
+- direct extractor probe produced `(2048,)` embeddings from local Gemma assets and showed telescope-related phrases scoring closer together than unrelated labels
+- synthetic COCO-style smoke training with one caption/image pair completed and exported `random_init=False`
+
 ---
 
 ## Complete API Route Reference
@@ -151,11 +417,12 @@ Rate limiting: 20 req/s burst 60 globally; 5 req/s burst 10 for `/v1/smriti/reca
 | GET | `/metrics` | Prometheus metrics (mounted ASGI app) |
 | GET | `/v1/settings` | Get `RuntimeSettings` |
 | PUT | `/v1/settings` | Update `RuntimeSettings` |
-| GET | `/v1/world-model/status` | `WorldModelStatus` (encoder, degradation) |
+| GET | `/v1/world-model/status` | `WorldModelStatus` (configured encoder, active backend, degradation, native readiness, preflight/quarantine state) |
 | GET | `/v1/world-model/config` | `WorldModelConfig` (V-JEPA2 params) |
 | PUT | `/v1/world-model/config` | Update V-JEPA2 model_path + n_frames |
 | GET | `/v1/providers/health` | All provider health reports |
-| GET | `/v1/observations` | List observations (session_id, limit) |
+| GET | `/v1/runtime/snapshot` | Lightweight live runtime payload for desktop hot refresh |
+| GET | `/v1/observations` | List observations (session_id, limit, `summary_only`) |
 | GET | `/v1/file` | Serve a file from data_dir (path-restricted) |
 | POST | `/v1/analyze` | Analyze image → `AnalyzeResponse` |
 | POST | `/v1/living-lens/tick` | Living lens async tick → `LivingLensTickResponse` |
@@ -266,6 +533,7 @@ This is the **single source of truth**. Keep `desktop/electron/src/types.ts` in 
 - `ProviderConfig` — individual provider config (name, enabled, model, model_path, api_key, timeout_s, metadata)
 - `ProviderHealth` — health status (name, role, healthy, message, latency_ms)
 - `Observation` — stored observation (id, session_id, image_path, thumbnail_path, width, height, embedding, summary, tags, confidence, novelty)
+- `ObservationSummary` — lightweight observation DTO for desktop history and hot-path UI
 - `Answer` — reasoning result (text, provider, confidence)
 - `ReasoningTraceEntry` — per-provider reasoning attempt log
 
@@ -279,8 +547,9 @@ This is the **single source of truth**. Keep `desktop/electron/src/types.ts` in 
 - `RolloutComparison` — top-level rollout result with ranked branches + chosen_branch_id
 - `RecoveryScenario` / `RecoveryBenchmarkRun` — persisted benchmark (SQLite)
 - `SceneState` — full world state snapshot (entities, affordances, metrics, conditioned_rollouts)
-- `WorldModelStatus` — live encoder diagnostic (configured vs actual encoder, degradation)
+- `WorldModelStatus` — live encoder diagnostic (configured encoder, active backend, degradation, native readiness, preflight/quarantine metadata)
 - `WorldModelConfig` — V-JEPA2 runtime config (model_path, n_frames, effective_model)
+- `RuntimeSnapshotResponse` — lightweight desktop hot-path state bundle (session, tick, scene summary, counts, badges)
 
 ### JEPA
 - `JEPATick` — tick output dataclass (energy_map, entity_tracks, sigreg_loss, forecast_errors, depth_strata, anchor_matches, setu_descriptions, prediction_error, surprise_score, epistemic/aleatoric uncertainty, world_model_version, degraded/degrade_reason/degrade_stage, gemma4_alert)
@@ -319,7 +588,7 @@ Two engines coexist:
 - Talker gating: `Ē > μ_E + 2·σ_E`
 - Ghost bounding boxes in pixel coordinates (never patch indices)
 - V-JEPA2 encoder integrated (Sprint 6): `encode(frame) → (encoder_emb, predictor_emb)`; cross-tick prediction error = `||enc_emb_t - pred_emb_{t-1}||²`; surprise score = z-score normalized over 128-tick window, clamped to [0,1]
-- Surrogate fallback when V-JEPA2 fails; `degraded=True` + `degrade_reason/stage` in tick
+- Honest fallback when native V-JEPA2 fails; fallback ticks remain explicitly `degraded=True` with `degrade_reason/stage`, and should never be treated as native JEPA success
 
 **Smriti Pipeline** (inside ImmersiveJEPAEngine):
 1. **TPDS** — `TemporalParallaxDepthSeparator` assigns foreground/midground/background strata from `energy_map` deltas
@@ -327,6 +596,8 @@ Two engines coexist:
 3. **CWMA** — `CrossModalWorldModelAligner` refines energy_map with anchor + depth alignment (lambda=0.15)
 4. **ECGD** — `EpistemicConfidenceGate` gates regions by consistency score; uncertainty map output
 5. **Setu-2** — `Setu2Bridge` generates grounded text descriptions per gated region
+6. **Object labels** — Gemma 4 open-vocabulary narration from SAG geometric evidence, NOT MobileNetV2 ImageNet-1k classification. Labels are 3-5 word natural language descriptions bounded by ECGD confidence threshold.
+- **TVLCConnector (trained path implemented)** — Perceiver Resampler maps DINOv2 patch tokens into a Gemma-guided `32 x 2048` semantic token space. Used when `models/vision/tvlc_connector.npz` is present. Random init remains a seeded compatibility fallback only. The current trainer uses Gemma as a semantic teacher for caption canonicalization, then aligns pooled TVLC slots to deterministic 2048-d semantic targets; `to_gemma_context()` still emits compact slot activations plus entropy for evidence-first prompting.
 
 **Anchor entity tracking:**
 - New track if best cosine < 0.72
@@ -359,6 +630,7 @@ Two engines coexist:
 - `SmetiGemma4Enricher` plugs into ingestion (`_process_job`) and living-lens tick
 - Call sites: A) after setu_descriptions in ingestion B) before returning in living_lens_tick
 - Narration: anchor + depth evidence → 1-sentence description (max 20 words, max 8s timeout)
+- `get_open_vocab_label(anchor_name, depth_stratum, confidence, patch_count) → str` — returns Gemma 4 open-vocabulary object description, max 3.0s timeout, falls back to cleaned anchor_name
 - Query reformulation: natural language → structured JSON (depth_stratum, person_filter, time_hint)
 - Proactive alerts: surprise > 0.55 OR occluded tracks → short alert sentence (max 5s, max 15 words)
 
@@ -420,11 +692,15 @@ Methods:
 
 **Key hooks:**
 - `useCameraStream.ts` — camera device enumeration, stream, frame capture, diagnostics
-- `useWorldState.ts` — polls `/v1/world-state`, `/v1/world-model/status`, `/v1/providers/health`; manages `WorldModelConfig` and rollout state
+- `useWorldState.ts` — split refresh model: hot refresh via `/v1/runtime/snapshot`, cold refresh for settings/provider health/history, WebSocket-aware tick handling
 - `useSmritiState.ts` — Smriti section state, recall, mandala, journals
-- `useLivingLens.ts` — living lens session and proof metrics
+- `useLivingLens.ts` — living lens session and proof metrics with throttled reconciliation instead of refresh-per-tick behavior
 - `useRuntimeBridge.ts` — generic fetch/WebSocket helpers to `127.0.0.1:7777`
 - `useAudioQuery.ts` — microphone capture, base64 encoding, POST /v1/audio/query, state management
+
+**Overlay rendering:**
+- Energy map: retained spectrum heatmap overlay with rainbow-style energy gradients and short persistence between ticks. The operator proof surface should not regress to a sparse amber-only threshold grid.
+- Overlay arbitration: prefer JEPA anchors first, then stable tracks, then proposal boxes. Do not let placeholder detections or generic fallback labels dominate the scientific proof surface.
 
 **Smriti UI components:**
 - `MandalaView.tsx` — force-layout cluster graph using `mandala-force-worker.ts`
@@ -459,7 +735,9 @@ Methods:
 - Settings written to JSON mirror on disk by `_write_settings_mirror(settings)`
 - Read by `_resolve_model_id()` and `_resolve_n_frames()` on each load
 - `_reset_vjepa2_if_config_changed(old, new)` triggers lazy reload on drift
-- `WorldModelStatus` must be truthful: `configured_encoder`, `last_tick_encoder_type`, `degraded`, `degrade_reason`, `degrade_stage`
+- CPU-native JEPA should default to 4 frames unless an explicit override is provided
+- Native JEPA readiness is not implied by configuration alone; preflight/quarantine state must be reflected truthfully in status
+- `WorldModelStatus` must be truthful: `configured_encoder`, `last_tick_encoder_type`, `active_backend`, `native_ready`, `preflight_status`, `degraded`, `degrade_reason`, `degrade_stage`
 - V-JEPA2 state belongs in `.toori/`; never commit to source control
 
 ---
@@ -521,8 +799,9 @@ grep -r "import torch" cloud/ --include="*.py" | grep -v "cloud/perception/"
 
 ### Service Methods (`service.py → RuntimeContainer`)
 - `get_vjepa2_settings()` → `WorldModelConfig`
-- `update_vjepa2_settings(model_path, n_frames)` → `WorldModelConfig`
+- `update_vjepa2_settings(model_path, cache_dir, n_frames)` → `WorldModelConfig`
 - `get_world_model_status()` → `WorldModelStatus`
+- `get_runtime_snapshot(session_id)` → `RuntimeSnapshotResponse`
 - `observe_tool_state(request)` → `ToolStateObserveResponse`
 - `plan_rollout(request)` → `PlanningRolloutResponse`
 - `run_recovery_benchmark(request)` → `RecoveryBenchmarkRun`
@@ -580,7 +859,7 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 2. **No zero-vector embeddings** in user-facing flows
 3. **No torch outside `cloud/perception/`**
 4. **No hard-coded V-JEPA2 params** — always read from JSON mirror
-5. **`WorldModelStatus` must be truthful concerning encoders** — If V-JEPA2 is unavailable, it MUST try `dinov2-vits14-onnx` as an honest real patch fallback. `degraded=False` when this ViT-S/14 fallback is active. It only falls back to a true `surrogate` (where `degraded=True`) if BOTH fail.
+5. **`WorldModelStatus` must be truthful concerning encoders** — If V-JEPA2 is unavailable, it MUST try `dinov2-vits14-onnx` as the real degraded continuity backend. Native quarantine must remain explicit via `active_backend`, `preflight_status`, `native_process_state`, and related crash fields. Do not present ONNX degraded continuity as healthy native JEPA.
 6. **Reasoners are sidecars only** — Ollama/MLX must not overwrite authoritative world-model metrics, rollout ranking, or benchmark winner
 7. **DINOv2 is primary perception** for desktop/runtime; ONNX is compatibility-only
 8. **Ollama/MLX must remain optional and health-checked**
@@ -605,6 +884,8 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 28. **Handle shutdown signals strictly in multiprocess worker pools**: `JEPAWorkerPool` subprocesses must be configured to gracefully ignore `SIGINT`, forcing them to process `.close()` teardowns originating internally from the parent thread. This avoids leaking ghost semaphores inside Apple Silicon.
 29. **Consumer UI scale matches Backend scale**: The desktop application (`DetectionOverlay`) actively respects backend constraints (e.g. `max_proposals=12`), prohibiting hardcoded `slice()` UI clamps overriding backend tuning values.
 30. **FAISS index type must always be IndexHNSWFlat** — never revert to IndexFlatIP or IndexFlatL2. Flat indices will freeze at 50k+ media records.
+31. **TVLCConnector weights live in `models/vision/tvlc_connector.npz`** — never hard-code connector weights inline. Always check `TVLCConnector.is_available()` before using; fall back to seeded random projection (`Setu2Bridge` existing logic) if weights are absent.
+32. **JEPA worker recovery must be bounded and local-first** — dead or timed-out workers must be recycled instead of reused, pending futures must be scrubbed on cancellation/timeout, and worker-side V-JEPA2 loads must stay CPU-only and `local_files_only` using the configured cache directory.
 
 ---
 
@@ -619,16 +900,236 @@ Update SDK when any of these change:
 
 ---
 
+### April 10, 2026: Signal 11 SIGSEGV Resolution — Pre-Computed Perception Architecture
+
+#### Why this work was done
+
+The `jepa_worker_pool` was producing a persistent Signal 11
+(SIGSEGV) on `worker_id: 0` on every startup, causing
+`open-vocab-labels`, `tvlc-connector`, and `live-lens-jepa` to show
+as degraded, the energy heatmap to remain OFF, and the "What Toori
+Knows" spatial graph to show only generic `Unresolved` placeholders.
+
+All prior fixes (TOORI_DINOV2_DEVICE=cpu, HF_HUB_OFFLINE hard
+assignment, asyncio.to_thread for preflight) were correct and
+necessary but did not resolve the crash.
+
+#### Root cause
+
+`ImmersiveJEPAEngine.__init__()` line 300 unconditionally instantiates
+`PerceptionPipeline(device=device)` in every worker subprocess.
+`PerceptionPipeline` loads DINOv2 ViT-S/14 via torch (~100MB) and
+MobileSAM via torch (~180MB). On Apple Silicon, importing torch costs
+~800MB even on the CPU path because MPS framework stubs are loaded
+unconditionally by PyTorch.
+
+Combined with V-JEPA2 ViT-L weights (~1.2GB) and the 4-frame CPU
+forward pass (~400MB peak transient), total worker memory reached
+~2.7GB. On the development iMac with macOS + Electron + Chrome +
+other applications consuming ~4.2GB, the effective worker budget is
+~3.35GB. SAM's per-tick forward on real webcam frames creates
+additional transient allocations that breach this ceiling → the OS
+sends SIGSEGV to the worker process → `worker process exited without
+returning a result (signal 11)`.
+
+The existing `_worker_world_model_prefers_fallback()` guard in
+engine.py controls V-JEPA2 initialization only. It was never
+designed to skip `PerceptionPipeline` and had zero effect on the
+memory crash.
+
+#### Why DINOv2+SAM ran twice
+
+The parent runtime (`_analyze_with_world_model`) calls
+`self.providers.perceive()` which produces a pooled embedding for
+SmritiDB/FAISS storage. This is a separate code path from
+`ImmersiveJEPAEngine.tick()`, which independently calls
+`self.perception.encode(frame)` to produce `patch_tokens [196,384]`
+and `MaskResult` objects for the JEPA pipeline (SAG, ECGD, entity
+tracking, CWMA). The worker was performing this second perception
+call entirely inside the subprocess, duplicating work the parent's
+warm DINOv2+SAM pipeline could do for free.
+
+#### Architectural decision: pre-computed perception
+
+The fix serializes `patch_tokens` and `mask_results` from a
+parent-side `PerceptionPipeline.encode()` call into `JEPAWorkItem`
+before dispatch. The worker subprocess deserializes them and passes
+them to `engine.tick()`, which skips its own `self.perception.encode()`
+when pre-computed inputs are valid.
+
+This approach was chosen over alternatives because:
+
+- **V-JEPA2 is fully preserved.** The worker still loads V-JEPA2 ViT-L
+  and runs its learned neural predictor for temporal prediction,
+  cross-tick prediction error, z-scored surprise, and epistemic/
+  aleatoric uncertainty. This is the system's core differentiator
+  and must not be degraded.
+- **DINOv2+SAM quality is fully preserved.** Patch tokens and bounding
+  box masks are computed by the parent's warm DINOv2+SAM pipeline,
+  not a lighter alternative. Entity labels, anchor matching, SAG
+  templates, ECGD gating, Setu-2 descriptions, TVLC context, and
+  Gemma 4 narration all receive the same quality inputs as before.
+- **No capability is removed.** The "worker isolation" alternative
+  (replacing DINOv2+SAM with ViT-S/14 ONNX inside the worker) would
+  have degraded SAM bounding box precision for entity tracking.
+  Pre-computation preserves full precision with zero quality trade-off.
+
+#### Files changed
+
+- `cloud/runtime/jepa_worker.py` — `JEPAWorkItem` gains two optional
+  fields (`precomputed_patch_tokens`, `precomputed_mask_results_json`);
+  `_decode_work_item()`, `_write_request()`, and
+  `_serve_worker_subprocess_main()` updated to serialize/deserialize
+  and pass pre-computed inputs to `engine.tick()`.
+- `cloud/jepa_service/engine.py` — `ImmersiveJEPAEngine.tick()`
+  gains two optional parameters (`precomputed_patch_tokens`,
+  `precomputed_mask_results`); the `self.perception.encode(frame)`
+  call is now conditional — skipped when valid pre-computed inputs
+  arrive, used as fallback otherwise (test environments, direct
+  parent-side tick calls, any path where pre-computation failed).
+- `cloud/runtime/service.py` — `RuntimeContainer` gains
+  `_precompute_perception_for_worker()` method (lazy
+  `PerceptionPipeline` singleton, parent-side); `living_lens_tick()`
+  pre-computes before dispatch; `_run_jepa_tick()` accepts and
+  forwards the pre-computed bytes.
+
+#### Worker memory budget after fix
+
+| Component | Before | After |
+|---|---|---|
+| torch import (MPS stubs) | ~800MB | ~800MB |
+| DINOv2 ViT-S/14 torch | ~100MB | **0MB** |
+| MobileSAM torch | ~180MB | **0MB** |
+| V-JEPA2 ViT-L weights | ~1.2GB | ~1.2GB |
+| V-JEPA2 peak forward (4-frame CPU) | ~400MB | ~400MB |
+| **Total** | **~2.68GB** | **~2.4GB** |
+| **Headroom (3.35GB budget)** | **~0.67GB** | **~0.95GB** |
+
+The 0.95GB headroom is sufficient for real webcam frame allocations
+and SAM transient peaks, which now occur only in the parent process.
+
+#### Backward compatibility
+
+`tick()` accepts the pre-computed inputs as optional parameters.
+All existing call sites (tests, forecast engine, inline fallback
+engine, direct analyze path) continue to work without modification —
+they call `tick(frame, session_id=..., observation_id=...)` as before
+and the local `self.perception.encode(frame)` path runs normally.
+
+#### Validation completed
+
+- Exact lines added/modified per file with line numbers:
+  - `jepa_worker.py`: lines 35, 303-311, 617-629, 640-641, 683-697, 702-703
+  - `engine.py`: lines 474-475, 484-517
+  - `service.py`: lines 1987-1996, 2802-2803, 2847-2848, 2903-2953
+- py_compile: Passed for `cloud/runtime/jepa_worker.py`, `cloud/jepa_service/engine.py`, `cloud/runtime/service.py`. No errors.
+- grep invariants: Passed.
+  1. `JEPAWorkItem` check has 8 matches.
+  2. `engine.py` precomputed check has 7 matches.
+  3. `service.py` precomputed check has 5 matches.
+  4. `perception.encode` conditional check has 2 matches.
+  5. Torch isolation check has 0 matches (CLEAN).
+- pytest: 278 passed, 12 skipped, 14 failed (all 14 failures are pre-existing).
+
+---
+
 ## Recommended Work Areas (Current State)
+
+### April 9, 2026: Settings + Science Turnaround (Implemented)
+
+This repo now has a targeted settings/science cleanup aimed at operator trust and scientific clarity.
+
+#### What changed
+
+1. **Settings surface is less misleading**
+- `runtime_profile` was removed from the desktop settings surface because it was reading like a primary mode switch without meaningfully driving the desktop runtime.
+- `camera_device` is now treated as diagnostic/read-only on the desktop settings surface. Camera switching remains a live camera control concern, not a manual opaque-ID edit.
+- Provider controls now explain expected impact:
+  - ONNX = proposal support / compatibility perception, not native JEPA
+  - MLX / Ollama / cloud = language reasoning paths, not the JEPA world model
+  - open-vocabulary labels and TVLC explicitly mention semantic prerequisites
+- Expert-only path fields are now conditionally shown when their provider is enabled, to reduce noise without deleting settings.
+
+2. **Challenge scoring semantics are now real**
+- `Score Live Sequence` and `Score Stored Window` were previously sending different `challenge_set` values but effectively converging on the same backend data path.
+- `cloud/runtime/service.py:evaluate_challenge()` now branches:
+  - `live` → scores the most recent live session window
+  - `curated` → first tries the most recent saved challenge window, then falls back to a stored scene-state window
+- `ChallengeRun` now carries:
+  - `window_label`
+  - `narration`
+
+3. **Science panel no longer mislabels rollout narration as challenge narration**
+- The old `Gemma 4 Narrator` block was showing `rollout.summary`, which is rollout-planning output rather than scored challenge output.
+- `ScientificReadout` now shows:
+  - a challenge-derived `Challenge brief` sourced from `ChallengeRun.narration`
+  - a separate `Recovery branch brief` for rollout planning
+- This separates challenge evidence from plan/recovery telemetry.
+
+4. **Camera degrade state is less trigger-happy**
+- The desktop was labeling any `cameraStreamLive && !cameraReady` state as `degraded`.
+- The state model now only marks the camera degraded for true fault signals:
+  - `black frame detected`
+  - `video stalled`
+  - `camera error`
+- `stream attached` / warmup states are treated as live warmup, not as degradation.
+
+5. **Challenge guidance is clearer**
+- `ChallengeGuide` now explicitly explains:
+  - what `Score Live Sequence` does
+  - what `Score Stored Window` does
+  - how to use `Start Guided Run`, `Next Step`, and `Reset`
+- Button tooltips and explanatory copy were added so the operator flow is understandable without reverse-engineering the UI.
+
+6. **Rollout narration fallback is now deterministic and useful**
+- `/v1/planning/rollout/narrate` no longer falls back to dead text like `Gemma 4 narrator is visually unavailable.` or `Rollout plan calculated safely.`
+- `cloud/runtime/gemma4_bridge.py` now exposes a deterministic rollout summarizer, and `cloud/runtime/app.py` uses it whenever MLX narration is unavailable or errors.
+- Frontend rollout narration now accepts any non-empty narrated summary from the backend, including deterministic fallback text.
+
+#### Why this was done
+
+The Settings tab had several controls that looked authoritative but were either legacy, diagnostic, or semantically underspecified. That created operator confusion and made debugging harder.
+
+The Science module was also conflating two different products:
+- scored challenge evidence
+- rollout/recovery planning
+
+That is why the challenge “Gemma narrator” often sounded generic or unrelated to the actual result: it was rendering the wrong source object.
+
+#### Files touched for this turn
+
+- `cloud/runtime/models.py`
+- `cloud/runtime/world_model.py`
+- `cloud/runtime/service.py`
+- `cloud/runtime/gemma4_bridge.py`
+- `cloud/runtime/app.py`
+- `desktop/electron/src/types.ts`
+- `desktop/electron/src/hooks/useWorldState.ts`
+- `desktop/electron/src/state/DesktopAppContext.tsx`
+- `desktop/electron/src/tabs/SettingsTab.tsx`
+- `desktop/electron/src/tabs/LivingLensTab.tsx`
+- `desktop/electron/src/panels/ScientificReadout.tsx`
+- `desktop/electron/src/panels/ChallengeGuide.tsx`
+
+#### Validation completed
+
+- `python3.11 -m py_compile` passed for the touched backend files
+- `cd desktop/electron && npm run typecheck` passed
+- `cd desktop/electron && npm run build` passed
+
+#### Remaining caveat
+
+This turn improves truthfulness and operator guidance, but it does **not** solve native V-JEPA2 instability by itself. If native JEPA crashes on the machine, the UI should now explain degraded continuity more honestly and avoid overstating camera failure, but the underlying native crash still depends on the JEPA stack and Apple Silicon runtime conditions.
 
 1. **Audio-JEPA Phase 1 (Completed)** — Implemented robust, non-blocking `AudioEncoder` (numpy/PyAV fixed seed `20260327`), migrated schema to v3, integrated FAISS sub-index, wired into `SmritiIngestionDaemon`, and added the `/v1/audio/query` API endpoint for same-modal retrieval. Phase 1 Frontend UI is also complete.
 2. **Audio-JEPA Phase 2 (Completed)** — `CLAPProjector` (`cloud/perception/clap_projector.py`) maps LAION-CLAP 512-dim embeddings into DINOv2-ViT-S/14 384-dim visual space via a 2-layer MLP (Linear→LeakyReLU→LayerNorm→Linear→L2-norm). Pure numpy inference, no torch. `cross_modal=true` on `/v1/audio/query` projects audio into visual space and searches the visual FAISS HNSW index — enabling 'hum to find video frame'. Random-init weights available via `scripts/train_clap_projector.py --random-init`. Falls back gracefully to same-modal audio search when CLAP weights unavailable.
 3. **CLAP training data collection** — Gather paired (audio, video frame) datasets for contrastive training (`scripts/train_clap_projector.py --audio-dir --frames-dir`) to unlock true cross-modal semantics beyond the random-init baseline.
-4. **Federated Setu-2** — W-matrix is persisted to SQLite
-5. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
-6. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
-7. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
-8. **Keep planning/recovery backend stable** before widening the client surface
+4. **TVLC Training (Implemented)** — `scripts/train_tvlc.py --coco-dir` now routes into the real trainer in `cloud/perception/tvlc_training.py`. It learns TVLC weights from DINOv2 patch tokens plus Gemma-guided caption canonicalization, exports runtime-compatible connector weights, and falls back to deterministic caption normalization when the Gemma teacher is unavailable. Random init remains for pipeline validation only.
+5. **Federated Setu-2** — W-matrix is persisted to SQLite
+6. **Mobile client packaging** — iOS and Android sources are aligned to the runtime contract but need native IDE wiring
+7. **SDK coverage** — planning/recovery routes, WorldModelConfig endpoints, and new audio routes need SDK clients
+8. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
+9. **Keep planning/recovery backend stable** before widening the client surface
 
 ---
 

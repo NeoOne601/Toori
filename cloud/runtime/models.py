@@ -63,6 +63,22 @@ class ProviderHealth(BaseModel):
     latency_ms: Optional[float] = None
 
 
+class RuntimeFeatureSettings(BaseModel):
+    live_lens_use_jepa_tick: bool = True
+    energy_heatmap_enabled: bool = True
+    entity_overlay_enabled: bool = True
+    open_vocab_labels_enabled: bool = True
+    tvlc_enabled: bool = True
+
+
+class RuntimeFeatureStatus(BaseModel):
+    name: str
+    enabled: bool = True
+    healthy: bool = False
+    message: str = "not configured"
+    source_provider: Optional[str] = None
+
+
 class SmritiStorageConfig(BaseModel):
     """
     User-configurable storage settings for Smriti.
@@ -210,8 +226,10 @@ class RuntimeSettings(BaseModel):
     observability_enabled: bool = True
     sync_enabled: bool = False
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    live_features: RuntimeFeatureSettings = Field(default_factory=RuntimeFeatureSettings)
     public_url: str = "https://github.com/NeoOne601/Toori"
     vjepa2_model_path: str = ""
+    vjepa2_cache_dir: str = ""
     vjepa2_n_frames: int = 0
     smriti_storage: SmritiStorageConfig = Field(default_factory=SmritiStorageConfig)
 
@@ -262,6 +280,25 @@ class Observation(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ObservationSummary(BaseModel):
+    id: str
+    session_id: str
+    created_at: datetime
+    world_state_id: Optional[str] = None
+    observation_kind: ObservationKind = "camera"
+    image_path: str
+    thumbnail_path: str
+    width: int
+    height: int
+    summary: Optional[str] = None
+    source_query: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    novelty: float = 0.0
+    providers: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class SearchHit(BaseModel):
     observation_id: str
     score: float
@@ -292,6 +329,7 @@ class PersistenceSignal(BaseModel):
 class WorldModelMetrics(BaseModel):
     prediction_consistency: float = 0.0
     surprise_score: float = 0.0
+    energy_activation_score: float = 0.0
     temporal_continuity_score: float = 0.0
     persistence_confidence: float = 0.0
     occlusion_recovery_score: float = 0.0
@@ -455,7 +493,9 @@ class ChallengeRun(BaseModel):
     guide_steps: list[str] = Field(default_factory=list)
     success_criteria: dict[str, bool] = Field(default_factory=dict)
     baseline_comparison: BaselineComparison = Field(default_factory=BaselineComparison)
+    window_label: str = ""
     summary: str = ""
+    narration: str = ""
 
 
 class RecoveryScenario(BaseModel):
@@ -633,6 +673,9 @@ class JEPATick:
 
     def to_payload(self) -> "JEPATickPayload":
         return JEPATickPayload(
+            tick_id=f"tick_{int(self.timestamp_ms)}",
+            overlay_epoch=int(self.timestamp_ms),
+            source_backend=self.last_tick_encoder_type or self.world_model_version,
             energy_map=np.asarray(self.energy_map, dtype=np.float32).tolist(),
             entity_tracks=[track.model_dump(mode="json") for track in self.entity_tracks],
             talker_event=self.talker_event,
@@ -659,6 +702,7 @@ class JEPATick:
             epistemic_uncertainty=float(self.epistemic_uncertainty) if self.epistemic_uncertainty is not None else None,
             aleatoric_uncertainty=float(self.aleatoric_uncertainty) if self.aleatoric_uncertainty is not None else None,
             surprise_score=float(self.surprise_score) if self.surprise_score is not None else None,
+            prediction_error_z=float(self.surprise_score) if self.surprise_score is not None else None,
             audio_embedding=self.audio_embedding,
             audio_energy=float(self.audio_energy) if self.audio_energy is not None else None,
             world_model_version=self.world_model_version,
@@ -672,6 +716,9 @@ class JEPATick:
 
 
 class JEPATickPayload(BaseModel):
+    tick_id: Optional[str] = None
+    overlay_epoch: Optional[int] = None
+    source_backend: Optional[str] = None
     energy_map: list[list[float]]
     entity_tracks: list[dict[str, Any]] = Field(default_factory=list)
     talker_event: Optional[str] = None
@@ -699,6 +746,7 @@ class JEPATickPayload(BaseModel):
     epistemic_uncertainty: Optional[float] = None
     aleatoric_uncertainty: Optional[float] = None
     surprise_score: Optional[float] = None
+    prediction_error_z: Optional[float] = None
     audio_embedding: Optional[list[float]] = None
     audio_energy: Optional[float] = None
     world_model_version: str = "surrogate"
@@ -920,6 +968,15 @@ class WorldModelStatus(BaseModel):
     degraded: bool = False
     degrade_reason: Optional[str] = None
     degrade_stage: Optional[str] = None
+    active_backend: str = "surrogate"
+    native_ready: bool = False
+    preflight_status: str = "not_run"
+    last_failure_at: Optional[datetime] = None
+    crash_fingerprint: Optional[str] = None
+    native_process_state: str = "idle"
+    last_native_exit_code: Optional[int] = None
+    last_native_signal: Optional[int] = None
+    retryable_native_failure: bool = False
     telescope_test: str = "PASSED"
 
 
@@ -933,6 +990,7 @@ class WorldModelConfig(BaseModel):
 
 class WorldModelConfigUpdate(BaseModel):
     model_path: str = ""
+    cache_dir: str = ""
     n_frames: int = 0
 
 
@@ -964,10 +1022,51 @@ class ShareObservationEventRequest(BaseModel):
 
 class ProviderHealthResponse(BaseModel):
     providers: list[ProviderHealth]
+    features: list[RuntimeFeatureStatus] = Field(default_factory=list)
 
 
 class ObservationsResponse(BaseModel):
     observations: list[Observation]
+
+
+class ObservationSummariesResponse(BaseModel):
+    observations: list[ObservationSummary]
+
+
+class SceneGraphNode(BaseModel):
+    id: str
+    label: str
+    depth_stratum: str = "unknown"
+    depth_confidence: float = 0.0
+    bbox: Optional[BoundingBox] = None
+    source: str = "unknown"
+    confidence: float = 0.0
+    status: str = "visible"
+    label_source: str = "unknown"
+    label_evidence: Optional[dict[str, Any]] = None
+
+
+class SceneGraphEdge(BaseModel):
+    source: str
+    target: str
+    relation: str = "related"
+    weight: float = 0.0
+
+
+class SceneGraphPayload(BaseModel):
+    nodes: list[SceneGraphNode] = Field(default_factory=list)
+    edges: list[SceneGraphEdge] = Field(default_factory=list)
+
+
+class RuntimeSnapshotResponse(BaseModel):
+    session_id: str
+    current: Optional[SceneState] = None
+    entity_tracks: list[EntityTrack] = Field(default_factory=list)
+    latest_jepa_tick: Optional[JEPATickPayload] = None
+    world_model_status: WorldModelStatus
+    observations: list[ObservationSummary] = Field(default_factory=list)
+    observation_count: int = 0
+    scene_graph: SceneGraphPayload = Field(default_factory=SceneGraphPayload)
 
 
 class EventMessage(BaseModel):

@@ -25,6 +25,7 @@ export type SpatialCanvasAnchor = {
 type SpatialCanvas3DProps = {
   warmup?: boolean;
   energyMap?: number[][];
+  statusLabel?: string | null;
   ghosts?: SpatialCanvasGhostBox[];
   anchors?: SpatialCanvasAnchor[];
   children?: ReactNode;
@@ -39,6 +40,7 @@ function mergeClassNames(...parts: Array<string | undefined | false>) {
 export default function SpatialCanvas3D({
   warmup = false,
   energyMap = [],
+  statusLabel = null,
   ghosts = [],
   anchors = [],
   children,
@@ -46,13 +48,8 @@ export default function SpatialCanvas3D({
   style,
   ...rest
 }: SpatialCanvas3DProps) {
-  if (warmup) {
-    return null;
-  }
-
   const flatEnergy = energyMap.flat();
-  const maxEnergy = flatEnergy.reduce((best, value) => Math.max(best, value), 0);
-  const hasContent = children || ghosts.length > 0 || anchors.length > 0 || flatEnergy.length > 0;
+  const hasContent = children || ghosts.length > 0 || anchors.length > 0 || flatEnergy.length > 0 || Boolean(statusLabel);
   if (!hasContent) {
     return null;
   }
@@ -65,7 +62,7 @@ export default function SpatialCanvas3D({
       {...rest}
     >
       <div className="spatial-canvas3d__stage">
-        {energyMap.length ? <SpatialHeatmap energyMap={energyMap} /> : null}
+        <SpatialHeatmap energyMap={energyMap} warmup={warmup} statusLabel={statusLabel} />
 
         {anchors.map((anchor) => (
           <div

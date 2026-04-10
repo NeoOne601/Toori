@@ -1,3 +1,4 @@
+import EnergySpectrumLegend from "../components/EnergySpectrumLegend";
 import { useDesktopApp } from "../state/DesktopAppContext";
 import LiveUnderstanding from "../panels/LiveUnderstanding";
 import MemoryRelinking from "../panels/MemoryRelinking";
@@ -7,16 +8,28 @@ export default function LiveLensTab() {
   const app = useDesktopApp();
   const { camera, world } = app;
   const configuredWorldModel = world.worldModelStatus?.configured_encoder || "vjepa2";
-  const worldModelLabel =
-    app.currentJepaTick?.degraded || world.worldModelStatus?.degraded
-      ? `${configuredWorldModel} degraded`
-      : (app.currentJepaTick?.last_tick_encoder_type || world.worldModelStatus?.last_tick_encoder_type) === "surrogate"
-        ? "surrogate fallback"
-        : `${configuredWorldModel} active`;
+  const activeWorldModel =
+    app.currentJepaTick?.last_tick_encoder_type ||
+    world.worldModelStatus?.active_backend ||
+    world.worldModelStatus?.last_tick_encoder_type;
+  const worldModelLabel = !world.runtimeAvailable
+    ? app.runtimeConnectionLabel
+    : !app.currentJepaTick &&
+        (!activeWorldModel || activeWorldModel === "not_loaded")
+      ? "waiting for first JEPA tick"
+    : app.currentJepaTick?.degraded || world.worldModelStatus?.degraded
+        ? `${activeWorldModel || configuredWorldModel} degraded`
+      : activeWorldModel === "surrogate"
+          ? "degraded continuity active"
+          : activeWorldModel && activeWorldModel !== "not_loaded"
+            ? `${activeWorldModel} active`
+            : `${configuredWorldModel} active`;
 
   return (
-    <section className="panel-grid lens-grid">
-      <SceneMonitor
+    <>
+      {app.showEnergyMap ? <EnergySpectrumLegend /> : null}
+      <section className="panel-grid lens-grid">
+        <SceneMonitor
         title="Camera"
         subtitle={`${world.settings?.primary_perception_provider || "onnx"} proposals · ${worldModelLabel} · ${world.settings?.reasoning_backend || "cloud"} reasoning`}
         videoRef={camera.liveVideoRef}
@@ -26,6 +39,8 @@ export default function LiveLensTab() {
         showEntities={app.showEntities}
         showEnergyMap={app.showEnergyMap}
         energyMap={app.currentJepaTick?.energy_map || []}
+        energyWarmup={Boolean(app.currentJepaTick?.warmup)}
+        energyStatusLabel={app.energyHeatmapStatus}
         ghosts={app.ghostBoxes}
         anchors={app.energyAnchors}
         uiMode={app.uiMode}
@@ -181,9 +196,9 @@ export default function LiveLensTab() {
             ) : null}
           </>
         }
-      />
+        />
 
-      <LiveUnderstanding
+        <LiveUnderstanding
         title="Latest Observation"
         observation={app.latestObservation}
         summary={app.latestObservationSummary}
@@ -200,16 +215,17 @@ export default function LiveLensTab() {
             : []
         }
         emptyLabel="No observations captured yet."
-      />
+        />
 
-      <MemoryRelinking
+        <MemoryRelinking
         title="Nearest Memory"
         hits={world.analysis?.hits || []}
         assetUrl={app.assetUrl}
         emptyLabel="No related scenes yet."
         limit={6}
         toneClassName="panel--memory"
-      />
-    </section>
+        />
+      </section>
+    </>
   );
 }

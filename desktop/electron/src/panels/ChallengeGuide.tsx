@@ -34,20 +34,46 @@ export default function ChallengeGuide({
       <p className="muted">
         Run one guided occlusion-and-change sequence. The app compares JEPA / Hybrid mode against frame captioning and embedding retrieval on the same session window.
       </p>
+      <div className="status-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", marginBottom: "1rem" }}>
+        <div className="status-metric">
+          <span>Score live sequence</span>
+          <strong>Grade the latest live camera window</strong>
+        </div>
+        <div className="status-metric">
+          <span>Score stored window</span>
+          <strong>Re-score the most recent saved challenge run</strong>
+        </div>
+      </div>
       <div className="camera-actions">
-        <button onClick={onStart} disabled={challengeBusy}>
+        <button
+          onClick={onStart}
+          disabled={challengeBusy}
+          title="Reset the guided flow to step 1 and start capturing a fresh challenge sequence."
+        >
           {challengeGuideActive ? "Guided run active" : "Start Guided Run"}
         </button>
-        <button onClick={onAdvance} disabled={!challengeGuideActive || challengeStepIndex >= challengeSteps.length - 1}>
+        <button
+          onClick={onAdvance}
+          disabled={!challengeGuideActive || challengeStepIndex >= challengeSteps.length - 1}
+          title="Move to the next instruction after you physically perform the current step."
+        >
           Next Step
         </button>
-        <button onClick={onReset} disabled={!challengeGuideActive}>
+        <button onClick={onReset} disabled={!challengeGuideActive} title="Stop this run and clear the current guided progress.">
           Reset
         </button>
-        <button onClick={onScoreLive} disabled={challengeBusy}>
+        <button
+          onClick={onScoreLive}
+          disabled={challengeBusy}
+          title="Score the latest live camera sequence from this session, even if you have not saved a previous challenge window."
+        >
           {challengeBusy ? "Scoring" : "Score Live Sequence"}
         </button>
-        <button onClick={onScoreStored} disabled={challengeBusy}>
+        <button
+          onClick={onScoreStored}
+          disabled={challengeBusy}
+          title="Score the most recently stored challenge window so you can rerun evaluation without capturing a new one."
+        >
           Score Stored Window
         </button>
       </div>
@@ -76,6 +102,9 @@ export default function ChallengeGuide({
         </strong>
         <p>{currentChallengeStep || challengeSteps[0]}</p>
         <p className="muted">{challengeStepExpectation(challengeGuideActive ? challengeStepIndex : 0)}</p>
+        <p className="muted">
+          Flow: start the run, follow each physical step, click `Next Step` after performing it, then score the live or stored window.
+        </p>
       </div>
     </article>
   );

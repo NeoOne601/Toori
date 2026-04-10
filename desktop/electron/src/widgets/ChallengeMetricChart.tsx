@@ -15,13 +15,14 @@ export default function ChallengeMetricChart({ history }: ChallengeMetricChartPr
     );
   }
 
-  const points = [...history].slice(0, 8).reverse();
+  const points = [...history].slice(-8);
   return (
     <div className="metric-chart-shell">
       <div className="metric-chart-legend" aria-hidden="true">
         <span className="legend-dot continuity">Continuity</span>
         <span className="legend-dot surprise">Surprise</span>
         <span className="legend-dot persistence">Persistence</span>
+        <span className="legend-dot energy">Energy</span>
       </div>
       <div className="metric-chart" aria-label="World-model metrics over time">
         {points.map((state, index) => (
@@ -49,6 +50,11 @@ export default function ChallengeMetricChart({ history }: ChallengeMetricChartPr
                 className="metric-bar persistence"
                 style={{ height: `${Math.max(8, Math.round(state.metrics.persistence_confidence * 100))}%` }}
                 title={`Persistence ${state.metrics.persistence_confidence.toFixed(2)}`}
+              />
+              <span
+                className="metric-bar energy"
+                style={{ height: `${Math.max(8, Math.round((state.metrics.energy_activation_score || 0) * 100))}%` }}
+                title={`Energy ${state.metrics.energy_activation_score.toFixed(2)}`}
               />
             </div>
             <small>t{index + 1}</small>

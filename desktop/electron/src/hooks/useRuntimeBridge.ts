@@ -22,23 +22,34 @@ export function browserBridge(): DesktopBridge {
   return {
     async request(path, options = {}) {
       const requestPath = path.startsWith("/") ? path : `/${path}`;
-      const response = await fetch(`${BROWSER_RUNTIME_URL}${requestPath}`, {
-        method: options.method || "GET",
-        headers: {
-          "Content-Type": "application/json",
-          ...(options.headers || {}),
-        },
-        body: options.body ? JSON.stringify(options.body) : undefined,
-      });
-      const contentType = response.headers.get("content-type") || "";
-      const data = contentType.includes("application/json")
-        ? await response.json()
-        : await response.text();
-      return {
-        ok: response.ok,
-        status: response.status,
-        data,
-      };
+      try {
+        const response = await fetch(`${BROWSER_RUNTIME_URL}${requestPath}`, {
+          method: options.method || "GET",
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          },
+          body: options.body ? JSON.stringify(options.body) : undefined,
+        });
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json")
+          ? await response.json()
+          : await response.text();
+        return {
+          ok: response.ok,
+          status: response.status,
+          data,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: 503,
+          data: {
+            error: `Runtime unreachable at ${BROWSER_RUNTIME_URL}`,
+            details: (error as Error).message,
+          },
+        };
+      }
     },
   };
 }
@@ -103,15 +114,28 @@ export async function pickFolderPath(): Promise<string | null> {
 }
 
 export async function runtimeRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const response = await getDesktopBridge().request(path, { method, body });
-  if (!response.ok) {
-    const message =
-      typeof response.data === "string"
-        ? response.data
-        : response.data?.detail || `Request failed with status ${response.status}`;
-    throw new Error(message);
+  const requestPath = path.startsWith("/") ? path : `/${path}`;
+  try {
+    const response = await getDesktopBridge().request(path, { method, body });
+    if (!response.ok) {
+      const message =
+        typeof response.data === "string"
+          ? response.data
+          : response.data?.detail ||
+            response.data?.error ||
+            response.data?.details ||
+            response.data?.message ||
+            `Request failed with status ${response.status}`;
+      throw new Error(message);
+    }
+    return response.data as T;
+  } catch (error) {
+    const message = (error as Error).message || "";
+    if (/failed to fetch|fetch failed/i.test(message)) {
+      throw new Error(`Runtime unreachable at ${BROWSER_RUNTIME_URL}${requestPath}`);
+    }
+    throw error;
   }
-  return response.data as T;
 }
 
 export async function copyTextToClipboard(text: string): Promise<void> {

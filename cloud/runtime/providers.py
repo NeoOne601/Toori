@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import io
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -121,7 +122,63 @@ GENERIC_LABEL_TOKENS = {
     "white",
     "gray",
     "grey",
+    "entity",
+    "tracked",
+    "track",
+    "tracks",
+    "proposal",
+    "proposals",
+    "candidate",
+    "candidates",
+    "descriptor",
+    "descriptors",
+    "label",
+    "labels",
+    "rgb",
+    "histogram",
+    "histograms",
+    "basic",
+    "onnx",
+    "perception",
+    "vector",
 }
+
+ABSURD_LABELS = {
+    "hot dog near velvet",
+    "hand plane near windsor tie",
+    "lemon near bra",
+    "rgb histogram+edge histogram",
+    "rgb histogram edge histogram",
+    "dominant color",
+    "brightness label",
+    "edge label",
+}
+
+SUSPICIOUS_CLASSIFIER_LABELS = {
+    "oxygen mask",
+    "bra",
+    "windsor tie",
+    "hot dog",
+    "hand plane",
+    "velvet",
+    "lemon",
+}
+
+RELATION_PHRASES = (
+    " near ",
+    " behind ",
+    " left of ",
+    " right of ",
+    " above ",
+    " below ",
+    " in front of ",
+    " next to ",
+    " beside ",
+    " with ",
+    " on top of ",
+)
+
+PLACEHOLDER_LABEL_RE = re.compile(r"^(?:entity|proposal|candidate|tracked(?: region| object)?|object)\s*[-_ ]*\d*$")
 
 
 def _normalize_label(label: object) -> str:
@@ -138,8 +195,29 @@ def _normalize_label(label: object) -> str:
 
 
 def _meaningful_label(label: object) -> str:
-    tokens = [token for token in _normalize_label(label).split() if len(token) >= 3 and token not in GENERIC_LABEL_TOKENS]
-    return " ".join(tokens)
+    normalized = _normalize_label(label)
+    if not normalized:
+        return ""
+    if normalized in ABSURD_LABELS or PLACEHOLDER_LABEL_RE.match(normalized):
+        return ""
+    if any(phrase in normalized for phrase in RELATION_PHRASES):
+        return ""
+    if "histogram" in normalized or "descriptor" in normalized:
+        return ""
+    tokens = [token for token in normalized.split() if len(token) >= 3 and token not in GENERIC_LABEL_TOKENS]
+    if not tokens:
+        return ""
+    candidate = " ".join(tokens[:4])
+    if candidate in ABSURD_LABELS or PLACEHOLDER_LABEL_RE.match(candidate):
+        return ""
+    return candidate
+
+
+def _proposal_fallback_label(region: BoundingBox | None, index: int) -> str:
+    region_label = _meaningful_label(getattr(region, "label", None) or "")
+    if region_label and region_label not in SUSPICIOUS_CLASSIFIER_LABELS:
+        return region_label
+    return f"entity-{index + 1}"
 
 
 def _label_rank(label: str, score: float, saliency: float) -> float:
@@ -812,6 +890,9 @@ class ProviderRegistry:
         self.mlx = MlxReasoningProvider()
         self._circuits: dict[str, CircuitState] = {}
 
+    def get(self, provider_name: str):
+        return getattr(self, provider_name, None)
+
     def health_snapshot(self, settings: RuntimeSettings) -> list[ProviderHealth]:
         providers = settings.providers
         entries: list[ProviderHealth] = []
@@ -928,9 +1009,13 @@ class ProviderRegistry:
             except Exception:
                 continue
                 
-            label = _meaningful_label(metadata.get("top_label") or metadata.get("descriptor") or "")
+            label = ""
+            if classifier_name == "onnx":
+                label = _meaningful_label(metadata.get("top_label") or "")
+                if label in SUSPICIOUS_CLASSIFIER_LABELS:
+                    label = ""
             if not label:
-                label = f"{region.label}" if region.label else f"entity-{index + 1}"
+                label = _proposal_fallback_label(region, index)
                 
             score = _label_rank(label, confidence, saliency)
             proposal = BoundingBox(

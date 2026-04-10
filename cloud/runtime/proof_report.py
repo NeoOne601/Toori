@@ -47,7 +47,8 @@ def generate_proof_report(
     ticks: list[JEPATick],
     session_id: str,
     narration_text: str,
-    chart_b64: str | None = None
+    chart_b64: str | None = None,
+    analysis_source: str = "skipped",
 ) -> Path:
     stats = aggregate_stats(ticks)
     
@@ -59,11 +60,18 @@ def generate_proof_report(
     pdf.cell(0, 10, f"Session ID: {session_id}")
     pdf.ln(12)
     
-    # Gemma 4 Analysis Section
+    # Analysis Section
     pdf.set_font("Helvetica", "B", 14)
     pdf.set_fill_color(240, 240, 240)
-    pdf.cell(0, 10, " Gemma 4 Analysis Report", fill=True)
+    pdf.cell(0, 10, " Analysis Report", fill=True)
     pdf.ln(12)
+    pdf.set_font("Helvetica", "I", 9)
+    source_label = {
+        "gemma4": "Narration source: Gemma 4 (MLX)",
+        "error": "Narration source: unavailable",
+    }.get(analysis_source, "Narration source: skipped")
+    pdf.cell(0, 6, source_label)
+    pdf.ln(8)
     pdf.set_font("Helvetica", "", 11)
     pdf.multi_cell(0, 6, narration_text)
     pdf.ln(10)

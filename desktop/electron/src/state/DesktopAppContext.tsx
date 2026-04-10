@@ -3,6 +3,7 @@ import {
   startTransition,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -15,8 +16,10 @@ import {
   consumerMessage,
   explainSummary,
   explainWorldModel,
+  boxesFromAnchorMatches,
   formatEntityBaseLabel,
   humanizeLabel,
+  isPlaceholderVisionLabel,
   normalizeBoxes,
   toEnergyAnchors,
   toForecastValue,
@@ -28,13 +31,21 @@ import type {
   ChallengeRun,
   ConsumerGraphNode,
   EntityTrack,
+  LivingLensTickResponse,
   Observation,
   SceneState,
 } from "../types";
 
 function isGenericEntityLabel(label: string | null | undefined) {
-  const normalized = humanizeLabel(String(label || ""));
-  return !normalized || normalized === "tracked region" || /^entity[-\s]?\d+$/i.test(normalized);
+  return isPlaceholderVisionLabel(label);
+}
+
+function resolveDepthStratum(value?: string | null) {
+  const normalized = humanizeLabel(value || "").toLowerCase().trim();
+  if (normalized === "foreground" || normalized === "midground" || normalized === "background") {
+    return normalized;
+  }
+  return "unresolved";
 }
 
 function sceneLabelCandidates(sceneState?: SceneState | null): string[] {
@@ -117,6 +128,61 @@ function proposalLabelForTrack(
   return bestDistance <= 0.22 ? bestLabel : "";
 }
 
+function boxesFromTracks(
+  tracks: EntityTrack[],
+  proposalBoxes: BoundingBox[],
+  observation?: Observation | null,
+): BoundingBox[] {
+  const width = Math.max(observation?.width || 1, 1);
+  const height = Math.max(observation?.height || 1, 1);
+  return tracks.flatMap((track) => {
+    const metadata = (track.metadata || {}) as Record<string, unknown>;
+    const bbox = (metadata.bbox_pixels || metadata.ghost_bbox_pixels || metadata.bbox) as
+      | Record<string, unknown>
+      | undefined;
+    if (!bbox) {
+      return [];
+    }
+    const x = Number(bbox.x);
+    const y = Number(bbox.y);
+    const boxWidth = Number(bbox.width || 0);
+    const boxHeight = Number(bbox.height || 0);
+    if (![x, y, boxWidth, boxHeight].every(Number.isFinite)) {
+      return [];
+    }
+    const normalized =
+      boxWidth > 1 || boxHeight > 1
+        ? {
+            x: x / width,
+            y: y / height,
+            width: boxWidth / width,
+            height: boxHeight / height,
+          }
+        : {
+            x,
+            y,
+            width: boxWidth,
+            height: boxHeight,
+          };
+    const label = proposalLabelForTrack(track, proposalBoxes, observation) || formatEntityBaseLabel(track);
+    return [
+      {
+        x: Math.max(0, Math.min(normalized.x, 0.96)),
+        y: Math.max(0, Math.min(normalized.y, 0.96)),
+        width: Math.max(0.04, Math.min(normalized.width, 1 - normalized.x)),
+        height: Math.max(0.04, Math.min(normalized.height, 1 - normalized.y)),
+        label,
+        score: track.last_similarity || track.persistence_confidence || null,
+        metadata: {
+          ...metadata,
+          track_id: track.id,
+          track_status: track.status,
+        },
+      },
+    ];
+  });
+}
+
 function mergeConsumerNodes(nodes: ConsumerGraphNode[]) {
   const merged = new Map<string, ConsumerGraphNode & { count: number }>();
   for (const node of nodes) {
@@ -139,6 +205,27 @@ function mergeConsumerNodes(nodes: ConsumerGraphNode[]) {
   return Array.from(merged.values()).map(({ count: _count, ...node }) => node);
 }
 
+function stableNodeId(prefix: string, x: number, y: number, fallback: string) {
+  return `${prefix}-${Math.round(x * 10)}-${Math.round(y * 10)}-${fallback}`;
+}
+
+function hasVisibleHeatmapEnergy(energyMap?: number[][] | null) {
+  if (!energyMap?.length) {
+    return false;
+  }
+  const values = energyMap.flat().map((value) => Number(value) || 0);
+  if (!values.length) {
+    return false;
+  }
+  const maxEnergy = Math.max(...values, 0);
+  if (maxEnergy <= 0) {
+    return false;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const p55 = sorted[Math.floor(sorted.length * 0.55)] ?? 0;
+  return values.some((value) => value >= Math.max(p55, maxEnergy * 0.18));
+}
+
 function resolveConsumerTrackLabel(
   track: EntityTrack,
   index: number,
@@ -149,17 +236,18 @@ function resolveConsumerTrackLabel(
   const metadata = (track.metadata || {}) as Record<string, unknown>;
   const sceneCandidates = sceneLabelCandidates(sceneState);
   const candidates = [
-    humanizeLabel(proposalLabel || ""),
     humanizeLabel(String(metadata.primary_object_label || "")),
-    humanizeLabel(String(metadata.caption || "")),
-    humanizeLabel(String(metadata.top_label || "")),
     humanizeLabel(String(atlasNode?.label || "")),
     sceneCandidates[index] || "",
+    humanizeLabel(String(metadata.caption || "")),
+    humanizeLabel(String(metadata.top_label || "")),
     humanizeLabel(String((sceneState?.metadata as Record<string, unknown> | undefined)?.primary_object_label || "")),
     formatEntityBaseLabel(track),
+    humanizeLabel(proposalLabel || ""),
     `Entity ${index + 1}`,
   ].filter((item) => item && !isGenericEntityLabel(item));
-  return candidates[0] || formatEntityBaseLabel(track) || `Entity ${index + 1}`;
+  const fallbackLabel = formatEntityBaseLabel(track);
+  return candidates[0] || (!isGenericEntityLabel(fallbackLabel) ? fallbackLabel : `Unresolved ${index + 1}`);
 }
 
 function useDesktopAppValue() {
@@ -181,6 +269,12 @@ function useDesktopAppValue() {
     window.localStorage.setItem("toori_mode", "consumer");
     return "consumer";
   });
+  const overlaySourceRef = useRef<{ kind: "anchor" | "track" | "proposal"; at: number }>({
+    kind: "proposal",
+    at: 0,
+  });
+  const lastAnchorBoxesRef = useRef<BoundingBox[]>([]);
+  const lastTrackBoxesRef = useRef<BoundingBox[]>([]);
   const { assetUrl, pickImagePayload, runtimeRequest } = useRuntimeBridge();
   const world = useWorldState({
     sessionId,
@@ -197,17 +291,97 @@ function useDesktopAppValue() {
   const livingLens = useLivingLens({
     activeTab,
     cameraStreamLive: camera.cameraStreamLive,
+    cameraReady: camera.cameraReady,
     sessionId,
     topK: world.settings?.top_k || 6,
     currentFrameBase64: camera.currentFrameBase64,
     runtimeRequest,
     onHealthChange: world.setHealth,
-    onRefresh: world.refreshAll,
+    onResult: (result) => {
+      world.setAnalysis(result);
+      world.setHealth(result.provider_health);
+      world.setLatestJepaTick(result.jepa_tick || null);
+      world.setWorldState((current) => {
+        const nextHistory = [
+          result.scene_state,
+          ...(current?.history || []).filter((state) => state.id !== result.scene_state.id),
+        ];
+        return {
+          session_id: current?.session_id || sessionId,
+          current: result.scene_state,
+          history: nextHistory,
+          entity_tracks: result.entity_tracks,
+          challenges: current?.challenges || [],
+          benchmarks: current?.benchmarks || [],
+          atlas: current?.atlas || null,
+        };
+      });
+    },
+    onError: (error) => {
+      world.setLatestJepaTick(null);
+      world.setStatus(`Living Lens tick failed: ${error.message}`);
+    },
+    onRefresh: world.refreshHot,
   });
 
   useEffect(() => {
     window.localStorage.setItem("toori_mode", uiMode);
   }, [uiMode]);
+
+  useEffect(() => {
+    const liveFeatures = world.settings?.live_features;
+    if (!liveFeatures) {
+      return;
+    }
+    setShowEnergyMap(Boolean(liveFeatures.energy_heatmap_enabled ?? true));
+    setShowEntities(Boolean(liveFeatures.entity_overlay_enabled ?? true));
+  }, [
+    world.settings?.live_features?.energy_heatmap_enabled,
+    world.settings?.live_features?.entity_overlay_enabled,
+  ]);
+
+  useEffect(() => {
+    if (activeTab !== "Living Lens" || livingLens.livingLensEnabled) {
+      return;
+    }
+    world.setLatestJepaTick(null);
+  }, [activeTab, livingLens.livingLensEnabled, world.setLatestJepaTick]);
+
+  async function runLiveLensTickForPayload(
+    body: Record<string, unknown>,
+  ): Promise<LivingLensTickResponse> {
+    const result = await runtimeRequest<LivingLensTickResponse>("/v1/living-lens/tick", "POST", {
+      session_id: sessionId,
+      top_k: world.settings?.top_k || 6,
+      proof_mode: "both",
+      ...body,
+    });
+    world.setAnalysis(result);
+    world.setHealth(result.provider_health);
+    world.setLatestJepaTick(result.jepa_tick || null);
+    livingLens.setLivingLensResult(result);
+    livingLens.setLivingLensLastSuccessAt(Date.now());
+    livingLens.setLivingLensLastError(null);
+    world.setWorldState((current) => {
+      const nextHistory = [
+        result.scene_state,
+        ...(current?.history || []).filter((state) => state.id !== result.scene_state.id),
+      ];
+      return {
+        session_id: current?.session_id || sessionId,
+        current: result.scene_state,
+        history: nextHistory,
+        entity_tracks: result.entity_tracks,
+        challenges: current?.challenges || [],
+        benchmarks: current?.benchmarks || [],
+        atlas: current?.atlas || null,
+      };
+    });
+    startTransition(() => {
+      world.refreshHot().catch(() => undefined);
+    });
+    return result;
+  }
 
   async function analyzeCurrentFrame(options: {
     query?: string;
@@ -227,7 +401,7 @@ function useDesktopAppValue() {
     });
     world.setHealth(result.provider_health);
     startTransition(() => {
-      world.refreshAll().catch(() => undefined);
+      world.refreshHot().catch(() => undefined);
     });
     return result;
   }
@@ -239,11 +413,18 @@ function useDesktopAppValue() {
     }
     world.setStatus("Analyzing current frame");
     try {
-      const result = await analyzeCurrentFrame({
-        query: prompt || undefined,
-        decodeMode: "auto",
-        topK: world.settings?.top_k || 6,
-      });
+      const useJepaTick = world.settings?.live_features?.live_lens_use_jepa_tick !== false;
+      const result = useJepaTick
+        ? await runLiveLensTickForPayload({
+            image_base64: camera.currentFrameBase64("live"),
+            query: prompt || undefined,
+            decode_mode: prompt.trim() ? "force" : "auto",
+          })
+        : await analyzeCurrentFrame({
+            query: prompt || undefined,
+            decodeMode: "auto",
+            topK: world.settings?.top_k || 6,
+          });
       if (!result) {
         world.setStatus("Video stream is not ready for capture");
         return;
@@ -262,17 +443,25 @@ function useDesktopAppValue() {
     }
     world.setStatus(payload.filePath ? `Analyzing ${payload.filePath}` : "Analyzing selected image");
     try {
-      const result = await runtimeRequest<AnalyzeResponse>("/v1/analyze", "POST", {
-        file_path: payload.filePath,
-        image_base64: payload.imageBase64,
-        session_id: sessionId,
-        query: prompt || undefined,
-        decode_mode: "force",
-      });
+      const useJepaTick = world.settings?.live_features?.live_lens_use_jepa_tick !== false;
+      const result = useJepaTick
+        ? await runLiveLensTickForPayload({
+            file_path: payload.filePath,
+            image_base64: payload.imageBase64,
+            query: prompt || undefined,
+            decode_mode: "force",
+          })
+        : await runtimeRequest<AnalyzeResponse>("/v1/analyze", "POST", {
+            file_path: payload.filePath,
+            image_base64: payload.imageBase64,
+            session_id: sessionId,
+            query: prompt || undefined,
+            decode_mode: "force",
+          });
       world.setAnalysis(result);
       world.setHealth(result.provider_health);
       startTransition(() => {
-        world.refreshAll().catch(() => undefined);
+        world.refreshHot().catch(() => undefined);
       });
     } catch (error) {
       world.setStatus((error as Error).message);
@@ -311,7 +500,30 @@ function useDesktopAppValue() {
     livingLens.setLivingLensStatus("Continuous monitoring is ready");
   }
 
-  const latestObservation = world.analysis?.observation || world.observations[0];
+  const livingResultFreshnessMs = Math.max(4_000, Math.max(2, livingLens.livingLensIntervalS) * 2_500);
+  const isLivingLensTab = activeTab === "Living Lens";
+  const liveAnalysisPaused = isLivingLensTab && !livingLens.livingLensEnabled;
+  const freshLivingLensResult =
+    livingLens.livingLensResult &&
+    livingLens.livingLensLastSuccessAt != null &&
+    Date.now() - livingLens.livingLensLastSuccessAt <= livingResultFreshnessMs
+      ? livingLens.livingLensResult
+      : null;
+  const freshEventJepaTick =
+    world.latestJepaTick &&
+    Date.now() - Number(world.latestJepaTick.timestamp_ms || 0) <= livingResultFreshnessMs
+      ? world.latestJepaTick
+      : null;
+  const prefersFreshLiveTick = isLivingLensTab && livingLens.livingLensEnabled;
+  const liveTickStale =
+    prefersFreshLiveTick &&
+    livingLens.livingLensLastSuccessAt != null &&
+    Date.now() - livingLens.livingLensLastSuccessAt > livingResultFreshnessMs;
+  const runtimeAvailable = world.runtimeAvailable;
+  const latestObservation =
+    runtimeAvailable
+      ? freshLivingLensResult?.observation || world.analysis?.observation || world.observations[0]
+      : null;
   const latestObservationSummary = latestObservation
     ? explainSummary(
         latestObservation,
@@ -320,66 +532,202 @@ function useDesktopAppValue() {
           : undefined,
       )
     : null;
-  const readyProviders = world.health.filter((item) => item.healthy).length;
-  const degradedProviders = Math.max(world.health.length - readyProviders, 0);
-  const currentSceneState = world.worldState?.current || livingLens.livingLensResult?.scene_state || null;
-  const livingTracks = livingLens.livingLensResult?.entity_tracks || world.worldState?.entity_tracks || [];
-  const livingObservation = livingLens.livingLensResult?.observation || latestObservation;
-  const currentJepaTick = livingLens.livingLensResult?.jepa_tick || null;
-  const livingAnswer = explainSummary(
-    livingObservation,
-    livingLens.livingLensResult?.answer?.text || currentSceneState?.observed_state_summary,
-  );
-  const livingNearest = livingLens.livingLensResult?.hits?.[0] || null;
-  const livingMatches = livingLens.livingLensResult?.hits || [];
-  const livingBaseline =
-    livingLens.livingLensResult?.baseline_comparison ||
-    world.challengeRun?.baseline_comparison ||
-    world.worldState?.challenges?.[0]?.baseline_comparison ||
-    null;
-  const worldHistory = world.worldState?.history || [];
-  const continuitySignal = currentSceneState?.metrics.continuity_signal;
-  const persistenceSignal = currentSceneState?.metrics.persistence_signal;
-  const liveObservationMetadata =
-    (world.analysis?.observation?.metadata as Record<string, unknown> | undefined) ||
-    (latestObservation?.metadata as Record<string, unknown> | undefined);
-  const liveBoxes = normalizeBoxes(
+  const readyProviders = runtimeAvailable ? world.health.filter((item) => item.healthy).length : 0;
+  const degradedProviders = runtimeAvailable ? Math.max(world.health.length - readyProviders, 0) : 0;
+  const topFeatureHealth = runtimeAvailable ? world.featureHealth.slice(0, 5) : [];
+  const runtimeUnavailableLabel =
+    world.eventsState === "connecting"
+      ? "Connecting to runtime..."
+      : world.eventsState === "reconnecting"
+        ? "Runtime unreachable. Reconnecting..."
+        : "Runtime unreachable";
+  const runtimeConnectionLabel = runtimeAvailable ? "Runtime ready" : runtimeUnavailableLabel;
+  const fallbackAnalysisJepaTick =
+    !isLivingLensTab && runtimeAvailable
+      ? (((world.analysis as AnalyzeResponse & { jepa_tick?: LivingLensTickResponse["jepa_tick"] })?.jepa_tick as
+          | LivingLensTickResponse["jepa_tick"]
+          | null
+          | undefined) ?? null)
+      : null;
+  const currentJepaTick = runtimeAvailable
+    ? freshLivingLensResult?.jepa_tick || freshEventJepaTick || fallbackAnalysisJepaTick
+    : null;
+  const hasLiveJepaEvidence = Boolean(currentJepaTick);
+  const currentSceneState = runtimeAvailable
+    ? freshLivingLensResult?.scene_state ||
+      (isLivingLensTab
+        ? hasLiveJepaEvidence
+          ? world.worldState?.current || null
+          : null
+        : world.worldState?.current || null)
+    : null;
+  const livingTracks = runtimeAvailable
+    ? freshLivingLensResult?.entity_tracks ||
+      (isLivingLensTab
+        ? hasLiveJepaEvidence
+          ? world.worldState?.entity_tracks || []
+          : []
+        : world.worldState?.entity_tracks || [])
+    : [];
+  const livingObservation = runtimeAvailable
+    ? freshLivingLensResult?.observation ||
+      (isLivingLensTab
+        ? hasLiveJepaEvidence
+          ? latestObservation
+          : null
+        : latestObservation)
+    : null;
+  const livingAnswer = !runtimeAvailable
+    ? runtimeUnavailableLabel
+    : freshLivingLensResult
+      ? explainSummary(
+          livingObservation,
+          freshLivingLensResult.answer?.text || currentSceneState?.observed_state_summary,
+        )
+      : liveAnalysisPaused
+        ? "Auto analyze paused. Capture a frame to refresh the live scene."
+        : prefersFreshLiveTick
+          ? livingLens.livingLensLastError ||
+            (liveTickStale ? "Live JEPA tick stalled" : livingLens.livingLensStatus)
+          : explainSummary(
+              livingObservation,
+              currentSceneState?.observed_state_summary,
+            );
+  const livingNearest = runtimeAvailable ? freshLivingLensResult?.hits?.[0] || null : null;
+  const livingMatches = runtimeAvailable ? freshLivingLensResult?.hits || [] : [];
+  const livingBaseline = runtimeAvailable
+    ? freshLivingLensResult?.baseline_comparison ||
+      world.challengeRun?.baseline_comparison ||
+      world.worldState?.challenges?.[0]?.baseline_comparison ||
+      null
+    : null;
+  const worldHistory = runtimeAvailable ? world.worldState?.history || [] : [];
+  const continuitySignal = runtimeAvailable ? currentSceneState?.metrics.continuity_signal : null;
+  const persistenceSignal = runtimeAvailable ? currentSceneState?.metrics.persistence_signal : null;
+  const liveObservationMetadata = runtimeAvailable
+    ? ((world.analysis?.observation?.metadata as Record<string, unknown> | undefined) ||
+        (latestObservation?.metadata as Record<string, unknown> | undefined))
+    : undefined;
+  const liveAnchorBoxes = runtimeAvailable
+    ? boxesFromAnchorMatches(
+        (currentJepaTick?.anchor_matches as Array<Record<string, unknown>> | null | undefined) || null,
+      )
+    : [];
+  const useLiveAnchorBoxes =
+    runtimeAvailable &&
+    world.settings?.live_features?.live_lens_use_jepa_tick !== false &&
+    Array.isArray(currentJepaTick?.anchor_matches) &&
+    liveAnchorBoxes.length > 0;
+  const proposalBoxes = normalizeBoxes(
     liveObservationMetadata?.object_proposals ||
       liveObservationMetadata?.proposal_boxes ||
       liveObservationMetadata?.bounding_boxes,
     world.analysis?.observation || latestObservation,
   );
-  const livingBoxes = normalizeBoxes(
-    (livingObservation?.metadata as Record<string, unknown> | undefined)?.bounding_boxes ||
-      (livingObservation?.metadata as Record<string, unknown> | undefined)?.object_proposals ||
-      (livingObservation?.metadata as Record<string, unknown> | undefined)?.proposal_boxes ||
-      (currentSceneState?.metadata as Record<string, unknown> | undefined)?.bounding_boxes ||
-      (currentSceneState?.metadata as Record<string, unknown> | undefined)?.object_proposals ||
-      (currentSceneState?.metadata as Record<string, unknown> | undefined)?.proposal_boxes,
-    livingObservation,
-  );
+  const hasLiveAnchorSource = runtimeAvailable && Array.isArray(currentJepaTick?.anchor_matches);
+  const livingTrackBoxes = runtimeAvailable ? boxesFromTracks(livingTracks, proposalBoxes, livingObservation) : [];
+  if (liveAnchorBoxes.length > 0) {
+    lastAnchorBoxesRef.current = liveAnchorBoxes;
+  }
+  if (livingTrackBoxes.length > 0) {
+    lastTrackBoxesRef.current = livingTrackBoxes;
+  }
+  const nowMs = Date.now();
+  const stickyAnchorBoxes =
+    overlaySourceRef.current.kind === "anchor" &&
+    nowMs - overlaySourceRef.current.at < 1500 &&
+    lastAnchorBoxesRef.current.length > 0
+      ? lastAnchorBoxesRef.current
+      : [];
+  const stickyTrackBoxes =
+    overlaySourceRef.current.kind === "track" &&
+    nowMs - overlaySourceRef.current.at < 1200 &&
+    lastTrackBoxesRef.current.length > 0
+      ? lastTrackBoxesRef.current
+      : [];
+  const activeAnchorBoxes =
+    useLiveAnchorBoxes && liveAnchorBoxes.length > 0
+      ? liveAnchorBoxes
+      : !useLiveAnchorBoxes && stickyAnchorBoxes.length > 0
+        ? stickyAnchorBoxes
+        : [];
+  const activeTrackBoxes =
+    activeAnchorBoxes.length > 0
+      ? []
+      : livingTrackBoxes.length > 0
+        ? livingTrackBoxes
+        : stickyTrackBoxes;
+  if (activeAnchorBoxes.length > 0) {
+    overlaySourceRef.current = { kind: "anchor", at: nowMs };
+  } else if (activeTrackBoxes.length > 0) {
+    overlaySourceRef.current = { kind: "track", at: nowMs };
+  } else {
+    overlaySourceRef.current = { kind: "proposal", at: nowMs };
+  }
+  const liveBoxes = activeAnchorBoxes.length > 0 ? activeAnchorBoxes : proposalBoxes;
+  const livingBoxes =
+    activeAnchorBoxes.length > 0
+      ? activeAnchorBoxes
+      : activeTrackBoxes.length > 0
+        ? activeTrackBoxes
+        : proposalBoxes;
   const challengeSteps = world.challengeRun?.guide_steps?.length
     ? world.challengeRun.guide_steps
     : Array.from(DEFAULT_CHALLENGE_STEPS);
   const currentChallengeStep = challengeGuideActive ? challengeSteps[challengeStepIndex] : null;
-  const worldModelSummary = explainWorldModel(currentSceneState);
+  const worldModelSummary = runtimeAvailable
+    ? explainWorldModel(currentSceneState)
+    : runtimeUnavailableLabel;
+  const cameraHasActualFault =
+    camera.cameraDiagnostics.blackFrameDetected ||
+    camera.cameraDiagnostics.phase === "video stalled" ||
+    camera.cameraDiagnostics.phase === "camera error";
+  const cameraWarmingUp = camera.cameraStreamLive && !camera.cameraReady && !cameraHasActualFault;
   const cameraStatusLabel = camera.cameraReady
     ? "camera ready"
-    : camera.cameraStreamLive
-      ? "camera connected"
-      : "camera idle";
+    : cameraHasActualFault
+      ? "camera degraded"
+      : cameraWarmingUp
+        ? "camera warming up"
+        : camera.cameraStreamLive
+          ? "camera connected"
+          : "camera idle";
   const cameraConnectionState =
     !camera.cameraAccess.granted && camera.cameraAccess.status !== "unknown"
       ? "blocked"
       : camera.cameraBusy
         ? "reconnecting"
+        : cameraHasActualFault
+          ? "degraded"
         : camera.cameraReady
           ? "live"
           : camera.cameraStreamLive
-            ? "degraded"
+            ? "live"
             : "offline";
   const ghostBoxes = toGhostBoxes(livingTracks, livingObservation);
-  const energyAnchors = toEnergyAnchors(currentJepaTick?.energy_map || null);
+  const energyAnchors = runtimeAvailable ? toEnergyAnchors(currentJepaTick?.energy_map || null) : [];
+  const missingTickStatus = liveAnalysisPaused
+    ? "auto analyze paused"
+    : !runtimeAvailable
+      ? runtimeUnavailableLabel
+    : prefersFreshLiveTick
+    ? livingLens.livingLensBusy
+      ? "awaiting live JEPA tick"
+      : livingLens.livingLensLastError ||
+        (liveTickStale ? "live JEPA tick stalled" : livingLens.livingLensStatus) ||
+        "awaiting first JEPA tick"
+    : "awaiting first JEPA tick";
+  const energyHeatmapStatus = !showEnergyMap
+    ? "heatmap disabled"
+    : !runtimeAvailable
+      ? runtimeUnavailableLabel
+    : !currentJepaTick
+      ? missingTickStatus
+      : currentJepaTick.warmup
+        ? "warmup active"
+        : hasVisibleHeatmapEnergy(currentJepaTick.energy_map)
+          ? null
+          : "no high-energy patches this tick";
   const fe1 = toForecastValue(currentJepaTick, 1);
   const fe2 = toForecastValue(currentJepaTick, 2);
   const fe5 = toForecastValue(currentJepaTick, 5);
@@ -399,8 +747,13 @@ function useDesktopAppValue() {
     confidence: track.persistence_confidence,
     note: `${String((track.metadata as Record<string, any> | undefined)?.duration_ms || 0)} ms`,
   }));
-  const consumerSceneState = world.worldState?.current || currentSceneState;
-  const consumerTrackSourceBase = world.worldState?.entity_tracks?.length ? world.worldState.entity_tracks : livingTracks;
+  const consumerSceneState = currentSceneState;
+  const consumerTrackSourceBase =
+    runtimeAvailable && livingTracks.length > 0
+      ? livingTracks
+      : runtimeAvailable && !isLivingLensTab
+        ? world.worldState?.entity_tracks || []
+        : [];
   const consumerTrackSource = consumerTrackSourceBase.filter(
     (track) => track.status !== "disappeared" && track.status !== "violated prediction",
   );
@@ -418,9 +771,12 @@ function useDesktopAppValue() {
           x: 18 + ((index * 15) % 62),
           y: 20 + ((index * 12) % 58),
         };
+    const groundedLabel = formatEntityBaseLabel({ label: entity.label, metadata: entity.properties });
     return {
       id: entity.id,
-      label: humanizeLabel(entity.label || `${entity.kind} ${index + 1}`),
+      label: !isGenericEntityLabel(groundedLabel)
+        ? groundedLabel
+        : (!isGenericEntityLabel(entity.kind) ? humanizeLabel(entity.kind || "") : "") || `Unresolved ${index + 1}`,
       x: Math.max(16, Math.min(center.x, 84)),
       y: Math.max(16, Math.min(center.y, 84)),
       radius: 11 + Math.min(Math.round((entity.confidence || 0.5) * 8), 8),
@@ -432,11 +788,60 @@ function useDesktopAppValue() {
             : entity.status === "visible"
               ? ("live" as const)
               : ("stable" as const),
+      depthStratum: "unresolved",
     };
   });
+  const sceneGraphNodes = (world.sceneGraph?.nodes || []).slice(0, 16).map((node, index) => {
+    const bbox = node.bbox;
+    const center = bbox
+      ? {
+          x: ((Number(bbox.x || 0) + Number(bbox.width || 0) / 2) * 100),
+          y: ((Number(bbox.y || 0) + Number(bbox.height || 0) / 2) * 100),
+        }
+      : {
+          x: 18 + ((index * 13) % 64),
+          y: 20 + ((index * 11) % 58),
+        };
+    const label = !isGenericEntityLabel(node.label)
+      ? humanizeLabel(node.label || "")
+      : `Unresolved ${index + 1}`;
+    return {
+      id: node.id,
+      label,
+      x: Math.max(16, Math.min(center.x, 84)),
+      y: Math.max(16, Math.min(center.y, 84)),
+      radius: 10 + Math.min(Math.round((node.confidence || 0.4) * 10), 10),
+      tone:
+        node.source === "grounded_entity"
+          ? ("accent" as const)
+          : node.status === "occluded"
+            ? ("memory" as const)
+            : node.source === "track"
+              ? ("live" as const)
+              : ("stable" as const),
+      depthStratum: resolveDepthStratum(node.depth_stratum),
+      source: node.source,
+      confidence: node.confidence,
+      status: node.status,
+    } as ConsumerGraphNode;
+  }).filter((node) => !isGenericEntityLabel(node.label));
   const consumerAtlasNodes = Array.isArray((world.worldState?.atlas as any)?.nodes)
     ? (world.worldState?.atlas as any).nodes
     : [];
+  const consumerNodesFromAnchors = activeAnchorBoxes.slice(0, 8).map((box, index) => {
+    const anchorLabel = formatEntityBaseLabel({ label: box.label, metadata: box.metadata });
+    return {
+      id:
+        String((box.metadata as Record<string, unknown> | undefined)?.template_name || "")
+          || stableNodeId("anchor", (box.x + box.width / 2) * 100, (box.y + box.height / 2) * 100, String(index)),
+      label: !isGenericEntityLabel(anchorLabel) ? anchorLabel : `Anchor ${index + 1}`,
+      x: Math.max(18, Math.min((box.x + box.width / 2) * 100, 82)),
+      y: Math.max(18, Math.min((box.y + box.height / 2) * 100, 82)),
+      radius: 11 + Math.min(Math.round((box.score || 0.55) * 10), 10),
+      tone: "live" as const,
+      depthStratum: "unresolved",
+    };
+  });
   const consumerNodesFromTracks = consumerTrackSource.slice(0, 8).map((track, index) => {
     const metadata = (track.metadata || {}) as Record<string, any>;
     const bbox = metadata.bbox_pixels || metadata.ghost_bbox_pixels || metadata.bbox;
@@ -469,16 +874,21 @@ function useDesktopAppValue() {
       y: Math.max(18, Math.min(center.y, 82)),
       radius: 10 + Math.min(track.visibility_streak || 1, 10),
       tone: track.status === "occluded" ? "memory" : track.status === "visible" ? "live" : "stable",
+      depthStratum: "unresolved",
     };
   });
-  const consumerBoxFallback = livingBoxes.slice(0, 6).map((box, index) => ({
-    id: `box-${index}`,
-    label: formatEntityBaseLabel({ label: box.label, metadata: box.metadata }),
-    x: Math.max(18, Math.min((box.x + box.width / 2) * 100, 82)),
-    y: Math.max(18, Math.min((box.y + box.height / 2) * 100, 82)),
-    radius: 12,
-    tone: "live" as const,
-  }));
+  const consumerBoxFallback = livingBoxes.slice(0, 6).map((box, index) => {
+    const boxLabel = formatEntityBaseLabel({ label: box.label, metadata: box.metadata });
+    return {
+      id: stableNodeId("box", (box.x + box.width / 2) * 100, (box.y + box.height / 2) * 100, String(index)),
+      label: !isGenericEntityLabel(boxLabel) ? boxLabel : `Unresolved ${index + 1}`,
+      x: Math.max(18, Math.min((box.x + box.width / 2) * 100, 82)),
+      y: Math.max(18, Math.min((box.y + box.height / 2) * 100, 82)),
+      radius: 12,
+      tone: "live" as const,
+      depthStratum: "unresolved",
+    };
+  });
   const atlasNodeData = consumerAtlasNodes.map((node: any, index: number) => ({
     id: String(node.entity_id || node.id || `node-${index}`),
     label: resolveConsumerTrackLabel(
@@ -513,9 +923,14 @@ function useDesktopAppValue() {
       : 25 + ((index * 13) % 50),
     radius: 10 + Math.min(Number(node.track_length || 1), 10),
     tone: String(node.status || "visible") === "occluded" ? "memory" : "live",
+    depthStratum: "unresolved",
   }));
   const consumerNodes = mergeConsumerNodes(
-    consumerGroundedNodes.length > 0
+    sceneGraphNodes.length > 0
+      ? sceneGraphNodes
+      : consumerNodesFromAnchors.length > 0
+      ? consumerNodesFromAnchors
+      : consumerGroundedNodes.length > 0
       ? consumerGroundedNodes
       : consumerNodesFromTracks.length > 0
       ? consumerNodesFromTracks
@@ -524,47 +939,68 @@ function useDesktopAppValue() {
         : consumerBoxFallback,
   );
   const consumerLeadLabel = consumerNodes[0]?.label || sceneLabelCandidates(consumerSceneState)[0] || "it";
-  const consumerText = consumerMessage(
-    currentJepaTick,
-    consumerNodes.length
-      ? [
-          {
-            ...(consumerTrackSource[0] || livingTracks[0] || {
-              id: "lead",
-              session_id: sessionId,
-              label: consumerLeadLabel,
-              status: "visible",
-              first_seen_at: "",
-              last_seen_at: "",
-              first_observation_id: "",
-              last_observation_id: "",
-              observations: [],
-              visibility_streak: 1,
-              occlusion_count: 0,
-              reidentification_count: 0,
-              persistence_confidence: 0,
-              continuity_score: 0,
-              last_similarity: 0,
-              status_history: [],
-              metadata: {},
-            }),
+  const consumerTrackMessageSource = consumerNodes.length
+    ? [
+        {
+          ...(consumerTrackSource[0] || livingTracks[0] || {
+            id: "lead",
+            session_id: sessionId,
             label: consumerLeadLabel,
-          },
-          ...consumerTrackSource.slice(1),
-        ]
-      : consumerTrackSource,
-  );
+            status: "visible",
+            first_seen_at: "",
+            last_seen_at: "",
+            first_observation_id: "",
+            last_observation_id: "",
+            observations: [],
+            visibility_streak: 1,
+            occlusion_count: 0,
+            reidentification_count: 0,
+            persistence_confidence: 0,
+            continuity_score: 0,
+            last_similarity: 0,
+            status_history: [],
+            metadata: {},
+          }),
+          label: consumerLeadLabel,
+        },
+        ...consumerTrackSource.slice(1),
+      ]
+    : consumerTrackSource;
+  const consumerText = !runtimeAvailable
+    ? runtimeUnavailableLabel
+    : currentJepaTick
+      ? consumerMessage(currentJepaTick, consumerTrackMessageSource)
+      : liveAnalysisPaused
+        ? "Auto analyze paused"
+        : livingLens.livingLensStatus === "Continuous monitoring is ready"
+          ? "Waiting for first JEPA tick"
+          : livingLens.livingLensStatus;
   const consumerLinks =
-    consumerNodes.length > 1
+    (world.sceneGraph?.edges || []).length > 0
+      ? (world.sceneGraph?.edges || [])
+          .filter(
+            (edge) =>
+              consumerNodes.some((node) => node.id === edge.source) &&
+              consumerNodes.some((node) => node.id === edge.target),
+          )
+          .slice(0, 24)
+          .map((edge) => ({
+            source: edge.source,
+            target: edge.target,
+            strength: edge.weight,
+          }))
+      : consumerNodes.length > 1
       ? consumerNodes.slice(1).map((node: ConsumerGraphNode) => ({
           source: consumerNodes[0]?.id || node.id,
           target: node.id,
           strength: 0.45,
         }))
       : [];
-  const livingHistory = [livingLens.livingLensResult?.scene_state, ...worldHistory]
-    .filter((state): state is SceneState => Boolean(state))
-    .filter((state, index, list) => list.findIndex((candidate) => candidate.id === state.id) === index);
+  const livingHistory = runtimeAvailable
+    ? [livingLens.livingLensResult?.scene_state, ...worldHistory]
+        .filter((state): state is SceneState => Boolean(state))
+        .filter((state, index, list) => list.findIndex((candidate) => candidate.id === state.id) === index)
+    : [];
   const baselineHistory = livingHistory.slice(0, 24).map((state, index) => ({
     id: state.id,
     label: `Tick ${index + 1}`,
@@ -597,7 +1033,15 @@ function useDesktopAppValue() {
   });
   const featuredTracks = sortedTracks.slice(0, 4);
   const displayedTracks = showAllTracks ? sortedTracks : sortedTracks.slice(0, 8);
-  const topHealth = world.health.slice(0, 4);
+  const topHealth = runtimeAvailable ? world.health.slice(0, 4) : [];
+  const setEnergyHeatmapEnabled = async (enabled: boolean) => {
+    setShowEnergyMap(enabled);
+    await world.persistLiveFeatureSetting("energy_heatmap_enabled", enabled);
+  };
+  const setEntityOverlayEnabled = async (enabled: boolean) => {
+    setShowEntities(enabled);
+    await world.persistLiveFeatureSetting("entity_overlay_enabled", enabled);
+  };
   const currentRollout =
     currentSceneState?.conditioned_rollouts ||
     world.latestRollout ||
@@ -615,9 +1059,9 @@ function useDesktopAppValue() {
     searchText,
     setSearchText,
     showEnergyMap,
-    setShowEnergyMap,
+    setShowEnergyMap: setEnergyHeatmapEnabled,
     showEntities,
-    setShowEntities,
+    setShowEntities: setEntityOverlayEnabled,
     showAllTracks,
     setShowAllTracks,
     challengeGuideActive,
@@ -639,6 +1083,7 @@ function useDesktopAppValue() {
     latestObservationSummary,
     readyProviders,
     degradedProviders,
+    topFeatureHealth,
     currentSceneState,
     livingTracks,
     livingObservation,
@@ -659,6 +1104,7 @@ function useDesktopAppValue() {
     cameraConnectionState,
     ghostBoxes,
     energyAnchors,
+    energyHeatmapStatus,
     fe1,
     fe2,
     fe5,
@@ -675,6 +1121,7 @@ function useDesktopAppValue() {
     topHealth,
     currentRollout,
     currentBenchmark,
+    runtimeConnectionLabel,
   };
 }
 

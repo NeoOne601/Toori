@@ -5,22 +5,28 @@ import type { LivingLensTickResponse, ProviderHealth } from "../types";
 type UseLivingLensOptions = {
   activeTab: AppTab;
   cameraStreamLive: boolean;
+  cameraReady: boolean;
   sessionId: string;
   topK: number;
   currentFrameBase64: (mode: "live" | "living") => string | null;
   runtimeRequest: <T>(path: string, method?: string, body?: unknown) => Promise<T>;
   onHealthChange?: (providers: ProviderHealth[]) => void;
+  onResult?: (result: LivingLensTickResponse) => void;
+  onError?: (error: Error) => void;
   onRefresh?: () => Promise<unknown>;
 };
 
 export function useLivingLens({
   activeTab,
   cameraStreamLive,
+  cameraReady,
   sessionId,
   topK,
   currentFrameBase64,
   runtimeRequest,
   onHealthChange,
+  onResult,
+  onError,
   onRefresh,
 }: UseLivingLensOptions) {
   const [livingLensEnabled, setLivingLensEnabled] = useState(true);
@@ -29,8 +35,20 @@ export function useLivingLens({
   const [livingLensBusy, setLivingLensBusy] = useState(false);
   const [livingLensStatus, setLivingLensStatus] = useState("Continuous monitoring is ready");
   const [livingLensResult, setLivingLensResult] = useState<LivingLensTickResponse | null>(null);
+  const [livingLensLastSuccessAt, setLivingLensLastSuccessAt] = useState<number | null>(null);
+  const [livingLensLastError, setLivingLensLastError] = useState<string | null>(null);
   const livingLensInFlightRef = useRef(false);
   const livingLensLastTickRef = useRef(0);
+  const livingLensLastReconcileRef = useRef(0);
+
+  function isTransportFailure(error: unknown) {
+    const message = (error as Error)?.message || "";
+    return /runtime unreachable|failed to fetch|fetch failed/i.test(message);
+  }
+
+  async function sleep(ms: number) {
+    await new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
 
   async function runLivingLensTick(options: {
     query?: string;
@@ -41,23 +59,51 @@ export function useLivingLens({
     if (!imageBase64) {
       return null;
     }
-    const result = await runtimeRequest<LivingLensTickResponse>("/v1/living-lens/tick", "POST", {
+    const requestBody = {
       image_base64: imageBase64,
       session_id: sessionId,
       query: options.query || undefined,
       decode_mode: options.decodeMode,
       top_k: options.topK || topK,
       proof_mode: "both",
-    });
-    onHealthChange?.(result.provider_health);
-    onRefresh?.().catch(() => undefined);
+    };
+    let result: LivingLensTickResponse;
+    try {
+      result = await runtimeRequest<LivingLensTickResponse>("/v1/living-lens/tick", "POST", requestBody);
+    } catch (error) {
+      if (!isTransportFailure(error)) {
+        throw error;
+      }
+      await sleep(300);
+      result = await runtimeRequest<LivingLensTickResponse>("/v1/living-lens/tick", "POST", requestBody);
+    }
     return result;
   }
 
   useEffect(() => {
-    if (!livingLensEnabled || activeTab !== "Living Lens" || !cameraStreamLive) {
+    if (activeTab !== "Living Lens") {
       return;
     }
+    if (livingLensEnabled) {
+      if (livingLensStatus === "Auto analyze paused") {
+        setLivingLensStatus("Continuous monitoring is ready");
+      }
+      return;
+    }
+    livingLensInFlightRef.current = false;
+    livingLensLastTickRef.current = 0;
+    setLivingLensBusy(false);
+    setLivingLensResult(null);
+    setLivingLensLastSuccessAt(null);
+    setLivingLensLastError(null);
+    setLivingLensStatus("Auto analyze paused");
+  }, [activeTab, livingLensEnabled, livingLensStatus]);
+
+  useEffect(() => {
+    if (!livingLensEnabled || activeTab !== "Living Lens" || !cameraStreamLive || !cameraReady) {
+      return;
+    }
+    let cancelled = false;
     const tick = () => {
       if (livingLensInFlightRef.current) {
         return;
@@ -67,7 +113,6 @@ export function useLivingLens({
         return;
       }
       livingLensInFlightRef.current = true;
-      livingLensLastTickRef.current = Date.now();
       setLivingLensBusy(true);
       setLivingLensStatus("Analyzing live scene");
       runLivingLensTick({
@@ -76,17 +121,44 @@ export function useLivingLens({
         topK,
       })
         .then((result) => {
+          if (cancelled) {
+            return;
+          }
           if (!result) {
+            setLivingLensLastError("Waiting for a usable frame");
             setLivingLensStatus("Waiting for a usable frame");
             return;
           }
+          onHealthChange?.(result.provider_health);
+          onResult?.(result);
+          const now = Date.now();
+          if (onRefresh && now - livingLensLastReconcileRef.current >= 4000) {
+            livingLensLastReconcileRef.current = now;
+            onRefresh().catch(() => undefined);
+          }
+          livingLensLastTickRef.current = now;
           setLivingLensResult(result);
+          setLivingLensLastSuccessAt(now);
+          setLivingLensLastError(null);
           setLivingLensStatus(`Updated ${new Date().toLocaleTimeString()}`);
         })
         .catch((error) => {
-          setLivingLensStatus((error as Error).message);
+          if (cancelled) {
+            return;
+          }
+          const nextError = error as Error;
+          const retryDelayMs = isTransportFailure(nextError) ? 1500 : 2000;
+          livingLensLastTickRef.current = Date.now() - Math.max(0, intervalMs - retryDelayMs);
+          setLivingLensResult(null);
+          setLivingLensLastSuccessAt(null);
+          setLivingLensLastError(nextError.message);
+          setLivingLensStatus(nextError.message);
+          onError?.(nextError);
         })
         .finally(() => {
+          if (cancelled) {
+            return;
+          }
           livingLensInFlightRef.current = false;
           setLivingLensBusy(false);
         });
@@ -94,8 +166,13 @@ export function useLivingLens({
 
     tick();
     const interval = window.setInterval(tick, 1200);
-    return () => window.clearInterval(interval);
-  }, [activeTab, cameraStreamLive, livingLensEnabled, livingLensIntervalS, livingLensPrompt, sessionId, topK]);
+    return () => {
+      cancelled = true;
+      livingLensInFlightRef.current = false;
+      setLivingLensBusy(false);
+      window.clearInterval(interval);
+    };
+  }, [activeTab, cameraReady, cameraStreamLive, livingLensEnabled, livingLensIntervalS, livingLensPrompt, sessionId, topK]);
 
   return {
     livingLensEnabled,
@@ -109,6 +186,10 @@ export function useLivingLens({
     setLivingLensStatus,
     livingLensResult,
     setLivingLensResult,
+    livingLensLastSuccessAt,
+    setLivingLensLastSuccessAt,
+    livingLensLastError,
+    setLivingLensLastError,
     runLivingLensTick,
   };
 }

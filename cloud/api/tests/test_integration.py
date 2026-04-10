@@ -1,11 +1,14 @@
+import asyncio
 import base64
 import io
+from collections import deque
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from cloud.runtime.app import create_app
-from cloud.runtime.models import Answer, BoundingBox, ProviderHealth
+from cloud.runtime.models import Answer, BoundingBox, JEPATick, ProviderHealth, SceneState, WorldModelMetrics
 
 
 def _encoded_png(color: tuple[int, int, int]) -> str:
@@ -53,6 +56,13 @@ def test_analyze_query_and_observation_history(tmp_path):
     assert observations.status_code == 200
     assert len(observations.json()["observations"]) == 2
 
+    observations_summary = client.get(
+        "/v1/observations",
+        params={"session_id": "demo", "limit": 5, "summary_only": True},
+    )
+    assert observations_summary.status_code == 200
+    assert "embedding" not in observations_summary.json()["observations"][0]
+
     thumbnail_path = second_body["observation"]["thumbnail_path"]
     file_response = client.get("/v1/file", params={"path": thumbnail_path})
     assert file_response.status_code == 200
@@ -62,6 +72,31 @@ def test_analyze_query_and_observation_history(tmp_path):
     external.write_text("outside")
     forbidden = client.get("/v1/file", params={"path": str(external)})
     assert forbidden.status_code == 403
+
+
+def test_runtime_snapshot_skips_provider_health_probe(tmp_path, monkeypatch):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+
+    analyzed = client.post(
+        "/v1/analyze",
+        json={"image_base64": _encoded_png((20, 80, 200)), "session_id": "snapshot", "decode_mode": "off"},
+    )
+    assert analyzed.status_code == 200
+
+    runtime = app.state.runtime
+    monkeypatch.setattr(
+        runtime.providers.mlx,
+        "health",
+        lambda config: (_ for _ in ()).throw(AssertionError("snapshot should not call mlx health")),
+    )
+
+    snapshot = client.get("/v1/runtime/snapshot", params={"session_id": "snapshot", "observation_limit": 8})
+    assert snapshot.status_code == 200
+    body = snapshot.json()
+    assert body["session_id"] == "snapshot"
+    assert body["observation_count"] >= 1
+    assert body["observations"]
 
 
 def test_object_proposals_use_existing_onnx_path(tmp_path, monkeypatch):
@@ -226,6 +261,155 @@ def test_auto_reasoning_falls_back_from_ollama_to_mlx(tmp_path, monkeypatch):
     assert body["reasoning_trace"][1]["success"] is True
 
 
+def _dummy_tick(*, ts_ms: int = 1_700_000_000_000, mean_energy: float = 0.2, backend: str = "dinov2-vits14-onnx") -> JEPATick:
+    return JEPATick(
+        energy_map=__import__("numpy").zeros((14, 14), dtype=__import__("numpy").float32),
+        entity_tracks=[],
+        talker_event=None,
+        sigreg_loss=0.42,
+        forecast_errors={},
+        session_fingerprint=__import__("numpy").zeros((128,), dtype=__import__("numpy").float32),
+        planning_time_ms=0.0,
+        caption_score=0.0,
+        retrieval_score=0.0,
+        timestamp_ms=int(ts_ms),
+        warmup=False,
+        mask_results=[],
+        mean_energy=float(mean_energy),
+        energy_std=0.0,
+        world_model_version=backend,
+        configured_encoder="vjepa2",
+        last_tick_encoder_type=backend,
+        degraded=False,
+        degrade_reason=None,
+        degrade_stage=None,
+        gemma4_alert=None,
+    )
+
+
+def test_proof_report_generate_does_not_use_non_callable_mlx_provider(tmp_path, monkeypatch):
+    """
+    Regression: proof export must not pass the MlxReasoningProvider object directly into Gemma4Bridge,
+    because Gemma4Bridge expects an async callable (`await self._call(...)`).
+    """
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+    runtime = app.state.runtime
+
+    session_id = "proof-noncallable"
+    runtime._jepa_ticks_by_session[session_id] = deque([_dummy_tick(mean_energy=0.25)], maxlen=256)
+
+    settings = runtime.get_settings()
+    settings.providers["mlx"].enabled = True
+    runtime.update_settings(settings)
+
+    class _FakeMlxProvider:
+        name = "mlx"
+
+        def health(self, config):
+            return ProviderHealth(name="mlx", role="reasoning", enabled=True, healthy=True, message="ok")
+
+        async def aquery(self, *, prompt, image_base64=None, system=None, max_tokens=256):
+            return {"text": "proof narration ok", "model": "fake", "latency_ms": 1.0}
+
+        def reason(self, **kwargs):
+            return Answer(text="proof narration ok", provider="mlx", confidence=0.7)
+
+        def query(self, **kwargs):
+            return {"text": "proof narration ok", "model": "fake", "latency_ms": 1.0}
+
+    fake = _FakeMlxProvider()
+    original_get = runtime.providers.get
+    monkeypatch.setattr(runtime.providers, "get", lambda name: fake if name == "mlx" else original_get(name))
+
+    response = client.post("/v1/proof-report/generate", json={"session_id": session_id})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generated"] is True
+
+    latest = client.get("/v1/proof-report/latest")
+    assert latest.status_code == 200
+    content = latest.content
+    assert b"object is not callable" not in content
+
+
+def test_living_lens_tick_does_not_overwrite_surprise_with_mean_energy(tmp_path, monkeypatch):
+    """
+    Regression: scene_state.metrics.surprise_score is owned by world_model.py and must not be
+    overwritten with jepa_tick.mean_energy (energy activation).
+    """
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+    runtime = app.state.runtime
+
+    analyzed = client.post(
+        "/v1/analyze",
+        json={"image_base64": _encoded_png((10, 20, 30)), "session_id": "surprise", "decode_mode": "off"},
+    )
+    assert analyzed.status_code == 200
+    obs_id = analyzed.json()["observation"]["id"]
+    observation = runtime.store.get_observation(obs_id)
+    assert observation is not None
+
+    expected_surprise = 0.12
+    expected_consistency = 0.88
+    scene_state = SceneState(
+        id=f"ws_{obs_id}",
+        session_id="surprise",
+        created_at=datetime.now(timezone.utc),
+        observation_id=obs_id,
+        metrics=WorldModelMetrics(
+            prediction_consistency=expected_consistency,
+            surprise_score=expected_surprise,
+            temporal_continuity_score=0.5,
+            persistence_confidence=0.5,
+            occlusion_recovery_score=0.0,
+        ),
+    )
+
+    def fake_analyze_with_world_model(request, _live):
+        from cloud.runtime.models import AnalyzeResponse
+
+        return AnalyzeResponse(observation=observation, hits=[], answer=None, provider_health=[], reasoning_trace=[]), scene_state, []
+
+    async def fake_run_jepa_tick(*args, **kwargs):
+        tick = _dummy_tick(mean_energy=0.91, backend="dinov2-vits14-onnx").to_payload().model_dump(mode="json")
+        return type(
+            "_Result",
+            (),
+            {
+                "correlation_id": "corr",
+                "session_id": "surprise",
+                "observation_id": obs_id,
+                "jepa_tick_dict": tick,
+                "pipeline_trace": {},
+                "error": None,
+                "state_vector": [0.0] * 384,
+                "worker_id": 0,
+            },
+        )()
+
+    monkeypatch.setattr(runtime, "_analyze_with_world_model", fake_analyze_with_world_model)
+    monkeypatch.setattr(runtime, "_run_jepa_tick", fake_run_jepa_tick)
+    monkeypatch.setattr(runtime, "_load_frame_array", lambda _path: __import__("numpy").zeros((256, 256, 3), dtype=__import__("numpy").uint8))
+    monkeypatch.setattr(runtime, "_update_observation_from_tick", lambda *a, **k: None)
+    monkeypatch.setattr(runtime, "_prime_forecast_engine", lambda *a, **k: None)
+
+    response = client.post(
+        "/v1/living-lens/tick",
+        json={
+            "image_base64": _encoded_png((20, 40, 80)),
+            "session_id": "surprise",
+            "decode_mode": "off",
+            "proof_mode": "both",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert abs(body["scene_state"]["metrics"]["surprise_score"] - expected_surprise) < 1e-6
+    assert abs(body["scene_state"]["metrics"]["surprise_score"] - 0.91) > 1e-3
+
+
 def test_forced_mlx_http_analyze_returns_answer(tmp_path, monkeypatch):
     app = create_app(data_dir=str(tmp_path))
     client = TestClient(app)
@@ -380,6 +564,228 @@ def test_living_lens_tick_exposes_scene_state_and_tracks(tmp_path):
     world_body = world_state.json()
     assert world_body["current"]["id"] == body["scene_state"]["id"]
     assert world_body["entity_tracks"], "world-state endpoint should return persisted tracks"
+
+
+def test_provider_health_includes_feature_statuses(tmp_path):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+
+    response = client.get("/v1/providers/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert "providers" in body
+    assert "features" in body
+    feature_names = {item["name"] for item in body["features"]}
+    assert {
+        "live-lens-jepa",
+        "energy-heatmap",
+        "open-vocab-labels",
+        "tvlc-connector",
+        "proof-report-gemma",
+    }.issubset(feature_names)
+
+
+def test_living_lens_tick_prefers_open_vocab_summary(tmp_path, monkeypatch):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+    runtime = app.state.runtime
+
+    original_run_jepa_tick = runtime._run_jepa_tick
+
+    async def _fake_run_jepa_tick(*args, **kwargs):
+        result = await original_run_jepa_tick(*args, **kwargs)
+        result.jepa_tick_dict["anchor_matches"] = [
+            {
+                "template_name": "person_torso",
+                "confidence": 0.84,
+                "patch_indices": [84, 85, 98, 99],
+                "depth_stratum": "foreground",
+                "open_vocab_label": "graphic print shirt",
+            }
+        ]
+        result.jepa_tick_dict["setu_descriptions"] = [
+            {
+                "gate": {"passes": True},
+                "description": {
+                    "text": "person in foreground",
+                    "confidence": 0.84,
+                    "anchor_basis": "person_torso",
+                    "depth_stratum": "foreground",
+                    "is_uncertain": False,
+                    "hallucination_risk": 0.16,
+                    "uncertainty_map": None,
+                },
+            }
+        ]
+        return result
+
+    async def _skip_background_enrichment(**_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_run_jepa_tick", _fake_run_jepa_tick)
+    monkeypatch.setattr(runtime, "_finish_living_lens_enrichment", _skip_background_enrichment)
+
+    response = client.post(
+        "/v1/living-lens/tick",
+        json={
+            "image_base64": _encoded_png((120, 80, 40)),
+            "session_id": "open-vocab-summary",
+            "decode_mode": "off",
+            "proof_mode": "both",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["observation"]["summary"].startswith("graphic print shirt")
+
+    stored = runtime.store.get_observation(body["observation"]["id"])
+    assert stored is not None
+    assert stored.summary.startswith("graphic print shirt")
+    assert stored.metadata.get("summary_source") == "anchor_matches"
+
+
+def test_living_lens_tick_returns_degraded_tick_when_worker_pool_fails(tmp_path, monkeypatch):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+    runtime = app.state.runtime
+
+    class BrokenPool:
+        async def submit(self, _work_item):
+            raise RuntimeError("worker unavailable")
+
+        def recycle_session_worker(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(runtime, "_ensure_jepa_pool", lambda: BrokenPool())
+    monkeypatch.setattr(
+        runtime,
+        "_inline_jepa_result",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("inline fallback must not run")),
+    )
+
+    response = client.post(
+        "/v1/living-lens/tick",
+        json={
+            "image_base64": _encoded_png((80, 120, 180)),
+            "session_id": "inline-fallback",
+            "decode_mode": "off",
+            "proof_mode": "both",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["jepa_tick"] is not None
+    assert body["jepa_tick"]["degraded"] is True
+    assert body["jepa_tick"]["degrade_stage"] == "submit"
+    assert body["jepa_tick"]["last_tick_encoder_type"] == "unavailable"
+    assert "worker unavailable" in body["jepa_tick"]["degrade_reason"]
+    assert body["scene_state"]["observation_id"] == body["observation"]["id"]
+    assert runtime._jepa_ticks_by_session["inline-fallback"]
+    assert runtime._jepa_circuit_reason == "worker unavailable"
+
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_jepa_pool",
+        lambda: (_ for _ in ()).throw(AssertionError("circuit-open path must skip worker pool")),
+    )
+
+    second = client.post(
+        "/v1/living-lens/tick",
+        json={
+            "image_base64": _encoded_png((90, 90, 180)),
+            "session_id": "inline-fallback",
+            "decode_mode": "off",
+            "proof_mode": "both",
+        },
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["jepa_tick"]["degraded"] is True
+    assert second_body["jepa_tick"]["degrade_stage"] == "disabled"
+    assert second_body["jepa_tick"]["degrade_reason"] == "worker unavailable"
+
+
+def test_living_lens_tick_returns_degraded_tick_when_worker_times_out(tmp_path, monkeypatch):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+    runtime = app.state.runtime
+
+    class SlowPool:
+        def submit(self, _work_item):
+            return None
+
+        def recycle_session_worker(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(runtime, "_ensure_jepa_pool", lambda: SlowPool())
+    monkeypatch.setattr(
+        runtime,
+        "_inline_jepa_result",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("inline fallback must not run")),
+    )
+    monkeypatch.setattr(
+        "cloud.runtime.service.asyncio.wait_for",
+        lambda _awaitable, _timeout: (_ for _ in ()).throw(asyncio.TimeoutError("JEPA worker timed out")),
+    )
+
+    response = client.post(
+        "/v1/living-lens/tick",
+        json={
+            "image_base64": _encoded_png((120, 80, 40)),
+            "session_id": "timeout-fallback",
+            "decode_mode": "off",
+            "proof_mode": "both",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["jepa_tick"] is not None
+    assert body["jepa_tick"]["degraded"] is True
+    assert body["jepa_tick"]["degrade_stage"] == "timeout"
+    assert body["jepa_tick"]["last_tick_encoder_type"] == "unavailable"
+    assert "timed out" in body["jepa_tick"]["degrade_reason"]
+
+
+def test_proof_report_generation_with_enabled_mlx_does_not_require_ready_attr(tmp_path, monkeypatch):
+    app = create_app(data_dir=str(tmp_path))
+    client = TestClient(app)
+    runtime = app.state.runtime
+
+    settings = runtime.get_settings()
+    settings.providers["mlx"].enabled = True
+    runtime.update_settings(settings)
+
+    monkeypatch.setattr(
+        runtime.providers.mlx,
+        "health",
+        lambda config: ProviderHealth(name="mlx", role="reasoning", enabled=True, healthy=True, message="ready"),
+    )
+
+    from cloud.runtime.gemma4_bridge import Gemma4Bridge
+
+    async def _fake_narrate(_self, summary_stats):
+        return f"Ticks: {summary_stats.get('total_ticks', 0)}"
+
+    monkeypatch.setattr(Gemma4Bridge, "narrate_proof_report", _fake_narrate)
+
+    tick = client.post(
+        "/v1/living-lens/tick",
+        json={
+            "image_base64": _encoded_png((120, 80, 40)),
+            "session_id": "proof-mlx",
+            "decode_mode": "off",
+            "proof_mode": "both",
+        },
+    )
+    assert tick.status_code == 200
+
+    generate = client.post(
+        "/v1/proof-report/generate",
+        json={"session_id": "proof-mlx", "chart_b64": None},
+    )
+    assert generate.status_code == 200
+    body = generate.json()
+    assert body["generated"] is True
 
 
 def test_observation_share_endpoint_returns_grounded_copy_and_metrics(tmp_path):

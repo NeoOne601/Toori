@@ -192,6 +192,8 @@ If this test fails, all engineering work stops until it passes. It is the sentin
 - Python 3.11
 - Node.js 20+
 
+The runtime is validated on Python 3.11 only. Launching the JEPA backend with a newer `python3` alias can trip unsupported native-extension crashes in the torch/transformers/onnx stack, so prefer `bash scripts/run_runtime.sh`.
+
 ### 1. Install & Launch
 ```bash
 # Clone the repository
@@ -202,8 +204,7 @@ cd Toori
 python3.11 -m pip install -r requirements.txt
 
 # Launch the FastAPI JEPA runtime in Terminal A
-TOORI_DATA_DIR=.toori python3.11 -m uvicorn cloud.api.main:app \
-  --host 127.0.0.1 --port 7777 --reload
+TOORI_DATA_DIR=.toori bash scripts/run_runtime.sh --reload
 
 # Install and start the Desktop UI in Terminal B
 cd desktop/electron
@@ -216,7 +217,7 @@ npm run web
 
 ### 2. Configure Desktop Settings
 Open the **Settings** menu.
-- **World Model:** V-JEPA2 is now configured dynamically via a JSON settings mirror (no hard-coded constants). Use **World Model** in Settings to point Toori at a local V-JEPA2 weight directory, tune `n_frames`, and inspect whether the last tick stayed on `vjepa2` or degraded to surrogate fallback. The `WorldModelStatus` panel reports the configured encoder, the encoder *actually used* on the last tick, and an explicit degradation reason/stage if V-JEPA2 fell back.
+- **World Model:** V-JEPA2 is now configured dynamically via a JSON settings mirror (no hard-coded constants). Use **World Model** in Settings to point Toori at a local V-JEPA2 weight directory, choose the HuggingFace cache directory used for local-only loads, tune `n_frames`, and inspect whether the last tick stayed on `vjepa2` or degraded to the honest `dinov2-vits14-onnx` fallback. The `WorldModelStatus` panel reports the configured encoder, the encoder *actually used* on the last tick, and an explicit degradation reason/stage if V-JEPA2 fell back.
 - **Providers:** M1 users default to DINOv2 perception. ONNX remains a proposal-box compatibility path, while `ollama`, `mlx`, and `cloud` are optional language sidecars — they must never overwrite authoritative world-model metrics or rollout rankings.
 - **Themes:** Choose from `system`, `dark`, `light`, `graphite`, `sepia`, `high_contrast_dark`, and `high_contrast_light`. Theme changes save immediately; other settings remain draft until you save them.
 - **Smriti Storage:** Configure the heavy-data directory. *(On an M1 iMac with a 256 GB SSD, point Smriti at an external drive before indexing a large video corpus).*
@@ -295,7 +296,7 @@ docs/                     — Extended system-design and manual architecture spe
 | `POST` | `/v1/living-lens/tick` | Advance live world-model state |
 | `GET` | `/v1/world-model/status` | Report configured encoder, last tick result, and degradation stage (`WorldModelStatus`) |
 | `GET` | `/v1/world-model/config` | Retrieve current V-JEPA2 dynamic config (`WorldModelConfig`) |
-| `PUT` | `/v1/world-model/config` | Update V-JEPA2 model path and `n_frames` at runtime |
+| `PUT` | `/v1/world-model/config` | Update V-JEPA2 model path, cache directory, and `n_frames` at runtime |
 | `POST` | `/v1/tool-state/observe` | Ground browser or desktop tool state into the same world-state pipeline |
 | `POST` | `/v1/planning/rollout` | Rank local Plan A / Plan B action-conditioned branches (`RolloutComparison`) |
 | `POST` | `/v1/benchmarks/recovery/run` | Run the hybrid recovery benchmark pack (`RecoveryBenchmarkRun`) |
@@ -326,7 +327,7 @@ docs/                     — Extended system-design and manual architecture spe
 - **RolloutComparison:** A ranked pair of `Plan A` vs `Plan B` rollout branches. Each branch scores predicted outcome + uncertainty.
 - **RecoveryBenchmarkRun:** A persisted benchmark run that evaluates camera + tool planning across a recovery scenario set.
 - **WorldModelStatus:** Live diagnostic: configured encoder, encoder actually used on last tick, degradation reason, and fallback stage.
-- **WorldModelConfig:** Dynamic V-JEPA2 parameters (model path, `n_frames`) that can be updated at runtime via `PUT /v1/world-model/config`.
+- **WorldModelConfig:** Dynamic V-JEPA2 parameters (model path, cache directory, `n_frames`) that can be updated at runtime via `PUT /v1/world-model/config`.
 - **Responsive Grid:** Modular Living Lens layout separating understanding, pulse, and relinking.
 - **Saliency Filtering:** Rejects weak or irrelevant proposals from dynamic entities.
 - **Passive mode:** Continuous monitoring updating the scene model seamlessly.

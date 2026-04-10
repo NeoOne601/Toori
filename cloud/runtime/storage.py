@@ -364,6 +364,16 @@ class ObservationStore:
     def list_observations(self, *, session_id: Optional[str] = None, limit: int = 50) -> list[Observation]:
         return self.recent_observations(session_id=session_id, limit=limit)
 
+    def count_observations(self, *, session_id: Optional[str] = None) -> int:
+        query = "SELECT COUNT(*) AS count FROM observations"
+        params: list[object] = []
+        if session_id:
+            query += " WHERE session_id = ?"
+            params.append(session_id)
+        with self._connect() as connection:
+            row = connection.execute(query, tuple(params)).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def search_by_vector(
         self,
         vector: list[float],

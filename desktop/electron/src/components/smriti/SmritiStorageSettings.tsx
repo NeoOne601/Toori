@@ -28,6 +28,11 @@ function watchPathToString(value: string | null): string {
   return value || "";
 }
 
+function isTransportFailure(error: unknown) {
+  const message = typeof error === "string" ? error : (error as Error)?.message || "";
+  return /runtime unreachable|failed to fetch|fetch failed|networkerror/i.test(message);
+}
+
 function UsageBar({
   percent,
   warning,
@@ -57,6 +62,7 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
   const [migrationTarget, setMigrationTarget] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [migrationResult, setMigrationResult] = useState<SmritiMigrationResult | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const hiddenFolderPattern = /(^|\/)\.[^/]+/;
 
   const loadAll = useCallback(async () => {
@@ -70,7 +76,9 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
       setConfig(nextConfig);
       setUsage(nextUsage);
       setFolders(nextFolders);
+      setLoadError(null);
     } catch (error) {
+      setLoadError((error as Error).message);
       onStatusChange?.((error as Error).message);
     } finally {
       setLoading(false);
@@ -184,8 +192,18 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
     }
   };
 
-  if (loading || !config || !usage) {
+  if (loading || (!config && !loadError) || (!usage && !loadError)) {
     return <div className="muted">Loading Smriti storage settings...</div>;
+  }
+
+  if (!config || !usage) {
+    return (
+      <div className="muted">
+        {loadError && isTransportFailure(loadError)
+          ? "Runtime unreachable. Smriti storage settings will refresh when the backend reconnects."
+          : loadError || "Smriti storage settings are unavailable right now."}
+      </div>
+    );
   }
 
   const hasHiddenFolderPath = [config.data_dir, config.frames_dir, config.thumbs_dir].some((value) =>
@@ -199,6 +217,13 @@ export default function SmritiStorageSettings({ onStatusChange }: SmritiStorageS
           <h4>Storage Usage</h4>
           <span>{refreshing ? "Refreshing..." : usage.total_human}</span>
         </div>
+        {loadError ? (
+          <p className="field-hint" style={{ color: "var(--warning)", marginBottom: "0.75rem" }}>
+            {isTransportFailure(loadError)
+              ? "Runtime unreachable. Displayed storage values may be stale until the backend reconnects."
+              : loadError}
+          </p>
+        ) : null}
         <div style={{ display: "grid", gap: "0.85rem" }}>
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>

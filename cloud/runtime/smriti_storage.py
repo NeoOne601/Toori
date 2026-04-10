@@ -93,6 +93,19 @@ class AnchorMatch:
     confidence: float = 0.0
     patch_indices: list[int] = field(default_factory=list)
     energy: float = 0.0
+    depth_stratum: str = "unknown"
+    open_vocab_label: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "template_name": self.name,
+            "name": self.name,
+            "confidence": float(self.confidence),
+            "patch_indices": list(self.patch_indices),
+            "energy": float(self.energy),
+            "depth_stratum": self.depth_stratum,
+            "open_vocab_label": self.open_vocab_label,
+        }
 
 
 @dataclass(slots=True)
@@ -100,7 +113,78 @@ class SetuDescription:
     text: str
     confidence: float = 0.0
     anchor_basis: str = ""
+    depth_stratum: str = "unknown"
+    is_uncertain: bool = False
+    hallucination_risk: float = 0.0
+    uncertainty_map: list | None = None
+    narrator: str | None = None
+    latency_ms: float | None = None
     region_id: str | None = None
+    tvlc_context: str | None = None
+    connector_type: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "text": self.text,
+            "confidence": float(self.confidence),
+            "anchor_basis": self.anchor_basis,
+            "depth_stratum": self.depth_stratum,
+            "is_uncertain": self.is_uncertain,
+            "hallucination_risk": float(self.hallucination_risk),
+            "uncertainty_map": self.uncertainty_map,
+            "narrator": self.narrator,
+            "latency_ms": self.latency_ms,
+            "region_id": self.region_id,
+        }
+        if self.tvlc_context:
+            payload["tvlc_context"] = self.tvlc_context
+        if self.connector_type:
+            payload["connector_type"] = self.connector_type
+        return payload
+
+
+def _coerce_anchor_match(item: AnchorMatch | dict[str, Any]) -> AnchorMatch | None:
+    if isinstance(item, AnchorMatch):
+        return item
+    if not isinstance(item, dict):
+        return None
+    open_vocab_label = item.get("open_vocab_label")
+    return AnchorMatch(
+        name=str(item.get("name") or item.get("template_name") or ""),
+        confidence=float(item.get("confidence", 0.0)),
+        patch_indices=[int(index) for index in item.get("patch_indices", []) if isinstance(index, (int, float))],
+        energy=float(item.get("energy", 0.0)),
+        depth_stratum=str(item.get("depth_stratum") or "unknown"),
+        open_vocab_label=str(open_vocab_label).strip() or None if open_vocab_label is not None else None,
+    )
+
+
+def _coerce_setu_description(item: SetuDescription | dict[str, Any]) -> SetuDescription | None:
+    if isinstance(item, SetuDescription):
+        return item
+    if not isinstance(item, dict):
+        return None
+    payload = item.get("description") if isinstance(item.get("description"), dict) else item
+    if not isinstance(payload, dict):
+        return None
+    narrator = payload.get("narrator")
+    region_id = payload.get("region_id")
+    tvlc_context = payload.get("tvlc_context")
+    connector_type = payload.get("connector_type")
+    return SetuDescription(
+        text=str(payload.get("text") or ""),
+        confidence=float(payload.get("confidence", 0.0)),
+        anchor_basis=str(payload.get("anchor_basis") or ""),
+        depth_stratum=str(payload.get("depth_stratum") or "unknown"),
+        is_uncertain=bool(payload.get("is_uncertain", False)),
+        hallucination_risk=float(payload.get("hallucination_risk", 0.0)),
+        uncertainty_map=payload.get("uncertainty_map"),
+        narrator=str(narrator).strip() or None if narrator is not None else None,
+        latency_ms=float(payload["latency_ms"]) if payload.get("latency_ms") is not None else None,
+        region_id=str(region_id).strip() or None if region_id is not None else None,
+        tvlc_context=str(tvlc_context).strip() or None if tvlc_context is not None else None,
+        connector_type=str(connector_type).strip() or None if connector_type is not None else None,
+    )
 
 
 @dataclass(slots=True)
@@ -739,16 +823,9 @@ class SmetiDB(ObservationStore):
             return []
         result: list[AnchorMatch] = []
         for item in data:
-            if not isinstance(item, dict):
-                continue
-            result.append(
-                AnchorMatch(
-                    name=str(item.get("name", "")),
-                    confidence=float(item.get("confidence", 0.0)),
-                    patch_indices=[int(index) for index in item.get("patch_indices", []) if isinstance(index, (int, float))],
-                    energy=float(item.get("energy", 0.0)),
-                )
-            )
+            match = _coerce_anchor_match(item)
+            if match is not None:
+                result.append(match)
         return result
 
     def _deserialize_setu_descriptions(self, raw: str | None) -> list[SetuDescription]:
@@ -757,16 +834,9 @@ class SmetiDB(ObservationStore):
             return []
         result: list[SetuDescription] = []
         for item in data:
-            if not isinstance(item, dict):
-                continue
-            result.append(
-                SetuDescription(
-                    text=str(item.get("text", "")),
-                    confidence=float(item.get("confidence", 0.0)),
-                    anchor_basis=str(item.get("anchor_basis", "")),
-                    region_id=item.get("region_id"),
-                )
-            )
+            description = _coerce_setu_description(item)
+            if description is not None:
+                result.append(description)
         return result
 
     @staticmethod
@@ -1254,14 +1324,16 @@ class SmetiDB(ObservationStore):
             media_type=str(kwargs.get("media_type") or "image"),
             depth_strata=depth_strata,
             anchor_matches=[
-                item if isinstance(item, AnchorMatch) else AnchorMatch(**item)
+                match
                 for item in anchor_matches
-                if isinstance(item, (AnchorMatch, dict))
+                for match in [_coerce_anchor_match(item)]
+                if match is not None
             ],
             setu_descriptions=[
-                item if isinstance(item, SetuDescription) else SetuDescription(**item)
+                description
                 for item in setu_descriptions
-                if isinstance(item, (SetuDescription, dict))
+                for description in [_coerce_setu_description(item)]
+                if description is not None
             ],
             hallucination_risk=float(kwargs.get("hallucination_risk") or 0.0),
             ingestion_status=ingestion_status,

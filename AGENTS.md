@@ -17,7 +17,7 @@ The runtime stores real observations from images or camera frames, computes loca
 ### Runtime
 
 - Start the runtime:
-  `TOORI_DATA_DIR=.toori python3 -m uvicorn cloud.api.main:app --host 127.0.0.1 --port 7777`
+  `TOORI_DATA_DIR=.toori bash scripts/run_runtime.sh`
 - Run the verified backend test suite:
   `pytest -q cloud/api/tests cloud/jepa_service/tests cloud/search_service/tests cloud/monitoring/tests tests/test_readme.py`
 
@@ -97,5 +97,6 @@ The runtime stores real observations from images or camera frames, computes loca
 - Prefer `rg` and `rg --files` for search.
 - Do not reintroduce placeholder or mock user-facing results. Search results must map to real stored observations.
 - Keep ONNX, CoreML, and TFLite-compatible perception as the primary local path. `ollama` and MLX remain optional, desktop-only, and health-checked.
+- Launch the runtime only with Python 3.11. The JEPA stack depends on native extensions that are validated on 3.11 and can crash on newer interpreters.
 - Keep generated artifacts out of source control. Runtime state belongs in `.toori/`; build output belongs in platform-specific output directories.
 - Update `README.md`, `CLAUDE.md`, and the docs in `docs/` when the runtime contract or user workflow changes.

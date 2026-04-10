@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,11 +31,13 @@ from .models import (
     LivingLensTickRequest,
     PlanningRolloutRequest,
     PlanningRolloutResponse,
+    ProviderHealthResponse,
     ProofReportGenerateRequest,
     QueryRequest,
     RecoveryBenchmarkRun,
     RecoveryBenchmarkRunRequest,
     RuntimeSettings,
+    RuntimeSnapshotResponse,
     ToolStateObserveRequest,
     ToolStateObserveResponse,
     WorldModelConfig,
@@ -59,6 +62,16 @@ from .models import (
     StorageUsageReport,
     WatchFolderStatus,
 )
+
+
+def _assert_supported_python() -> None:
+    if sys.version_info[:2] == (3, 11):
+        return
+    raise RuntimeError(
+        "Toori runtime requires Python 3.11. "
+        f"Detected {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}. "
+        "Launch the backend with python3.11 to avoid unsupported native-extension crashes."
+    )
 
 
 @asynccontextmanager
@@ -86,6 +99,7 @@ async def _runtime_lifespan(app: FastAPI):
 def create_app(data_dir: str | None = None) -> FastAPI:
     from .smriti_ingestion import SmritiIngestionDaemon
 
+    _assert_supported_python()
     registry = CollectorRegistry()
     analyze_counter = Counter(
         "toori_analyze_requests_total",
@@ -117,6 +131,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     app.state.smriti_daemon = SmritiIngestionDaemon(
         app.state.runtime.smriti_db,
         app.state.runtime._ensure_jepa_pool,
+        runtime_container=app.state.runtime,
     )
     app.state.runtime.smriti_daemon = app.state.smriti_daemon
 
@@ -270,10 +285,19 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("world_model.config"))],
     )
     def put_world_model_config(payload: WorldModelConfigUpdate) -> WorldModelConfig:
-        return app.state.runtime.update_vjepa2_settings(payload.model_path, payload.n_frames)
+        return app.state.runtime.update_vjepa2_settings(payload.model_path, payload.cache_dir, payload.n_frames)
+
+    @app.post(
+        "/v1/world-model/retry-native",
+        response_model=WorldModelStatus,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("world_model.retry_native"))],
+    )
+    async def post_world_model_retry_native() -> WorldModelStatus:
+        return await app.state.runtime.retry_native_jepa()
 
     @app.get(
         "/v1/providers/health",
+        response_model=ProviderHealthResponse,
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("providers.health"))],
     )
     def provider_health():
@@ -286,8 +310,13 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     def observations(
         session_id: str | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=200),
+        summary_only: bool = Query(default=False),
     ):
-        return app.state.runtime.list_observations(session_id=session_id, limit=limit)
+        return app.state.runtime.list_observations(
+            session_id=session_id,
+            limit=limit,
+            summary_only=summary_only,
+        )
 
     @app.get(
         "/v1/file",
@@ -356,6 +385,17 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     def world_state(session_id: str = Query(..., min_length=1)):
         return app.state.runtime.get_world_state(session_id)
 
+    @app.get(
+        "/v1/runtime/snapshot",
+        response_model=RuntimeSnapshotResponse,
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("runtime.snapshot"))],
+    )
+    def runtime_snapshot(
+        session_id: str = Query(..., min_length=1),
+        observation_limit: int = Query(default=12, ge=1, le=48),
+    ):
+        return app.state.runtime.get_runtime_snapshot(session_id, observation_limit=observation_limit)
+
     @app.post(
         "/v1/tool-state/observe",
         response_model=ToolStateObserveResponse,
@@ -378,17 +418,21 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     )
     async def narrate_rollout(payload: dict):
         try:
-            from .gemma4_bridge import Gemma4Bridge
+            from .gemma4_bridge import Gemma4Bridge, deterministic_rollout_summary
             mlx_p = app.state.runtime.providers.get("mlx")
             if not mlx_p:
-                return {"summary": "Gemma 4 narrator is visually unavailable."}
-            bridge = Gemma4Bridge(mlx_p)
+                return {"summary": deterministic_rollout_summary(payload)}
+            bridge_call = app.state.runtime._mlx_bridge_call()
+            if bridge_call is None:
+                return {"summary": deterministic_rollout_summary(payload)}
+            bridge = Gemma4Bridge(bridge_call)
             text = await bridge.narrate_rollout(payload)
             return {"summary": text}
         except Exception as e:
             import logging
+            from .gemma4_bridge import deterministic_rollout_summary
             logging.getLogger(__name__).error("Narrate rollout failed: %s", e)
-            return {"summary": "Rollout plan calculated safely."}
+            return {"summary": deterministic_rollout_summary(payload)}
 
     @app.post(
         "/v1/benchmarks/recovery/run",

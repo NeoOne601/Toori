@@ -19,6 +19,36 @@ export function humanizeLabel(value?: string | null): string {
   return String(value || "").replace(/_/g, " ").trim();
 }
 
+export function isPlaceholderVisionLabel(value?: string | null): boolean {
+  const normalized = humanizeLabel(value).toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return true;
+  }
+  if (
+    normalized === "tracked region" ||
+    normalized === "tracked entity" ||
+    normalized === "grounded entity" ||
+    normalized === "proposal box" ||
+    normalized === "person standing" ||
+    normalized === "unknown object" ||
+    normalized === "object" ||
+    normalized.includes("histogram") ||
+    normalized.includes("descriptor") ||
+    normalized.includes("rgb ") ||
+    normalized.includes("rgb+") ||
+    normalized.includes("dominant color") ||
+    normalized.includes("brightness label") ||
+    normalized.includes("edge label")
+  ) {
+    return true;
+  }
+  if (/\b(near|behind|beside|next to|left of|right of|in front of|under|over)\b/i.test(normalized)) {
+    return true;
+  }
+  const compact = normalized.replace(/[\s_]+/g, "");
+  return /^entity-?\d+$/i.test(compact) || normalized === "entity";
+}
+
 function metadataValue(metadata: Record<string, unknown> | undefined, key: string): string {
   return humanizeLabel(typeof metadata?.[key] === "string" ? (metadata[key] as string) : "");
 }
@@ -38,12 +68,12 @@ export function formatEntityBaseLabel(entity: {
   label?: string | null;
   metadata?: Record<string, unknown> | null;
 }): string {
-  return (
-    humanizeLabel(entity.label) ||
-    metadataValue(entity.metadata ?? undefined, "caption") ||
-    metadataValue(entity.metadata ?? undefined, "top_label") ||
-    "tracked region"
-  );
+  const candidates = [
+    humanizeLabel(entity.label),
+    metadataValue(entity.metadata ?? undefined, "caption"),
+    metadataValue(entity.metadata ?? undefined, "top_label"),
+  ].filter((item) => item && !isPlaceholderVisionLabel(item));
+  return candidates[0] || "tracked region";
 }
 
 export function formatRelativeTime(value?: string | null): string {
@@ -110,6 +140,100 @@ export function normalizeBoxes(
       },
     ];
   });
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(value, 1));
+}
+
+function anchorBoundsFromPatches(patchIndices: number[]): BoundingBox | null {
+  if (!patchIndices.length) {
+    return null;
+  }
+  const rows = patchIndices.map((index) => Math.floor(index / 14));
+  const cols = patchIndices.map((index) => index % 14);
+  const minRow = Math.min(...rows);
+  const maxRow = Math.max(...rows);
+  const minCol = Math.min(...cols);
+  const maxCol = Math.max(...cols);
+  return {
+    x: clampUnit(minCol / 14),
+    y: clampUnit(minRow / 14),
+    width: clampUnit((maxCol - minCol + 1) / 14),
+    height: clampUnit((maxRow - minRow + 1) / 14),
+    label: null,
+    score: null,
+  };
+}
+
+function anchorBounds(raw: Record<string, unknown>): BoundingBox | null {
+  const bbox = raw.bbox_normalized;
+  if (bbox && typeof bbox === "object") {
+    const normalized = bbox as Record<string, unknown>;
+    const x = Number(normalized.x);
+    const y = Number(normalized.y);
+    const width = Number(normalized.width);
+    const height = Number(normalized.height);
+    if ([x, y, width, height].every(Number.isFinite)) {
+      return {
+        x: clampUnit(x),
+        y: clampUnit(y),
+        width: clampUnit(width),
+        height: clampUnit(height),
+        label: null,
+        score: null,
+      };
+    }
+  }
+  const patchIndices = Array.isArray(raw.patch_indices)
+    ? raw.patch_indices.flatMap((value) => (Number.isFinite(Number(value)) ? [Number(value)] : []))
+    : [];
+  return anchorBoundsFromPatches(patchIndices);
+}
+
+export function boxesFromAnchorMatches(
+  anchorMatches?: Array<Record<string, unknown>> | null,
+): BoundingBox[] {
+  if (!anchorMatches?.length) {
+    return [];
+  }
+  return anchorMatches
+    .flatMap((match, index) => {
+      if (!match || typeof match !== "object") {
+        return [];
+      }
+      const label = humanizeLabel(
+        typeof match.open_vocab_label === "string" && match.open_vocab_label.trim()
+          ? match.open_vocab_label
+          : typeof match.template_name === "string" && match.template_name.trim()
+            ? match.template_name
+            : typeof match.name === "string"
+              ? match.name
+              : "",
+      );
+      if (!label) {
+        return [];
+      }
+      const bounds = anchorBounds(match);
+      if (!bounds) {
+        return [];
+      }
+      const confidence = Number(match.confidence);
+      return [
+        {
+          ...bounds,
+          label,
+          score: Number.isFinite(confidence) ? clampUnit(confidence) : null,
+          metadata: {
+            template_name: typeof match.template_name === "string" ? match.template_name : `anchor-${index + 1}`,
+            open_vocab_label: label,
+            depth_stratum: typeof match.depth_stratum === "string" ? match.depth_stratum : "unknown",
+            patch_count: Array.isArray(match.patch_indices) ? match.patch_indices.length : 0,
+          },
+        },
+      ];
+    })
+    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
 }
 
 export function explainSummary(
@@ -238,34 +362,17 @@ export function toGhostBoxes(
 }
 
 export function toEnergyAnchors(energyMap?: number[][] | null): SpatialCanvasAnchor[] {
-  if (!energyMap?.length) {
-    return [];
-  }
-  const flat = energyMap.flatMap((row, rowIndex) =>
-    row.map((value, colIndex) => ({ rowIndex, colIndex, value })),
-  );
-  const max = flat.reduce((best, item) => Math.max(best, item.value), 0);
-  if (max <= 0) {
-    return [];
-  }
-  return flat
-    .filter((item) => item.value > max * 0.35)
-    .sort((left, right) => right.value - left.value)
-    .slice(0, 18)
-    .map((item) => ({
-      id: `energy-${item.rowIndex}-${item.colIndex}`,
-      x: ((item.colIndex + 0.5) / 14) * 100,
-      y: ((item.rowIndex + 0.5) / 14) * 100,
-      z: Math.round((item.value / max) * 90),
-      label: item.value.toFixed(2),
-      tone: item.value / max > 0.6 ? "accent" : "live",
-    }));
+  void energyMap;
+  return [];
 }
 
 export function consumerMessage(
   tick: JEPATickPayload | null | undefined,
   tracks: EntityTrack[],
 ): string {
+  if (!tick) {
+    return tracks.length ? "Refreshing live JEPA associations" : "Waiting for live JEPA tick";
+  }
   const lead = humanizeLabel(tracks[0]?.label) || "it";
   switch (tick?.talker_event) {
     case "OCCLUSION_START":

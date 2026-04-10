@@ -1,6 +1,16 @@
 import { useDesktopApp } from "../state/DesktopAppContext";
 import ReasoningTraceList from "../widgets/ReasoningTraceList";
 
+function featureStateLabel(item: { enabled: boolean; healthy: boolean; message?: string | null }) {
+  if (!item.enabled) {
+    return "off";
+  }
+  if (item.healthy) {
+    return "active";
+  }
+  return /awaiting|warmup|warming up|connecting/i.test(item.message || "") ? "waiting" : "degraded";
+}
+
 export default function IntegrationsTab() {
   const app = useDesktopApp();
 
@@ -40,7 +50,7 @@ WS   ws://127.0.0.1:7777/v1/events`}</pre>
       <article className="panel">
         <div className="panel-head">
           <h3>Provider Health</h3>
-          <span>Fallback order visibility</span>
+          <span>Providers and live features</span>
         </div>
         <div className="stack">
           {app.world.health.map((item) => (
@@ -49,7 +59,18 @@ WS   ws://127.0.0.1:7777/v1/events`}</pre>
                 <strong>{item.name}</strong>
                 <p>{item.message}</p>
               </div>
-              <span>{item.healthy ? "ready" : "fallback"}</span>
+              <span>{item.healthy ? "ready" : "degraded"}</span>
+            </div>
+          ))}
+        </div>
+        <div className="stack" style={{ marginTop: "1rem" }}>
+          {app.world.featureHealth.map((item) => (
+            <div key={item.name} className="list-row compact">
+              <div>
+                <strong>{item.name}</strong>
+                <p>{item.message}</p>
+              </div>
+              <span>{featureStateLabel(item)}</span>
             </div>
           ))}
         </div>

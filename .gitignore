@@ -19,3 +19,5 @@ desktop/electron/.dev-app/
 api.log
 jepa.log
 search.log
+models/vision/tvlc_connector.npz
+models/vision/tvlc_connector.npz

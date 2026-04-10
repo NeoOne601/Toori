@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 
 import numpy as np
+import pytest
 
 from cloud.runtime.error_types import SmritiRateLimitError
 from cloud.runtime.jepa_worker import JEPAWorkItem, JEPAWorkerPool
@@ -148,5 +149,30 @@ def test_jepa_never_runs_on_event_loop_thread():
             await pool.shutdown()
 
         assert heartbeat > 5
+
+    asyncio.run(run())
+
+
+def test_worker_pool_clears_cancelled_pending_submission():
+    async def run() -> None:
+        pool = JEPAWorkerPool(num_workers=1, queue_maxsize=2)
+        try:
+            task = asyncio.create_task(pool.submit(_work_item("cancel-session", "corr-cancel", delay_s=0.35)))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            deadline = asyncio.get_running_loop().time() + 1.0
+            while asyncio.get_running_loop().time() < deadline:
+                if pool.get_worker_stats()[0]["pending"] == 0:
+                    break
+                await asyncio.sleep(0.05)
+
+            assert pool.get_worker_stats()[0]["pending"] == 0
+            result = await pool.submit(_work_item("cancel-session", "corr-after-cancel"))
+            assert result.error is None
+        finally:
+            await pool.shutdown()
 
     asyncio.run(run())

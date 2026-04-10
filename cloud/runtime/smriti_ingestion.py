@@ -71,10 +71,12 @@ class SmritiIngestionDaemon:
         smriti_db,
         jepa_pool,
         on_progress: Optional[Callable[[dict], None]] = None,
+        runtime_container=None,
     ) -> None:
         self._db = smriti_db
         self._pool = jepa_pool
         self._on_progress = on_progress
+        self._runtime_container = runtime_container
         self._queue: BackPressureQueue = BackPressureQueue(maxsize=32, policy="OLDEST_DROP")
         self._worker_task: Optional[asyncio.Task] = None
         self._watcher = None
@@ -264,6 +266,7 @@ class SmritiIngestionDaemon:
 
         tick_dict = result.jepa_tick_dict
         embedding = tick_dict.get("session_fingerprint", [])[:128]
+        await self._enrich_anchor_matches(tick_dict)
         
         media.depth_strata = tick_dict.get("depth_strata")
         media.anchor_matches = tick_dict.get("anchor_matches") or []
@@ -276,9 +279,10 @@ class SmritiIngestionDaemon:
         # Gemma 4 narration layer — evidence-first, hallucination-bounded
         try:
             from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
-            _mlx_prov = getattr(self, '_container', None)
-            _mlx_prov = getattr(_mlx_prov, 'mlx_provider', None) if _mlx_prov else None
-            _enricher = _G4E(_mlx_prov)
+            _settings = self._runtime_container.get_settings() if self._runtime_container is not None else None
+            _mlx_cfg = _settings.providers.get("mlx") if _settings is not None else None
+            _mlx_prov = getattr(getattr(self._runtime_container, "providers", None), "mlx", None) if _mlx_cfg and _mlx_cfg.enabled else None
+            _enricher = _G4E(_mlx_prov, _mlx_cfg)
             media.setu_descriptions = await _enricher.enrich_ingested_media(media)
         except Exception as _g4_err:
             import logging as _lg
@@ -327,6 +331,36 @@ class SmritiIngestionDaemon:
             observation_id=media.observation_id,
         )
         log.info("ingestion_complete", file=job.file_path, media_id=media.id)
+
+    async def _enrich_anchor_matches(self, tick_dict: dict) -> None:
+        anchors = tick_dict.get("anchor_matches")
+        if not isinstance(anchors, list) or not anchors:
+            return
+        descriptions = tick_dict.get("setu_descriptions")
+        description_records = descriptions if isinstance(descriptions, list) else []
+
+        from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
+
+        settings = self._runtime_container.get_settings() if self._runtime_container is not None else None
+        mlx_config = settings.providers.get("mlx") if settings is not None else None
+        mlx_provider = getattr(getattr(self._runtime_container, "providers", None), "mlx", None) if mlx_config and mlx_config.enabled else None
+        enricher = _G4E(mlx_provider, mlx_config)
+
+        for index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict):
+                continue
+            gate = description_records[index].get("gate", {}) if index < len(description_records) and isinstance(description_records[index], dict) else {}
+            if gate and not bool(gate.get("passes", False)):
+                continue
+            confidence = float(anchor.get("confidence", 0.0) or 0.0)
+            if confidence < 0.55:
+                continue
+            anchor["open_vocab_label"] = await enricher.get_open_vocab_label(
+                anchor_name=str(anchor.get("template_name") or "object"),
+                depth_stratum=str(anchor.get("depth_stratum") or gate.get("depth_stratum") or "unknown"),
+                confidence=confidence,
+                patch_count=len(anchor.get("patch_indices") or []),
+            )
 
     def _compute_mean_hallucination_risk(self, tick_dict: dict) -> float:
         descriptions = tick_dict.get("setu_descriptions", []) or []

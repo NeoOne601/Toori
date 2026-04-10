@@ -17,6 +17,8 @@ type SceneMonitorProps = {
   showEntities: boolean;
   showEnergyMap: boolean;
   energyMap?: number[][];
+  energyWarmup?: boolean;
+  energyStatusLabel?: string | null;
   ghosts?: SpatialCanvasGhostBox[];
   anchors?: SpatialCanvasAnchor[];
   uiMode?: "consumer" | "science";
@@ -36,6 +38,8 @@ export default function SceneMonitor({
   showEntities,
   showEnergyMap,
   energyMap = [],
+  energyWarmup = false,
+  energyStatusLabel = null,
   ghosts = [],
   anchors = [],
   uiMode = "science",
@@ -56,7 +60,8 @@ export default function SceneMonitor({
         {showEntities ? <DetectionOverlay boxes={boxes} uiMode={uiMode} /> : null}
         {showEnergyMap ? (
           <SpatialCanvas3D
-            warmup={false}
+            warmup={energyWarmup}
+            statusLabel={energyStatusLabel}
             ghosts={ghosts}
             anchors={anchors}
             energyMap={energyMap}

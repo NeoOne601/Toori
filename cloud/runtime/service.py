@@ -6,9 +6,11 @@ import json
 import io
 import hashlib
 import os
+import re
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, time as epoch_time
 from typing import Any, Optional
 
 import numpy as np
@@ -16,14 +18,16 @@ from PIL import Image, ImageDraw
 
 from .atlas import EpistemicAtlas
 from .config import resolve_data_dir, resolve_smriti_storage
-from .error_types import SmritiError, SmritiPipelineError
+from .error_types import SmritiError, SmritiRateLimitError
 from .events import EventBus
-from .jepa_worker import JEPAWorkItem, JEPAWorkerPool
+from .jepa_worker import JEPAWorkItem, JEPAWorkResult, JEPAWorkerPool, run_jepa_worker_preflight
+from .mlx_adapter import make_mlx_bridge_call
 from .models import (
     ActionToken,
     AnalyzeRequest,
     AnalyzeResponse,
     Answer,
+    BoundingBox,
     ChallengeEvaluateRequest,
     ChallengeRun,
     EntityTrack,
@@ -35,7 +39,9 @@ from .models import (
     LivingLensTickRequest,
     LivingLensTickResponse,
     Observation,
+    ObservationSummary,
     ObservationsResponse,
+    ObservationSummariesResponse,
     PlanningRolloutRequest,
     PlanningRolloutResponse,
     ProofReportResponse,
@@ -51,7 +57,11 @@ from .models import (
     QueryRequest,
     QueryResponse,
     ReasoningTraceEntry,
+    RuntimeFeatureStatus,
     RuntimeSettings,
+    SceneGraphEdge,
+    SceneGraphNode,
+    SceneGraphPayload,
     SceneState,
     ShareObservationResponse,
     SmritiRecallFeedback,
@@ -69,9 +79,10 @@ from .models import (
     ToolStateObserveResponse,
     TalkerEvent,
     WatchFolderStatus,
+    RuntimeSnapshotResponse,
     WorldStateResponse,
 )
-from .observability import CorrelationContext, get_logger
+from .observability import CorrelationContext, PipelineTrace, get_logger, trace_stage
 from .providers import ProviderRegistry
 from .smriti_storage import SmetiDB
 from .storage import ObservationStore
@@ -179,8 +190,21 @@ class RuntimeContainer:
         self.engine = JEPAEngine()
         self._immersive_engine_factory = ImmersiveJEPAEngine
         self._immersive_engines: dict[str, ImmersiveJEPAEngine] = {}
+        self._fallback_engines: dict[str, ImmersiveJEPAEngine] = {}
         self._jepa_ticks_by_session: dict[str, deque[JEPATick]] = defaultdict(lambda: deque(maxlen=240))
         self._jepa_pool: JEPAWorkerPool | None = None
+        self._jepa_circuit_reason: str | None = None
+        self._jepa_safe_fallback_reason: str | None = None
+        self._jepa_native_ready = False
+        self._jepa_preflight_status = "not_run"
+        self._jepa_preflight_device = "cpu"
+        self._jepa_preflight_n_frames = 0
+        self._jepa_preflight_model_id = ""
+        self._jepa_last_failure_at: datetime | None = None
+        self._jepa_crash_fingerprint: str | None = None
+        self._jepa_native_process_state = "idle"
+        self._jepa_last_native_exit_code: int | None = None
+        self._jepa_last_native_signal: int | None = None
         self._latest_proof_report: Optional[Path] = None
         self.talker = SelectiveTalker()
         self.atlas = EpistemicAtlas()
@@ -191,6 +215,692 @@ class RuntimeContainer:
         self.smriti_daemon = None
         self._sag_templates_path = self._smriti_storage.templates_path or str(Path(self._smriti_storage.data_dir or self.data_dir) / "sag_templates.json")
         self._setu2_bridge = None
+
+    @staticmethod
+    def _clean_label(value: object) -> str:
+        return " ".join(str(value or "").replace("_", " ").split()).strip()
+
+    @classmethod
+    def _is_absurd_composite_label(cls, value: object) -> bool:
+        normalized = cls._clean_label(value).lower()
+        if not normalized:
+            return True
+        absurd = {
+            "hot dog near velvet",
+            "hand plane near windsor tie",
+            "lemon near bra",
+            "rgb histogram+edge histogram",
+            "rgb histogram edge histogram",
+            "dominant color",
+            "brightness label",
+            "edge label",
+        }
+        if normalized in absurd:
+            return True
+        if any(phrase in normalized for phrase in (" near ", " behind ", " left of ", " right of ", " above ", " below ", " next to ", " beside ", " with ")):
+            return True
+        if "histogram" in normalized or "descriptor" in normalized:
+            return True
+        return bool(re.match(r"^(?:entity|proposal|candidate|tracked(?: region| object)?|object)\s*[-_ ]*\d*$", normalized))
+
+    @classmethod
+    def _preferred_object_label(cls, *candidates: object) -> str:
+        for candidate in candidates:
+            cleaned = cls._clean_label(candidate).lower()
+            if not cleaned:
+                continue
+            if cls._is_absurd_composite_label(cleaned):
+                continue
+            return cleaned
+        return ""
+
+    @classmethod
+    def _fallback_anchor_label(cls, anchor_name: object, depth_stratum: object = "unknown") -> str:
+        mapping = {
+            "person_torso": "person standing",
+            "chair_seated": "chair",
+            "cylindrical_object": "cylindrical object",
+            "screen_display": "display screen",
+            "desk_surface": "desk surface",
+            "hand_region": "hand or arm",
+            "spherical_object": "round object",
+            "background_plane": "background surface",
+            "telescope": "telescope",
+            "neck_brace": "neck brace",
+            "tie": "tie",
+            "wall_clock": "wall clock",
+            "poster": "poster",
+            "switch": "switch",
+            "lamp": "lamp",
+            "sunglasses": "sunglasses",
+            "lab_coat": "lab coat",
+            "barrette": "barrette",
+            "unknown": "object",
+        }
+        anchor_key = str(anchor_name or "").strip()
+        depth = str(depth_stratum or "unknown").strip().lower()
+        label = mapping.get(anchor_key, cls._clean_label(anchor_key).lower())
+        if cls._is_absurd_composite_label(label):
+            label = "object"
+        if label == "object" and depth and depth != "unknown":
+            return f"object {depth}".strip()
+        return label or "object"
+
+    def _latest_jepa_tick(self) -> JEPATick | None:
+        latest_tick: JEPATick | None = None
+        latest_ts = -1
+        for ticks in self._jepa_ticks_by_session.values():
+            if not ticks:
+                continue
+            candidate = ticks[-1]
+            if candidate.timestamp_ms > latest_ts:
+                latest_tick = candidate
+                latest_ts = candidate.timestamp_ms
+        return latest_tick
+
+    @staticmethod
+    def _observation_summary(observation: Observation) -> ObservationSummary:
+        return ObservationSummary(
+            id=observation.id,
+            session_id=observation.session_id,
+            created_at=observation.created_at,
+            world_state_id=observation.world_state_id,
+            observation_kind=observation.observation_kind,
+            image_path=observation.image_path,
+            thumbnail_path=observation.thumbnail_path,
+            width=observation.width,
+            height=observation.height,
+            summary=observation.summary,
+            source_query=observation.source_query,
+            tags=list(observation.tags),
+            confidence=observation.confidence,
+            novelty=observation.novelty,
+            providers=list(observation.providers),
+            metadata=dict(observation.metadata or {}),
+        )
+
+    def _record_jepa_native_failure(self, reason: str, *, stage: str) -> None:
+        normalized = " ".join(str(reason or "").split()).strip() or "JEPA worker unavailable"
+        self._jepa_native_ready = False
+        self._jepa_preflight_status = "failed" if stage == "preflight" else "quarantined"
+        self._jepa_last_failure_at = datetime.now(timezone.utc)
+        self._jepa_crash_fingerprint = hashlib.blake2b(
+            f"{stage}:{normalized}".encode("utf-8", "ignore"),
+            digest_size=6,
+        ).hexdigest()
+        self._jepa_native_process_state = "crashed" if stage == "preflight" else "quarantined"
+
+    def _scene_graph_payload(
+        self,
+        *,
+        session_id: str,
+        scene_state: SceneState | None,
+        tracks: list[EntityTrack],
+        latest_tick: JEPATick | None,
+    ) -> SceneGraphPayload:
+        nodes: list[SceneGraphNode] = []
+        edges: list[SceneGraphEdge] = []
+        seen_ids: set[str] = set()
+
+        def add_node(node: SceneGraphNode) -> None:
+            if node.id in seen_ids:
+                return
+            seen_ids.add(node.id)
+            nodes.append(node)
+
+        if scene_state is not None:
+            for entity in scene_state.grounded_entities[:16]:
+                bbox_payload = None
+                raw_bbox = (entity.properties or {}).get("bbox")
+                if isinstance(raw_bbox, dict):
+                    try:
+                        bbox_payload = BoundingBox.model_validate(raw_bbox)
+                    except Exception:
+                        bbox_payload = None
+                add_node(
+                    SceneGraphNode(
+                        id=entity.id,
+                        label=entity.label,
+                        depth_stratum=str((entity.properties or {}).get("depth_stratum") or "unknown"),
+                        depth_confidence=float((entity.properties or {}).get("depth_confidence") or 0.0),
+                        bbox=bbox_payload,
+                        source="grounded_entity",
+                        confidence=float(entity.confidence or 0.0),
+                        status=str(entity.status or "visible"),
+                        label_source=str((entity.properties or {}).get("label_source") or "grounded_entity"),
+                        label_evidence=(entity.properties or {}).get("label_evidence"),
+                    )
+                )
+
+        for track in tracks[:16]:
+            metadata = track.metadata or {}
+            bbox_payload = None
+            raw_bbox = metadata.get("bbox") or metadata.get("ghost_bbox_pixels")
+            if isinstance(raw_bbox, dict):
+                try:
+                    bbox_payload = BoundingBox.model_validate(raw_bbox)
+                except Exception:
+                    bbox_payload = None
+            add_node(
+                SceneGraphNode(
+                    id=str(track.id),
+                    label=self._preferred_object_label(track.label, metadata.get("caption"), metadata.get("top_label")) or str(track.id),
+                    depth_stratum=str(metadata.get("depth_stratum") or "unknown"),
+                    depth_confidence=float(metadata.get("depth_confidence") or 0.0),
+                    bbox=bbox_payload,
+                    source="track",
+                    confidence=float(track.persistence_confidence or track.last_similarity or 0.0),
+                    status=str(track.status or "visible"),
+                    label_source=str(metadata.get("label_source") or "track"),
+                    label_evidence=metadata.get("label_evidence"),
+                )
+            )
+
+        for anchor in ((latest_tick.anchor_matches or []) if latest_tick is not None else [])[:16]:
+            if not isinstance(anchor, dict):
+                continue
+            patch_indices = anchor.get("patch_indices") or []
+            bbox_payload = anchor.get("bbox_normalized")
+            if not bbox_payload and isinstance(patch_indices, list) and patch_indices:
+                rows = [int(index) // 14 for index in patch_indices if str(index).isdigit()]
+                cols = [int(index) % 14 for index in patch_indices if str(index).isdigit()]
+                if rows and cols:
+                    bbox_payload = {
+                        "x": min(cols) / 14,
+                        "y": min(rows) / 14,
+                        "width": (max(cols) - min(cols) + 1) / 14,
+                        "height": (max(rows) - min(rows) + 1) / 14,
+                    }
+            bbox_model = None
+            if isinstance(bbox_payload, dict):
+                try:
+                    bbox_model = BoundingBox.model_validate(bbox_payload)
+                except Exception:
+                    bbox_model = None
+            label = self._preferred_object_label(
+                anchor.get("open_vocab_label"),
+                anchor.get("template_name"),
+                anchor.get("name"),
+            ) or "anchor"
+            anchor_id = str(anchor.get("template_name") or anchor.get("name") or f"anchor-{len(nodes)+1}")
+            add_node(
+                SceneGraphNode(
+                    id=anchor_id,
+                    label=label,
+                    depth_stratum=str(anchor.get("depth_stratum") or "unknown"),
+                    depth_confidence=float(anchor.get("depth_confidence", 0.0) or 0.0),
+                    bbox=bbox_model,
+                    source="anchor",
+                    confidence=float(anchor.get("confidence", 0.0) or 0.0),
+                    status="visible",
+                    label_source=str(anchor.get("label_source") or "anchor"),
+                    label_evidence=anchor.get("label_evidence"),
+                )
+            )
+
+        primary_id = nodes[0].id if nodes else None
+        for node in nodes[1:]:
+            if primary_id:
+                edges.append(
+                    SceneGraphEdge(
+                        source=primary_id,
+                        target=node.id,
+                        relation="co_present",
+                        weight=max(float(node.confidence), 0.15),
+                    )
+                )
+
+        atlas = self._atlas_for_session(session_id).to_dict()
+        for edge in atlas.get("edges", [])[:24] if isinstance(atlas, dict) else []:
+            if not isinstance(edge, dict):
+                continue
+            source = str(edge.get("source_id") or "")
+            target = str(edge.get("target_id") or "")
+            if not source or not target:
+                continue
+            edges.append(
+                SceneGraphEdge(
+                    source=source,
+                    target=target,
+                    relation="co_occurs",
+                    weight=float(edge.get("interaction_energy", 0.0) or 0.0),
+                )
+            )
+
+        return SceneGraphPayload(nodes=nodes[:24], edges=edges[:40])
+
+    @staticmethod
+    def _normalized_anchor_bbox(anchor: dict[str, Any]) -> dict[str, float] | None:
+        bbox = anchor.get("bbox_normalized")
+        if isinstance(bbox, dict):
+            try:
+                return {
+                    "x": float(bbox.get("x", 0.0)),
+                    "y": float(bbox.get("y", 0.0)),
+                    "width": float(bbox.get("width", 0.0)),
+                    "height": float(bbox.get("height", 0.0)),
+                }
+            except Exception:
+                return None
+        patch_indices = anchor.get("patch_indices") or []
+        if not isinstance(patch_indices, list) or not patch_indices:
+            return None
+        numeric_indices: list[int] = []
+        for item in patch_indices:
+            try:
+                numeric_indices.append(int(item))
+            except Exception:
+                continue
+        if not numeric_indices:
+            return None
+        rows = [index // 14 for index in numeric_indices]
+        cols = [index % 14 for index in numeric_indices]
+        return {
+            "x": min(cols) / 14,
+            "y": min(rows) / 14,
+            "width": (max(cols) - min(cols) + 1) / 14,
+            "height": (max(rows) - min(rows) + 1) / 14,
+        }
+
+    def _anchor_crop_base64(
+        self,
+        *,
+        observation: Observation | None,
+        anchor: dict[str, Any],
+    ) -> str | None:
+        if observation is None or not observation.image_path:
+            return None
+        bbox = self._normalized_anchor_bbox(anchor)
+        if bbox is None:
+            return None
+        try:
+            with Image.open(observation.image_path) as image:
+                rgb = image.convert("RGB")
+                width, height = rgb.size
+                x0 = max(0, int((bbox["x"] - 0.04) * width))
+                y0 = max(0, int((bbox["y"] - 0.04) * height))
+                x1 = min(width, int((bbox["x"] + bbox["width"] + 0.04) * width))
+                y1 = min(height, int((bbox["y"] + bbox["height"] + 0.04) * height))
+                if x1 <= x0 or y1 <= y0:
+                    return None
+                crop = rgb.crop((x0, y0, x1, y1))
+                crop.thumbnail((384, 384))
+                buffer = io.BytesIO()
+                crop.save(buffer, format="JPEG", quality=88)
+                return base64.b64encode(buffer.getvalue()).decode("utf-8")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _anchor_tvlc_context(
+        description_records: list[dict[str, Any]],
+        index: int,
+    ) -> tuple[str | None, str | None]:
+        if index >= len(description_records):
+            return None, None
+        record = description_records[index]
+        if not isinstance(record, dict):
+            return None, None
+        payload = record.get("description")
+        if not isinstance(payload, dict):
+            return None, None
+        context = str(payload.get("tvlc_context") or "").strip() or None
+        connector_type = str(payload.get("connector_type") or "").strip() or None
+        if connector_type != "tvlc_trained":
+            return None, None
+        return context, connector_type
+
+    def _mark_jepa_native_ready(self, *, device: str, n_frames: int, model_id: str) -> None:
+        self._jepa_native_ready = True
+        self._jepa_preflight_status = "ready"
+        self._jepa_preflight_device = device
+        self._jepa_preflight_n_frames = n_frames
+        self._jepa_preflight_model_id = model_id
+        self._jepa_safe_fallback_reason = None
+        self._jepa_circuit_reason = None
+        self._jepa_last_failure_at = None
+        self._jepa_crash_fingerprint = None
+        self._jepa_native_process_state = "ready"
+        self._jepa_last_native_exit_code = 0
+        self._jepa_last_native_signal = None
+
+    def _mlx_health(self, settings: RuntimeSettings):
+        mlx_config = settings.providers.get("mlx")
+        if mlx_config is None:
+            return None, None
+        return self.providers.mlx.health(mlx_config), mlx_config
+
+    def _feature_health_snapshot(self, settings: RuntimeSettings) -> list[RuntimeFeatureStatus]:
+        features = settings.live_features
+        latest_tick = self._latest_jepa_tick()
+        mlx_health, mlx_config = self._mlx_health(settings)
+        circuit_reason = self._jepa_circuit_reason
+        safe_fallback_reason = self._jepa_safe_fallback_reason
+        active_world_model = (
+            latest_tick.last_tick_encoder_type
+            if latest_tick is not None and latest_tick.last_tick_encoder_type
+            else ("dinov2-vits14-onnx" if safe_fallback_reason else "vjepa2")
+        )
+
+        energy_map = np.asarray(getattr(latest_tick, "energy_map", []), dtype=np.float32)
+        has_energy_tick = bool(energy_map.size)
+        heatmap_active = False
+        world_model_degraded = bool((latest_tick is not None and latest_tick.degraded) or circuit_reason)
+        if has_energy_tick:
+            flat = energy_map.reshape(-1)
+            p70 = float(np.percentile(flat, 70)) if flat.size else 0.0
+            heatmap_active = bool(np.any(flat >= p70)) and float(np.max(flat)) > 0.0
+
+        heatmap_message = "heatmap disabled"
+        heatmap_healthy = False
+        if features.energy_heatmap_enabled:
+            if circuit_reason:
+                heatmap_message = f"world model unavailable: {circuit_reason}"
+            elif world_model_degraded:
+                heatmap_message = (
+                    "native JEPA quarantined; rendering degraded energy overlay"
+                    if active_world_model == "dinov2-vits14-onnx"
+                    else f"world model degraded: {latest_tick.degrade_reason or 'worker fallback active'}"
+                )
+            elif latest_tick is None or not has_energy_tick:
+                heatmap_message = "awaiting first JEPA tick"
+            elif latest_tick.warmup:
+                heatmap_message = "warmup active"
+            elif not heatmap_active:
+                heatmap_message = "no high-energy patches this tick"
+            else:
+                heatmap_message = "spectrum energy heatmap active"
+                heatmap_healthy = True
+
+        tvlc_enabled = bool(features.tvlc_enabled)
+        tvlc_trained = False
+        if not tvlc_enabled:
+            tvlc_status = RuntimeFeatureStatus(
+                name="tvlc-connector",
+                enabled=False,
+                healthy=False,
+                message="TVLC disabled",
+            )
+        else:
+            try:
+                from cloud.perception.tvlc_connector import TVLCConnector
+
+                if not TVLCConnector.is_available():
+                    tvlc_status = RuntimeFeatureStatus(
+                        name="tvlc-connector",
+                        enabled=True,
+                        healthy=False,
+                        message="weights missing",
+                    )
+                else:
+                    connector = TVLCConnector(TVLCConnector.default_weights_path())
+                    tvlc_trained = bool(connector.is_trained)
+                    tvlc_status = RuntimeFeatureStatus(
+                        name="tvlc-connector",
+                        enabled=True,
+                        healthy=tvlc_trained,
+                        message="trained connector ready" if tvlc_trained else "present but untrained",
+                    )
+            except Exception as exc:
+                tvlc_status = RuntimeFeatureStatus(
+                    name="tvlc-connector",
+                    enabled=True,
+                    healthy=False,
+                    message=f"unavailable: {str(exc).splitlines()[0]}",
+                )
+
+        open_vocab_enabled = bool(features.open_vocab_labels_enabled)
+        open_vocab_healthy = bool(open_vocab_enabled and tvlc_trained and mlx_health is not None and mlx_health.healthy)
+        if not open_vocab_enabled:
+            open_vocab_message = "open-vocab labels disabled"
+        elif not tvlc_enabled:
+            open_vocab_message = "TVLC disabled; deterministic aliases in use"
+        elif not tvlc_trained:
+            open_vocab_message = "TVLC present but untrained; deterministic aliases in use"
+        elif mlx_health is None or not mlx_health.healthy:
+            open_vocab_message = "MLX unavailable; deterministic aliases in use"
+        else:
+            open_vocab_message = "trained TVLC + MLX relabeling ready"
+
+        proof_enabled = bool(mlx_config is not None and mlx_config.enabled)
+        proof_healthy = bool(mlx_health is not None and mlx_health.healthy)
+        if not proof_enabled:
+            proof_message = "Gemma proof narration disabled"
+        elif proof_healthy:
+            proof_message = "Gemma proof narration ready"
+        else:
+            proof_message = "proof narration will use fallback text"
+
+        live_lens_enabled = bool(features.live_lens_use_jepa_tick)
+        if not live_lens_enabled:
+            live_lens_message = "Live Lens uses legacy analyze mode"
+            live_lens_healthy = False
+        elif circuit_reason:
+            live_lens_message = f"Native JEPA quarantined after worker failure: {circuit_reason}"
+            live_lens_healthy = False
+        elif safe_fallback_reason and latest_tick is None:
+            live_lens_message = f"Native JEPA quarantined; {active_world_model} ready and waiting for first tick"
+            live_lens_healthy = False
+        elif world_model_degraded:
+            live_lens_message = (
+                f"Native JEPA quarantined; using {active_world_model}"
+                if active_world_model == "dinov2-vits14-onnx"
+                else f"world model degraded: {latest_tick.degrade_reason or 'worker fallback active'}"
+            )
+            live_lens_healthy = False
+        elif latest_tick is None:
+            live_lens_message = "JEPA-backed capture enabled; waiting for first tick"
+            live_lens_healthy = False
+        elif latest_tick.warmup:
+            live_lens_message = (
+                f"{active_world_model} capture warming up"
+                if active_world_model != "vjepa2"
+                else "JEPA-backed capture warming up"
+            )
+            live_lens_healthy = True
+        else:
+            live_lens_message = (
+                f"Live Lens uses {active_world_model} tick capture"
+                if active_world_model != "vjepa2"
+                else "Live Lens uses JEPA-backed tick capture"
+            )
+            live_lens_healthy = True
+
+        return [
+            RuntimeFeatureStatus(
+                name="live-lens-jepa",
+                enabled=live_lens_enabled,
+                healthy=live_lens_healthy,
+                message=live_lens_message,
+            ),
+            RuntimeFeatureStatus(
+                name="energy-heatmap",
+                enabled=bool(features.energy_heatmap_enabled),
+                healthy=heatmap_healthy,
+                message=heatmap_message,
+            ),
+            RuntimeFeatureStatus(
+                name="open-vocab-labels",
+                enabled=open_vocab_enabled,
+                healthy=open_vocab_healthy,
+                message=open_vocab_message,
+                source_provider="mlx",
+            ),
+            tvlc_status,
+            RuntimeFeatureStatus(
+                name="proof-report-gemma",
+                enabled=proof_enabled,
+                healthy=proof_healthy,
+                message=proof_message,
+                source_provider="mlx",
+            ),
+        ]
+
+    def _preferred_anchor_summary(self, tick_dict: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        anchors = tick_dict.get("anchor_matches")
+        descriptions = tick_dict.get("setu_descriptions")
+        if not isinstance(anchors, list) or not anchors:
+            return None, {}
+
+        description_records = descriptions if isinstance(descriptions, list) else []
+        candidates: list[tuple[float, str]] = []
+        for index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict):
+                continue
+            gate = description_records[index].get("gate", {}) if index < len(description_records) and isinstance(description_records[index], dict) else {}
+            if gate and not bool(gate.get("passes", False)):
+                continue
+            confidence = float(anchor.get("confidence", 0.0) or 0.0)
+            if confidence < 0.55:
+                continue
+            label = self._preferred_object_label(
+                anchor.get("open_vocab_label")
+                or anchor.get("template_name")
+                or anchor.get("name")
+            )
+            if not label or label == "object":
+                continue
+            candidates.append((confidence, label))
+
+        if not candidates:
+            return None, {}
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        primary = candidates[0][1]
+        secondary = next((label for _, label in candidates[1:] if label != primary), "")
+        summary = primary
+        metadata = {
+            "primary_object_label": primary,
+            "secondary_object_labels": [label for _, label in candidates[1:4] if label != primary],
+            "spatial_relation_candidates": ["co_present"] if secondary else [],
+            "summary_candidates": [label for _, label in candidates[:6]],
+            "summary_source": "anchor_matches",
+            "open_vocab_labels": [label for _, label in candidates[:6]],
+        }
+        return summary, metadata
+
+    def _apply_fallback_anchor_labels(self, tick_dict: dict[str, Any]) -> None:
+        anchors = tick_dict.get("anchor_matches")
+        if not isinstance(anchors, list):
+            return
+        for anchor in anchors:
+            if not isinstance(anchor, dict):
+                continue
+            if str(anchor.get("open_vocab_label") or "").strip():
+                continue
+            anchor["open_vocab_label"] = self._fallback_anchor_label(
+                anchor.get("template_name") or anchor.get("name") or "object",
+                anchor.get("depth_stratum") or "unknown",
+            )
+            anchor["label_source"] = "deterministic_alias"
+            anchor["label_evidence"] = {
+                "policy": "strict_evidence_gate",
+                "reason": "trained_tvlc_or_mlx_unavailable",
+            }
+
+    def _strip_disabled_tvlc_context(self, tick_dict: dict[str, Any]) -> None:
+        descriptions = tick_dict.get("setu_descriptions")
+        if not isinstance(descriptions, list):
+            return
+        for item in descriptions:
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("description")
+            if isinstance(payload, dict):
+                payload.pop("tvlc_context", None)
+                payload.pop("connector_type", None)
+
+    def _update_observation_from_tick(
+        self,
+        observation_id: str,
+        *,
+        base_metadata: dict[str, Any] | None,
+        tick_dict: dict[str, Any],
+    ) -> Observation | None:
+        preferred_summary, preferred_metadata = self._preferred_anchor_summary(tick_dict)
+        if not preferred_summary:
+            return None
+        return self.store.update_observation(
+            observation_id,
+            summary=preferred_summary,
+            metadata={
+                **(base_metadata or {}),
+                **preferred_metadata,
+            },
+        )
+
+    def _replace_session_jepa_tick(self, session_id: str, replacement: JEPATick) -> None:
+        ticks = self._jepa_ticks_by_session.get(session_id)
+        if not ticks:
+            return
+        for index in range(len(ticks) - 1, -1, -1):
+            if ticks[index].timestamp_ms == replacement.timestamp_ms:
+                ticks[index] = replacement
+                return
+        ticks.append(replacement)
+
+    async def _finish_living_lens_enrichment(
+        self,
+        *,
+        session_id: str,
+        observation_id: str,
+        tick_dict: dict[str, Any],
+        base_metadata: dict[str, Any] | None,
+    ) -> None:
+        settings = self.get_settings()
+        if not settings.live_features.open_vocab_labels_enabled:
+            return
+        try:
+            observation = self.store.get_observation(observation_id)
+            await self._enrich_open_vocab_anchor_matches(
+                tick_dict,
+                settings=settings,
+                max_anchors=3,
+                observation=observation,
+            )
+            if settings.live_features.tvlc_enabled is False:
+                self._strip_disabled_tvlc_context(tick_dict)
+            self._update_observation_from_tick(
+                observation_id,
+                base_metadata=base_metadata,
+                tick_dict=tick_dict,
+            )
+            payload = JEPATickPayload.model_validate(tick_dict)
+            jepa_tick = _jepa_tick_from_payload(payload)
+            if jepa_tick.surprise_score is not None and jepa_tick.surprise_score > 0.55:
+                try:
+                    from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
+
+                    _mlx_p, _mlx_cfg = self._mlx_reasoning_provider()
+                    _g4_alert = await _G4E(_mlx_p, _mlx_cfg).live_tick_alert(
+                        tick_dict,
+                        None,
+                        jepa_tick.entity_tracks[:12],
+                    )
+                    jepa_tick.gemma4_alert = _g4_alert
+                except Exception as exc:
+                    get_logger("runtime").debug(
+                        "living_lens_alert_skipped",
+                        error=str(exc),
+                        session_id=session_id,
+                        observation_id=observation_id,
+                    )
+            self._replace_session_jepa_tick(session_id, jepa_tick)
+            self.events.publish(
+                "jepa_tick.enriched",
+                {
+                    "session_id": session_id,
+                    "observation_id": observation_id,
+                    "payload": jepa_tick.to_payload().model_dump(mode="json"),
+                },
+            )
+        except Exception as exc:
+            get_logger("runtime").warning(
+                "living_lens_enrichment_failed",
+                error=str(exc),
+                session_id=session_id,
+                observation_id=observation_id,
+            )
 
     def _create_smriti_db(self, storage_config: SmritiStorageConfig) -> SmetiDB:
         data_dir = Path(storage_config.data_dir or self.data_dir).expanduser().resolve()
@@ -515,7 +1225,8 @@ class RuntimeContainer:
                         "template_name": match.name,
                         "confidence": match.confidence,
                         "patch_indices": match.patch_indices,
-                        "depth_stratum": result.depth_stratum,
+                        "depth_stratum": match.depth_stratum or result.depth_stratum,
+                        "open_vocab_label": match.open_vocab_label,
                     }
                     for match in (self.smriti_db.get_smriti_media(result.media_id).anchor_matches if self.smriti_db.get_smriti_media(result.media_id) else [])
                 ],
@@ -942,6 +1653,7 @@ class RuntimeContainer:
             return
         if (
             previous.vjepa2_model_path == current.vjepa2_model_path
+            and previous.vjepa2_cache_dir == current.vjepa2_cache_dir
             and previous.vjepa2_n_frames == current.vjepa2_n_frames
         ):
             return
@@ -955,42 +1667,83 @@ class RuntimeContainer:
     def get_vjepa2_settings(self) -> WorldModelConfig:
         settings = self.get_settings()
         effective_model = self._effective_vjepa2_model_id(settings)
+        effective_cache_dir = self._effective_vjepa2_cache_dir(settings)
 
         return WorldModelConfig(
             model_path=settings.vjepa2_model_path or "",
+            cache_dir=effective_cache_dir,
             n_frames=settings.vjepa2_n_frames or 0,
             effective_model=effective_model,
-            cache_dir=str(Path.home() / ".cache" / "huggingface" / "hub"),
             download_url="https://huggingface.co/facebook/vjepa2-vitl-fpc64-256",
         )
 
-    def update_vjepa2_settings(self, model_path: str, n_frames: int) -> WorldModelConfig:
+    def update_vjepa2_settings(self, model_path: str, cache_dir: str, n_frames: int) -> WorldModelConfig:
         settings = self.get_settings()
         updated = settings.model_copy(
             update={
                 "vjepa2_model_path": model_path,
+                "vjepa2_cache_dir": cache_dir,
                 "vjepa2_n_frames": n_frames,
             }
         )
         self.update_settings(updated)
+        self._jepa_native_ready = False
+        self._jepa_preflight_status = "not_run"
+        self._jepa_preflight_device = "cpu"
+        self._jepa_preflight_n_frames = 0
+        self._jepa_preflight_model_id = ""
+        self._jepa_native_process_state = "idle"
+        self._jepa_last_native_exit_code = None
+        self._jepa_last_native_signal = None
+        self._jepa_safe_fallback_reason = None
+        self._jepa_circuit_reason = None
+        self._jepa_last_failure_at = None
+        self._jepa_crash_fingerprint = None
+        if self._jepa_pool is not None:
+            pool = self._jepa_pool
+            self._jepa_pool = None
+            try:
+                asyncio.run(pool.shutdown())
+            except Exception as exc:
+                get_logger("runtime").warning("jepa_pool_reset_failed", error=str(exc))
+        self._fallback_engines.clear()
         return self.get_vjepa2_settings()
+
+    async def retry_native_jepa(self) -> WorldModelStatus:
+        self._jepa_native_ready = False
+        self._jepa_preflight_status = "not_run"
+        self._jepa_preflight_device = "cpu"
+        self._jepa_preflight_n_frames = 0
+        self._jepa_preflight_model_id = ""
+        self._jepa_native_process_state = "idle"
+        self._jepa_last_native_exit_code = None
+        self._jepa_last_native_signal = None
+        self._jepa_safe_fallback_reason = None
+        self._jepa_circuit_reason = None
+        self._jepa_last_failure_at = None
+        self._jepa_crash_fingerprint = None
+        if self._jepa_pool is not None:
+            pool = self._jepa_pool
+            self._jepa_pool = None
+            try:
+                await pool.shutdown()
+            except Exception as exc:
+                get_logger("runtime").warning("jepa_pool_retry_reset_failed", error=str(exc))
+        self._fallback_engines.clear()
+        return self.get_world_model_status()
 
     def _effective_vjepa2_model_id(self, settings: RuntimeSettings) -> str:
         env_override = os.environ.get("TOORI_VJEPA2_MODEL", "").strip()
         if env_override:
             if env_override.startswith(("~", "/")):
-                resolved = Path(env_override).expanduser()
-                if resolved.exists():
-                    return str(resolved.resolve())
+                return str(Path(env_override).expanduser().resolve())
             else:
                 return env_override
 
         configured = str(settings.vjepa2_model_path or "").strip()
         if configured:
             if configured.startswith(("~", "/")):
-                resolved = Path(configured).expanduser()
-                if resolved.exists():
-                    return str(resolved.resolve())
+                return str(Path(configured).expanduser().resolve())
             else:
                 return configured
 
@@ -998,8 +1751,25 @@ class RuntimeContainer:
 
         return _resolve_model_id()
 
+    def _effective_vjepa2_cache_dir(self, settings: RuntimeSettings) -> str:
+        env_override = os.environ.get("TOORI_VJEPA2_CACHE_DIR", "").strip()
+        if env_override:
+            return str(Path(env_override).expanduser().resolve())
+
+        configured = str(settings.vjepa2_cache_dir or "").strip()
+        if configured:
+            return str(Path(configured).expanduser().resolve())
+
+        from cloud.perception.vjepa2_encoder import _resolve_cache_dir
+
+        return str(_resolve_cache_dir())
+
     def get_world_model_status(self) -> WorldModelStatus:
-        from cloud.perception.vjepa2_encoder import _is_test_environment, get_vjepa2_encoder
+        from cloud.perception.vjepa2_encoder import (
+            _is_test_environment,
+            get_vjepa2_encoder,
+            has_local_vjepa2_weights,
+        )
 
         settings = self.get_settings()
         test_mode = _is_test_environment()
@@ -1010,20 +1780,38 @@ class RuntimeContainer:
         n_frames = 0
         configured_encoder = "surrogate" if test_mode else "vjepa2"
         last_tick_encoder_type = "surrogate" if test_mode else "not_loaded"
+        active_backend = last_tick_encoder_type
         degraded = False
         degrade_reason = None
         degrade_stage = None
+        safe_fallback_mode = bool(self._jepa_safe_fallback_reason)
 
         if not test_mode:
             try:
-                encoder = get_vjepa2_encoder()
-                encoder_type = encoder.encoder_type
-                model_id = encoder.model_id
-                model_loaded = encoder.is_loaded
-                device = str(encoder.device)
-                n_frames = encoder.n_frames
+                if safe_fallback_mode:
+                    raise RuntimeError(self._jepa_safe_fallback_reason or "safe fallback mode enabled")
+                if self._jepa_native_ready and self._jepa_preflight_model_id:
+                    encoder_type = "vjepa2"
+                    model_id = self._jepa_preflight_model_id
+                    model_loaded = True
+                    device = self._jepa_preflight_device
+                    n_frames = self._jepa_preflight_n_frames
+                    active_backend = "vjepa2"
+                elif has_local_vjepa2_weights():
+                    encoder = get_vjepa2_encoder()
+                    encoder_type = encoder.encoder_type
+                    model_id = encoder.model_id
+                    model_loaded = encoder.is_loaded
+                    device = str(encoder.device)
+                    n_frames = encoder.n_frames
+                else:
+                    raise RuntimeError("V-JEPA2 weights are not cached locally")
             except Exception as exc:
-                get_logger("runtime").warning("world_model_status_fallback", error=str(exc))
+                runtime_log = get_logger("runtime")
+                if safe_fallback_mode:
+                    runtime_log.info("world_model_status_safe_fallback", error=str(exc))
+                else:
+                    runtime_log.warning("world_model_status_fallback", error=str(exc))
                 # Check for ViT-S/14 ONNX honest fallback
                 try:
                     from cloud.perception.vits14_onnx_encoder import ViTS14OnnxEncoder
@@ -1031,19 +1819,25 @@ class RuntimeContainer:
                         encoder_type = "dinov2-vits14-onnx"
                         model_id = ViTS14OnnxEncoder.default_model_path()
                         model_loaded = True
+                        device = "cpu"
                         last_tick_encoder_type = "dinov2-vits14-onnx"
-                        degraded = False
-                        degrade_reason = "vjepa2_unavailable_dinov2_vits14_active"
+                        active_backend = "dinov2-vits14-onnx"
+                        degraded = bool(safe_fallback_mode)
+                        degrade_reason = self._jepa_safe_fallback_reason or "vjepa2_unavailable_dinov2_vits14_active"
+                        degrade_stage = "safe_fallback" if safe_fallback_mode else degrade_stage
                     else:
                         degraded = True
-                        degrade_reason = "vjepa2_and_vits14_unavailable"
+                        active_backend = "unavailable"
+                        degrade_reason = self._jepa_safe_fallback_reason or "vjepa2_and_vits14_unavailable"
                         degrade_stage = "status"
                 except Exception:
                     degraded = True
-                    degrade_reason = str(exc)
+                    active_backend = "unavailable"
+                    degrade_reason = self._jepa_safe_fallback_reason or str(exc)
                     degrade_stage = "status"
         else:
             model_id = "mobilenetv2-12.onnx"
+            active_backend = "surrogate"
 
         latest_tick: JEPATick | None = None
         latest_ts = -1
@@ -1057,6 +1851,7 @@ class RuntimeContainer:
 
         if latest_tick is not None:
             last_tick_encoder_type = latest_tick.last_tick_encoder_type or latest_tick.world_model_version
+            active_backend = last_tick_encoder_type
             degraded = bool(latest_tick.degraded)
             degrade_reason = latest_tick.degrade_reason
             degrade_stage = latest_tick.degrade_stage
@@ -1066,6 +1861,18 @@ class RuntimeContainer:
                 encoder_type = "dinov2-vits14-onnx"
             if latest_tick.world_model_version == "surrogate" and not test_mode:
                 encoder_type = "surrogate"
+        elif self._jepa_circuit_reason:
+            degraded = True
+            degrade_reason = self._jepa_circuit_reason
+            degrade_stage = "disabled"
+            last_tick_encoder_type = "unavailable"
+            active_backend = "unavailable"
+        elif safe_fallback_mode:
+            degraded = True
+            degrade_reason = self._jepa_safe_fallback_reason
+            degrade_stage = "safe_fallback"
+            last_tick_encoder_type = "dinov2-vits14-onnx"
+            active_backend = "dinov2-vits14-onnx"
 
         all_prediction_errors: list[float] = []
         for engine in self._immersive_engines.values():
@@ -1102,13 +1909,59 @@ class RuntimeContainer:
             degraded=degraded,
             degrade_reason=degrade_reason,
             degrade_stage=degrade_stage,
+            active_backend=active_backend,
+            native_ready=bool(self._jepa_native_ready),
+            preflight_status=self._jepa_preflight_status,
+            last_failure_at=self._jepa_last_failure_at,
+            crash_fingerprint=self._jepa_crash_fingerprint,
+            native_process_state=self._jepa_native_process_state,
+            last_native_exit_code=self._jepa_last_native_exit_code,
+            last_native_signal=self._jepa_last_native_signal,
+            retryable_native_failure=bool(self._jepa_crash_fingerprint),
         )
 
     def provider_health(self) -> ProviderHealthResponse:
-        return ProviderHealthResponse(providers=self.providers.health_snapshot(self.get_settings()))
+        settings = self.get_settings()
+        return ProviderHealthResponse(
+            providers=self.providers.health_snapshot(settings),
+            features=self._feature_health_snapshot(settings),
+        )
 
-    def list_observations(self, *, session_id: Optional[str], limit: int = 50) -> ObservationsResponse:
-        return ObservationsResponse(observations=self.store.list_observations(session_id=session_id, limit=limit))
+    def list_observations(
+        self,
+        *,
+        session_id: Optional[str],
+        limit: int = 50,
+        summary_only: bool = False,
+    ) -> ObservationsResponse | ObservationSummariesResponse:
+        observations = self.store.list_observations(session_id=session_id, limit=limit)
+        if summary_only:
+            return ObservationSummariesResponse(
+                observations=[self._observation_summary(observation) for observation in observations],
+            )
+        return ObservationsResponse(observations=observations)
+
+    def get_runtime_snapshot(self, session_id: str, *, observation_limit: int = 12) -> RuntimeSnapshotResponse:
+        observations = self.store.recent_observations(session_id=session_id, limit=observation_limit)
+        tracks = self.store.list_entity_tracks(session_id=session_id, limit=32)
+        ticks = self._jepa_ticks_by_session.get(session_id)
+        latest_tick = ticks[-1] if ticks else None
+        current_scene = self.store.latest_scene_state(session_id=session_id)
+        return RuntimeSnapshotResponse(
+            session_id=session_id,
+            current=current_scene,
+            entity_tracks=tracks,
+            latest_jepa_tick=latest_tick.to_payload() if latest_tick is not None else None,
+            world_model_status=self.get_world_model_status(),
+            observations=[self._observation_summary(observation) for observation in observations],
+            observation_count=self.store.count_observations(session_id=session_id),
+            scene_graph=self._scene_graph_payload(
+                session_id=session_id,
+                scene_state=current_scene,
+                tracks=tracks,
+                latest_tick=latest_tick,
+            ),
+        )
 
     def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
         response, _, _ = self._analyze_with_world_model(request)
@@ -1121,23 +1974,38 @@ class RuntimeContainer:
         baseline = build_baseline_comparison(observations, history) if request.proof_mode in {"both", "baseline"} else None
         if request.query:
             self._progressive_scheduler.force_full_pipeline()
-        frame = await asyncio.to_thread(self._load_frame_array, response.observation.image_path)
-        correlation_id = CorrelationContext.get()
-        if correlation_id == "no-correlation":
-            correlation_id = CorrelationContext.new()
-        work_item = JEPAWorkItem(
-            correlation_id=correlation_id,
-            session_id=request.session_id,
-            frame_array=frame.tobytes(),
-            frame_shape=frame.shape,
-            frame_dtype=str(frame.dtype),
-            priority=0 if request.query else 3,
-            observation_id=response.observation.id,
+        frame = await asyncio.to_thread(
+            self._load_frame_array, response.observation.image_path
         )
-        jepa_pool = self._ensure_jepa_pool()
-        result = await jepa_pool.submit(work_item)
-        if result.error is not None:
-            raise SmritiPipelineError(stage="jepa_worker", message=result.error)
+        # Pre-compute DINOv2+SAM in parent process before dispatching
+        # to the worker pool. This eliminates the duplicate perception
+        # call inside the worker subprocess (~1.08GB torch savings),
+        # preventing the Signal 11 SIGSEGV on 8GB M1. DINOv2+SAM
+        # quality is fully preserved — computed once by the parent.
+        patch_tokens_bytes, mask_results_json = (
+            await asyncio.to_thread(
+                self._precompute_perception_for_worker, frame
+            )
+        )
+        result = await self._run_jepa_tick(
+            session_id=request.session_id,
+            observation_id=response.observation.id,
+            frame=frame,
+            priority=0 if request.query else 3,
+            precomputed_patch_tokens=patch_tokens_bytes,
+            precomputed_mask_results_json=mask_results_json,
+        )
+        settings = self.get_settings()
+        self._apply_fallback_anchor_labels(result.jepa_tick_dict)
+        if settings.live_features.tvlc_enabled is False:
+            self._strip_disabled_tvlc_context(result.jepa_tick_dict)
+        observation = self._update_observation_from_tick(
+            response.observation.id,
+            base_metadata=response.observation.metadata if isinstance(response.observation.metadata, dict) else None,
+            tick_dict=result.jepa_tick_dict,
+        )
+        if observation is not None:
+            response = response.model_copy(update={"observation": observation})
         payload = JEPATickPayload.model_validate(result.jepa_tick_dict)
         jepa_tick = _jepa_tick_from_payload(payload)
         self._jepa_ticks_by_session[request.session_id].append(jepa_tick)
@@ -1161,8 +2029,7 @@ class RuntimeContainer:
             energy_map=jepa_tick.energy_map,
         )
 
-        scene_state.metrics.surprise_score = round(float(min(jepa_tick.mean_energy, 1.0)), 4)
-        scene_state.metrics.prediction_consistency = round(float(max(1.0 - jepa_tick.mean_energy, 0.0)), 4)
+        scene_state.metrics.energy_activation_score = round(float(min(jepa_tick.mean_energy, 1.0)), 4)
 
         threshold = float(self._jepa_energy_ema[request.session_id] + (2.0 * jepa_tick.energy_std))
         should_talk = bool(jepa_tick.talker_event)
@@ -1179,7 +2046,11 @@ class RuntimeContainer:
         )
         self.events.publish(
             "jepa_tick",
-            {"payload": jepa_tick.to_payload().model_dump(mode="json")},
+            {
+                "session_id": request.session_id,
+                "observation_id": response.observation.id,
+                "payload": jepa_tick.to_payload().model_dump(mode="json"),
+            },
         )
         if payload.degraded:
             self.events.publish(
@@ -1194,19 +2065,15 @@ class RuntimeContainer:
             )
         if talker_event is not None:
             self.events.publish("jepa.talker_event", talker_event.model_dump(mode="json"))
-
-        # Gemma 4 proactive alert — gated on surprise_score > 0.55
-        if jepa_tick.surprise_score is not None and jepa_tick.surprise_score > 0.55:
-            try:
-                from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
-                _mlx_p = self.providers.get("mlx")
-                _g4_alert = await _G4E(_mlx_p).live_tick_alert(
-                    result.jepa_tick_dict,
-                    scene_state, entity_tracks)
-                jepa_tick.gemma4_alert = _g4_alert
-            except Exception as _g4_err:
-                import logging as _lg
-                _lg.getLogger(__name__).debug("Gemma4 alert skipped: %s", _g4_err)
+        if settings.live_features.open_vocab_labels_enabled:
+            asyncio.create_task(
+                self._finish_living_lens_enrichment(
+                    session_id=request.session_id,
+                    observation_id=response.observation.id,
+                    tick_dict=result.jepa_tick_dict,
+                    base_metadata=dict(response.observation.metadata or {}) if isinstance(response.observation.metadata, dict) else None,
+                )
+            )
 
         return LivingLensTickResponse(
             **response.model_dump(),
@@ -1217,10 +2084,106 @@ class RuntimeContainer:
             jepa_tick=jepa_tick.to_payload(),
         )
 
+    def _mlx_reasoning_provider(self):
+        settings = self.get_settings()
+        mlx_config = settings.providers.get("mlx")
+        if mlx_config is None or not mlx_config.enabled:
+            return None, mlx_config
+        return self.providers.mlx, mlx_config
+
+    def _mlx_bridge_call(self):
+        provider, config = self._mlx_reasoning_provider()
+        if provider is None or config is None:
+            return None
+        return make_mlx_bridge_call(provider, config)
+
+    async def _enrich_open_vocab_anchor_matches(
+        self,
+        tick_dict: dict[str, Any],
+        *,
+        settings: RuntimeSettings | None = None,
+        max_anchors: int | None = None,
+        observation: Observation | None = None,
+    ) -> None:
+        anchors = tick_dict.get("anchor_matches")
+        if not isinstance(anchors, list) or not anchors:
+            return
+        settings = settings or self.get_settings()
+        self._apply_fallback_anchor_labels(tick_dict)
+        if not settings.live_features.open_vocab_labels_enabled:
+            return
+        descriptions = tick_dict.get("setu_descriptions")
+        description_records = descriptions if isinstance(descriptions, list) else []
+
+        from .smriti_gemma4_enricher import SmetiGemma4Enricher as _G4E
+
+        mlx_provider, mlx_config = self._mlx_reasoning_provider()
+        enricher = _G4E(mlx_provider, mlx_config)
+        candidates: list[tuple[float, int, int, dict[str, Any], dict[str, Any], str | None, str | None]] = []
+        for index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict):
+                continue
+            gate = description_records[index].get("gate", {}) if index < len(description_records) and isinstance(description_records[index], dict) else {}
+            if gate and not bool(gate.get("passes", False)):
+                continue
+            confidence = float(anchor.get("confidence", 0.0) or 0.0)
+            if confidence < 0.55:
+                continue
+            tvlc_context, connector_type = self._anchor_tvlc_context(description_records, index)
+            candidates.append(
+                (
+                    confidence,
+                    len(anchor.get("patch_indices") or []),
+                    index,
+                    anchor,
+                    gate,
+                    tvlc_context,
+                    connector_type,
+                )
+            )
+        if not candidates:
+            return
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        if max_anchors is not None:
+            candidates = candidates[:max(int(max_anchors), 0)]
+        results = await asyncio.gather(
+            *[
+                enricher.get_open_vocab_label_with_evidence(
+                    anchor_name=str(anchor.get("template_name") or "object"),
+                    depth_stratum=str(anchor.get("depth_stratum") or gate.get("depth_stratum") or "unknown"),
+                    confidence=confidence,
+                    patch_count=patch_count,
+                    tvlc_context=tvlc_context,
+                    connector_type=connector_type,
+                    image_base64=self._anchor_crop_base64(observation=observation, anchor=anchor),
+                )
+                for confidence, patch_count, _index, anchor, gate, tvlc_context, connector_type in candidates
+            ],
+            return_exceptions=True,
+        )
+        for candidate, label in zip(candidates, results):
+            if isinstance(label, Exception):
+                continue
+            selected_label = label[0] if isinstance(label, tuple) else label
+            selected_evidence = label[1] if isinstance(label, tuple) and isinstance(label[1], dict) else {}
+            _confidence, _patch_count, index, anchor, _gate, _tvlc_context, _connector_type = candidate
+            if isinstance(anchor, dict) and str(selected_label or "").strip():
+                anchor["open_vocab_label"] = str(selected_label).strip()
+                anchor["label_source"] = "open_vocab_tvlc_mlx" if _connector_type == "tvlc_trained" else "deterministic_alias"
+                anchor["label_evidence"] = {
+                    "policy": "strict_evidence_gate",
+                    "connector_type": _connector_type,
+                    "label_gate_passed": bool(selected_evidence.get("semantic_gate_passed", True)),
+                    "anchor_index": index,
+                    **selected_evidence,
+                }
+
     async def shutdown(self) -> None:
         if self._jepa_pool is not None:
             await self._jepa_pool.shutdown()
             self._jepa_pool = None
+        self._fallback_engines.clear()
+        self._immersive_engines.clear()
         self._atlases.clear()
 
     def get_world_state(self, session_id: str) -> WorldStateResponse:
@@ -1266,9 +2229,9 @@ class RuntimeContainer:
         grounded_entities = [entity.model_dump(mode="json") for entity in request.visible_entities]
         affordances = [affordance.model_dump(mode="json") for affordance in request.affordances]
         tags = [
-            *[entity.label for entity in request.visible_entities if entity.label],
-            *[affordance.label for affordance in request.affordances if affordance.label],
-            *request.error_banners,
+            *[label for label in (self._preferred_object_label(entity.label) for entity in request.visible_entities) if label],
+            *[label for label in (self._preferred_object_label(affordance.label) for affordance in request.affordances) if label],
+            *[banner for banner in request.error_banners if banner],
         ]
         metadata = {
             "perception": provider_metadata,
@@ -1281,8 +2244,21 @@ class RuntimeContainer:
             "focused_target": request.focused_target,
             "error_banners": request.error_banners,
             "triggering_action": request.triggering_action.model_dump(mode="json") if request.triggering_action else None,
-            "summary_candidates": [entity["label"] for entity in grounded_entities if entity.get("label")][:6],
-            "primary_object_label": request.visible_entities[0].label if request.visible_entities else (request.view_id or None),
+            "summary_candidates": [
+                label
+                for label in (self._preferred_object_label(entity.get("label")) for entity in grounded_entities)
+                if label and label != "object"
+            ][:6],
+            "primary_object_label": (
+                self._preferred_object_label(request.visible_entities[0].label)
+                if request.visible_entities and self._preferred_object_label(request.visible_entities[0].label) != "object"
+                else None
+            )
+            or (
+                self._preferred_object_label(request.view_id)
+                if self._preferred_object_label(request.view_id) != "object"
+                else None
+            ),
         }
 
         observation = self.store.create_observation(
@@ -1455,19 +2431,34 @@ class RuntimeContainer:
 
         ticks = list(self._jepa_ticks_by_session.get(session_id, deque()))
         stats = aggregate_stats(ticks)
-        
+
         narration_text = "Analysis skipped due to provider unavailability."
+        analysis_source = "skipped"
         try:
+            settings = self.get_settings()
+            mlx_config = settings.providers.get("mlx")
             mlx_p = self.providers.get("mlx")
-            if mlx_p and mlx_p.ready:
+            mlx_health = mlx_p.health(mlx_config) if mlx_p is not None and mlx_config is not None else None
+            if mlx_p is not None and mlx_config is not None and mlx_health is not None and mlx_health.healthy:
                 from .gemma4_bridge import Gemma4Bridge
-                bridge = Gemma4Bridge(mlx_p)
+                bridge_call = self._mlx_bridge_call()
+                if bridge_call is None:
+                    raise RuntimeError("MLX reasoning provider unavailable")
+                bridge = Gemma4Bridge(bridge_call)
                 narration_text = await bridge.narrate_proof_report(stats)
+                analysis_source = "gemma4"
         except Exception as e:
             get_logger("runtime").warning("proof_report_narration_failed", error=str(e))
-            narration_text = f"Analysis failed: {e}"
+            narration_text = "Analysis unavailable for this export. Core JEPA metrics are still included below."
+            analysis_source = "error"
 
-        path = generate_proof_report(ticks=ticks, session_id=session_id, narration_text=narration_text, chart_b64=chart_b64)
+        path = generate_proof_report(
+            ticks=ticks,
+            session_id=session_id,
+            narration_text=narration_text,
+            chart_b64=chart_b64,
+            analysis_source=analysis_source,
+        )
         self._latest_proof_report = Path(path)
         return ProofReportResponse(session_id=session_id, path=str(path), generated=True)
 
@@ -1568,12 +2559,113 @@ class RuntimeContainer:
             self._immersive_engines[session_id] = engine
         return self._immersive_engines[session_id]
 
+    def _fallback_engine_for_session(self, session_id: str):
+        if session_id not in self._fallback_engines:
+            previous_disable = os.environ.get("TOORI_VJEPA2_DISABLE")
+            previous_device = os.environ.get("TOORI_VJEPA2_DEVICE")
+            previous_frames = os.environ.get("TOORI_VJEPA2_FRAMES")
+            os.environ["TOORI_VJEPA2_DISABLE"] = "1"
+            os.environ.setdefault("TOORI_VJEPA2_DEVICE", "cpu")
+            os.environ.setdefault("TOORI_VJEPA2_FRAMES", "4")
+            try:
+                engine = self._immersive_engine_factory(device="cpu")
+            finally:
+                if previous_disable is None:
+                    os.environ.pop("TOORI_VJEPA2_DISABLE", None)
+                else:
+                    os.environ["TOORI_VJEPA2_DISABLE"] = previous_disable
+                if previous_device is None:
+                    os.environ.pop("TOORI_VJEPA2_DEVICE", None)
+                else:
+                    os.environ["TOORI_VJEPA2_DEVICE"] = previous_device
+                if previous_frames is None:
+                    os.environ.pop("TOORI_VJEPA2_FRAMES", None)
+                else:
+                    os.environ["TOORI_VJEPA2_FRAMES"] = previous_frames
+            self._load_sag_templates_into_engine(engine)
+            self._fallback_engines[session_id] = engine
+        return self._fallback_engines[session_id]
+
     def _atlas_for_session(self, session_id: str) -> EpistemicAtlas:
         atlas = self._atlases.get(session_id)
         if atlas is None:
             atlas = EpistemicAtlas()
             self._atlases[session_id] = atlas
         return atlas
+
+    def _open_jepa_circuit(self, reason: str) -> None:
+        normalized = " ".join(str(reason or "").split()).strip() or "JEPA worker unavailable"
+        if self._jepa_circuit_reason == normalized:
+            return
+        self._jepa_circuit_reason = normalized
+        if self._jepa_pool is not None:
+            try:
+                worker_stats = self._jepa_pool.get_worker_stats()
+            except Exception:
+                worker_stats = []
+            failed = next((item for item in worker_stats if not item.get("alive", True)), None)
+            if failed is not None:
+                self._jepa_last_native_exit_code = failed.get("last_exit_code")
+                self._jepa_last_native_signal = failed.get("last_signal")
+        self._record_jepa_native_failure(normalized, stage="runtime")
+        get_logger("runtime").warning("jepa_worker_circuit_open", error=normalized)
+
+    def _set_jepa_safe_fallback(self, reason: str, *, stage: str) -> str:
+        normalized = " ".join(str(reason or "").split()).strip() or "V-JEPA2 worker crashed"
+        self._jepa_safe_fallback_reason = normalized
+        self._jepa_circuit_reason = None
+        self._record_jepa_native_failure(normalized, stage=stage)
+        return normalized
+
+    def _ensure_native_jepa_ready(self) -> bool:
+        if self._jepa_safe_fallback_reason:
+            return False
+        if self._jepa_native_ready:
+            return True
+        self._jepa_preflight_status = "running"
+        self._jepa_native_process_state = "starting"
+        result = run_jepa_worker_preflight(timeout_s=45.0)
+        self._jepa_last_native_exit_code = result.exit_code
+        self._jepa_last_native_signal = result.signal
+        if result.ok:
+            self._mark_jepa_native_ready(
+                device=result.device,
+                n_frames=result.n_frames,
+                model_id=result.model_id,
+            )
+            get_logger("runtime").info(
+                "jepa_native_preflight_ready",
+                device=result.device,
+                n_frames=result.n_frames,
+                model_id=result.model_id,
+            )
+            return True
+        normalized = self._set_jepa_safe_fallback(result.error or "native preflight failed", stage="preflight")
+        if result.crash_fingerprint is not None:
+            self._jepa_crash_fingerprint = result.crash_fingerprint
+        get_logger("runtime").warning(
+            "jepa_native_preflight_failed",
+            error=normalized,
+            crash_fingerprint=self._jepa_crash_fingerprint,
+            exit_code=result.exit_code,
+            signal=result.signal,
+        )
+        return False
+
+    async def _activate_jepa_safe_fallback(self, reason: str) -> None:
+        previous_reason = self._jepa_safe_fallback_reason
+        normalized = self._set_jepa_safe_fallback(reason, stage="runtime")
+        if previous_reason == normalized and self._jepa_pool is None:
+            return
+        get_logger("runtime").warning("jepa_safe_fallback_enabled", error=normalized)
+        if self._jepa_pool is None:
+            return
+        pool = self._jepa_pool
+        self._jepa_pool = None
+        try:
+            await pool.shutdown()
+        except Exception as exc:
+            get_logger("runtime").warning("jepa_safe_fallback_shutdown_failed", error=str(exc))
 
     def _load_sag_templates_into_engine(self, engine: Any) -> None:
         from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
@@ -1612,13 +2704,252 @@ class RuntimeContainer:
         engine._last_forecast_errors = {int(key): float(value) for key, value in forecast_errors.items()}
 
     def _ensure_jepa_pool(self) -> JEPAWorkerPool:
+        if self._jepa_safe_fallback_reason or self._jepa_circuit_reason:
+            raise RuntimeError(self._jepa_safe_fallback_reason or self._jepa_circuit_reason or "native JEPA quarantined")
         if self._jepa_pool is None:
-            self._jepa_pool = JEPAWorkerPool()
+            if not self._ensure_native_jepa_ready():
+                raise RuntimeError(self._jepa_safe_fallback_reason or "native JEPA unavailable")
+            self._jepa_pool = JEPAWorkerPool(disable_vjepa2=False)
         return self._jepa_pool
+
+    def _degraded_jepa_result(
+        self,
+        *,
+        session_id: str,
+        observation_id: str | None,
+        correlation_id: str,
+        fallback_reason: str,
+        degrade_stage: str,
+        worker_id: int | None = None,
+    ) -> JEPAWorkResult:
+        trace = PipelineTrace(correlation_id=correlation_id)
+        trace.record_error("jepa_worker", fallback_reason)
+        trace.record_error("jepa_worker_pool", degrade_stage)
+        tick = JEPATick(
+            energy_map=np.zeros((14, 14), dtype=np.float32),
+            entity_tracks=[],
+            talker_event=None,
+            sigreg_loss=0.0,
+            forecast_errors={1: 0.0, 2: 0.0, 5: 0.0},
+            session_fingerprint=np.zeros(0, dtype=np.float32),
+            planning_time_ms=0.0,
+            caption_score=0.0,
+            retrieval_score=0.0,
+            timestamp_ms=int(epoch_time() * 1000),
+            warmup=False,
+            mask_results=[],
+            mean_energy=0.0,
+            energy_std=0.0,
+            world_model_version="unavailable",
+            configured_encoder="vjepa2",
+            last_tick_encoder_type="unavailable",
+            degraded=True,
+            degrade_reason=fallback_reason,
+            degrade_stage=degrade_stage,
+        )
+        return JEPAWorkResult(
+            correlation_id=correlation_id,
+            session_id=session_id,
+            observation_id=observation_id,
+            jepa_tick_dict=tick.to_payload().model_dump(mode="json"),
+            pipeline_trace=trace.to_dict(),
+            error=None,
+            state_vector=None,
+            worker_id=worker_id,
+        )
+
+    def _inline_jepa_result(
+        self,
+        *,
+        session_id: str,
+        observation_id: str | None,
+        frame: np.ndarray,
+        correlation_id: str,
+        fallback_reason: str,
+    ) -> JEPAWorkResult:
+        trace = PipelineTrace(correlation_id=correlation_id)
+        trace.record_error("jepa_worker", fallback_reason)
+        with trace_stage(trace, "tick.inline"):
+            engine = self._fallback_engine_for_session(session_id)
+            tick = engine.tick(
+                frame,
+                session_id=session_id,
+                observation_id=observation_id,
+            )
+        state_vector = (
+            np.asarray(engine._last_state, dtype=np.float32).reshape(-1).tolist()
+            if getattr(engine, "_last_state", None) is not None
+            else None
+        )
+        return JEPAWorkResult(
+            correlation_id=correlation_id,
+            session_id=session_id,
+            observation_id=observation_id,
+            jepa_tick_dict=tick.to_payload().model_dump(mode="json"),
+            pipeline_trace=trace.to_dict(),
+            error=None,
+            state_vector=state_vector,
+            worker_id=None,
+        )
+
+    async def _run_jepa_tick(
+        self,
+        *,
+        session_id: str,
+        observation_id: str | None,
+        frame: np.ndarray,
+        priority: int,
+        precomputed_patch_tokens: bytes | None = None,
+        precomputed_mask_results_json: str | None = None,
+    ) -> JEPAWorkResult:
+        correlation_id = CorrelationContext.get()
+        if correlation_id == "no-correlation":
+            correlation_id = CorrelationContext.new()
+        if self._jepa_safe_fallback_reason:
+            return self._inline_jepa_result(
+                session_id=session_id,
+                observation_id=observation_id,
+                frame=frame,
+                correlation_id=correlation_id,
+                fallback_reason=self._jepa_safe_fallback_reason,
+            )
+        if self._jepa_circuit_reason:
+            return self._inline_jepa_result(
+                session_id=session_id,
+                observation_id=observation_id,
+                frame=frame,
+                correlation_id=correlation_id,
+                fallback_reason=self._jepa_circuit_reason,
+            )
+        try:
+            pool = await asyncio.to_thread(self._ensure_jepa_pool)
+        except RuntimeError as exc:
+            fallback_reason = str(exc)
+            degrade_stage = "pool_unavailable"
+            if not self._jepa_safe_fallback_reason:
+                await self._activate_jepa_safe_fallback(fallback_reason)
+                self._open_jepa_circuit(fallback_reason)
+            return self._inline_jepa_result(
+                session_id=session_id,
+                observation_id=observation_id,
+                frame=frame,
+                correlation_id=correlation_id,
+                fallback_reason=self._jepa_safe_fallback_reason or fallback_reason,
+            )
+        work_item = JEPAWorkItem(
+            correlation_id=correlation_id,
+            session_id=session_id,
+            frame_array=frame.tobytes(),
+            frame_shape=frame.shape,
+            frame_dtype=str(frame.dtype),
+            priority=priority,
+            observation_id=observation_id,
+            precomputed_patch_tokens=precomputed_patch_tokens,
+            precomputed_mask_results_json=precomputed_mask_results_json,
+        )
+        fallback_reason = ""
+        degrade_stage = "submit"
+        open_circuit = False
+        try:
+            result = await asyncio.wait_for(pool.submit(work_item), timeout=20.0)
+            if result.error is None and result.jepa_tick_dict:
+                return result
+            fallback_reason = result.error or "worker returned empty JEPA tick"
+            degrade_stage = "worker_result"
+            open_circuit = True
+        except SmritiRateLimitError as exc:
+            fallback_reason = str(exc)
+            degrade_stage = "rate_limit"
+        except asyncio.TimeoutError:
+            fallback_reason = "JEPA worker timed out"
+            degrade_stage = "timeout"
+            open_circuit = True
+        except Exception as exc:
+            fallback_reason = str(exc)
+            degrade_stage = "submit"
+            open_circuit = True
+
+        if open_circuit and not self._jepa_safe_fallback_reason:
+            await self._activate_jepa_safe_fallback(fallback_reason or "V-JEPA2 worker unavailable")
+            self._open_jepa_circuit(fallback_reason or "JEPA worker unavailable")
+            return self._inline_jepa_result(
+                session_id=session_id,
+                observation_id=observation_id,
+                frame=frame,
+                correlation_id=correlation_id,
+                fallback_reason=self._jepa_safe_fallback_reason or fallback_reason or "V-JEPA2 worker unavailable",
+            )
+
+        get_logger("runtime").warning(
+            "jepa_worker_fallback_degraded",
+            session_id=session_id,
+            observation_id=observation_id,
+            error=fallback_reason,
+            degrade_stage=degrade_stage,
+            safe_fallback_retry=False,
+        )
+        return self._degraded_jepa_result(
+            session_id=session_id,
+            observation_id=observation_id,
+            correlation_id=correlation_id,
+            fallback_reason=fallback_reason,
+            degrade_stage=degrade_stage,
+        )
 
     def _load_frame_array(self, image_path: str) -> np.ndarray:
         with Image.open(image_path) as image:
             return np.asarray(image.convert("RGB"), dtype=np.uint8)
+
+    def _precompute_perception_for_worker(
+        self, frame: np.ndarray
+    ) -> tuple[bytes | None, str | None]:
+        """
+        Run PerceptionPipeline.encode() in the parent process and
+        serialize the output for worker subprocess consumption.
+
+        This eliminates DINOv2+SAM torch loading inside the worker,
+        reducing worker memory from ~2.7GB to ~2.4GB on 8GB M1 —
+        enough headroom to prevent the SIGSEGV that caused the
+        persistent Signal 11 crash.
+
+        Returns:
+            patch_tokens_bytes: raw float32 bytes of ndarray[196, 384]
+                                 or None on failure
+            mask_results_json:  JSON string of list[MaskResult.to_dict()]
+                                 or None on failure
+        """
+        try:
+            from cloud.perception import PerceptionPipeline
+            # Use a lazily-initialized parent-side PerceptionPipeline.
+            # This is separate from self.providers to avoid coupling.
+            if not hasattr(self, "_worker_perception_pipeline"):
+                settings = self.get_settings()
+                dinov2_config = settings.providers.get("dinov2")
+                device = (
+                    dinov2_config.metadata.get("device", "mps")
+                    if dinov2_config is not None
+                    else "mps"
+                )
+                self._worker_perception_pipeline = PerceptionPipeline(
+                    device=device
+                )
+            pipeline: PerceptionPipeline = (
+                self._worker_perception_pipeline
+            )
+            patch_tokens, mask_results = pipeline.encode(frame)
+            patch_tokens_bytes = np.asarray(
+                patch_tokens, dtype=np.float32
+            ).tobytes()
+            mask_results_json = json.dumps(
+                [mask.to_dict() for mask in mask_results]
+            )
+            return patch_tokens_bytes, mask_results_json
+        except Exception as exc:
+            get_logger("runtime").warning(
+                "worker_perception_precompute_failed",
+                error=str(exc),
+            )
+            return None, None
 
     def _talker_event_from_jepa(self, tick: JEPATick, entity_tracks: list) -> TalkerEvent | None:
         if not tick.talker_event:
@@ -1658,28 +2989,76 @@ class RuntimeContainer:
             )
 
     def evaluate_challenge(self, request: ChallengeEvaluateRequest) -> ChallengeRun:
+        observations: list[Observation] = []
+        scene_states: list[SceneState] = []
+        window_label = "latest session window"
         if request.observation_ids:
             observations = self.store.get_observations_by_ids(request.observation_ids)
+            window_label = "selected observation window"
+        elif request.challenge_set == "curated":
+            previous_runs = self.store.recent_challenge_runs(session_id=request.session_id, limit=1)
+            if previous_runs:
+                latest_run = previous_runs[0]
+                observations = [
+                    item
+                    for item in self.store.get_observations_by_ids(latest_run.observation_ids)
+                    if item.session_id == request.session_id
+                ]
+                scene_states = [
+                    state
+                    for state in (
+                        self.store.get_scene_state(world_state_id)
+                        for world_state_id in latest_run.world_state_ids
+                    )
+                    if state is not None and state.session_id == request.session_id
+                ]
+                if observations or scene_states:
+                    window_label = "stored challenge window"
+            if not scene_states:
+                scene_states = list(
+                    reversed(self.store.recent_scene_states(session_id=request.session_id, limit=request.limit))
+                )
+                observations = [
+                    observation
+                    for observation in (
+                        self.store.get_observation(state.observation_id)
+                        for state in scene_states
+                    )
+                    if observation is not None
+                ]
+                window_label = "stored scene window"
         else:
             observations = list(
                 reversed(self.store.recent_observations(session_id=request.session_id, limit=request.limit))
             )
-        world_states = [
-            self.store.get_scene_state(observation.world_state_id)
-            for observation in observations
-            if observation.world_state_id
-        ]
-        scene_states = [state for state in world_states if state is not None]
+            window_label = "live session window" if request.challenge_set == "live" else "latest session window"
+        if not scene_states:
+            world_states = [
+                self.store.get_scene_state(observation.world_state_id)
+                for observation in observations
+                if observation.world_state_id
+            ]
+            scene_states = [state for state in world_states if state is not None]
         if not scene_states:
             scene_states = list(
                 reversed(self.store.recent_scene_states(session_id=request.session_id, limit=request.limit))
             )
+            if not observations:
+                observations = [
+                    observation
+                    for observation in (
+                        self.store.get_observation(state.observation_id)
+                        for state in scene_states
+                    )
+                    if observation is not None
+                ]
         challenge = build_challenge_run(
             session_id=request.session_id,
             challenge_set=request.challenge_set,
             proof_mode=request.proof_mode,
             observations=observations,
             scene_states=scene_states,
+            window_label=window_label,
         )
         self.store.save_challenge_run(challenge)
         self.events.publish(
@@ -1777,7 +3156,10 @@ class RuntimeContainer:
             confidence=confidence,
             novelty=novelty,
             source_query=request.query,
-            tags=request.tags + self._fallback_tags(provider_metadata),
+            tags=[
+                *[label for label in (self._preferred_object_label(tag) for tag in request.tags) if label],
+                *self._fallback_tags(provider_metadata),
+            ],
             providers=[provider_name],
             metadata={"perception": provider_metadata},
         )
@@ -1980,35 +3362,27 @@ class RuntimeContainer:
         return float(np.dot(left_vec, right_vec) / denom)
 
     def _fallback_summary(self, observation: Observation, metadata: dict, query: Optional[str]) -> str:
-        top_label = str(metadata.get("top_label", "")).replace("_", " ").strip()
-        dominant = metadata.get("dominant_color")
-        brightness = metadata.get("brightness_label")
-        edge = metadata.get("edge_label")
-        parts = []
-        if top_label:
-            parts.append(top_label)
-        if dominant:
-            parts.append(f"{dominant} dominant")
-        if brightness:
-            parts.append(brightness)
-        if edge:
-            parts.append(edge)
+        top_label = self._preferred_object_label(
+            metadata.get("top_label"),
+            metadata.get("open_vocab_label"),
+            metadata.get("primary_object_label"),
+        )
         summary = "Local observation"
-        if parts:
-            summary = f"{' '.join(parts)} scene"
+        if top_label and top_label != "object":
+            summary = top_label
         if query:
             summary = f"{summary}; prompt: {query}"
         return summary
 
     def _fallback_tags(self, metadata: dict) -> list[str]:
         tags = []
-        top_label = str(metadata.get("top_label", "")).replace("_", " ").strip()
-        if top_label:
+        top_label = self._preferred_object_label(
+            metadata.get("top_label"),
+            metadata.get("open_vocab_label"),
+            metadata.get("primary_object_label"),
+        )
+        if top_label and top_label != "object":
             tags.append(top_label)
-        for key in ("dominant_color", "brightness_label", "edge_label"):
-            value = metadata.get(key)
-            if value:
-                tags.append(str(value))
         return tags
 
     def _embed_smriti_query(self, query: str, dim: int = 128) -> np.ndarray:

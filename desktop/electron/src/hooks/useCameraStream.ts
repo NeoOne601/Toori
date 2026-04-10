@@ -237,6 +237,7 @@ export function useCameraStream({
   const liveDiagnosticsCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const livingCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const livingDiagnosticsCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const internalCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const activeCameraDeviceIdRef = useRef("default");
   const autoReconnectAtRef = useRef(0);
@@ -273,6 +274,38 @@ export function useCameraStream({
       video: liveVideoRef.current,
       canvas: liveCaptureCanvasRef.current,
     };
+  }
+
+  function ensureInternalCaptureCanvas() {
+    if (!internalCaptureCanvasRef.current) {
+      internalCaptureCanvasRef.current = document.createElement("canvas");
+    }
+    return internalCaptureCanvasRef.current;
+  }
+
+  function hasUsableVideoFrame(video: HTMLVideoElement | null): video is HTMLVideoElement {
+    return Boolean(
+      video &&
+        video.videoWidth > 0 &&
+        video.videoHeight > 0 &&
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA,
+    );
+  }
+
+  function captureVideoForMode(mode: "live" | "living") {
+    const preferred = mode === "living" ? livingVideoRef.current : liveVideoRef.current;
+    const alternate = mode === "living" ? liveVideoRef.current : livingVideoRef.current;
+    const active = activeVideoElement();
+    if (hasUsableVideoFrame(preferred)) {
+      return preferred;
+    }
+    if (hasUsableVideoFrame(active)) {
+      return active;
+    }
+    if (hasUsableVideoFrame(alternate)) {
+      return alternate;
+    }
+    return preferred || active || alternate;
   }
 
   function stopStream(stream: MediaStream | null) {
@@ -543,7 +576,8 @@ export function useCameraStream({
   }
 
   function currentFrameBase64(mode: "live" | "living"): string | null {
-    const { video, canvas } = frameElements(mode);
+    const video = captureVideoForMode(mode);
+    const canvas = ensureInternalCaptureCanvas();
     if (!video || !canvas) {
       return null;
     }

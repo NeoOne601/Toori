@@ -10,19 +10,31 @@ import SmritiTab from "../tabs/SmritiTab";
 export function WorkspaceLayout() {
   const app = useDesktopApp();
   const isSmriti = app.activeTab === "Smriti";
+  const runtimeAvailable = app.world.runtimeAvailable;
   const configuredWorldModel = app.world.worldModelStatus?.configured_encoder || "vjepa2";
-  const lastTickWorldModel =
+  const activeWorldModel =
     app.currentJepaTick?.last_tick_encoder_type ||
+    app.world.worldModelStatus?.active_backend ||
     app.world.worldModelStatus?.last_tick_encoder_type ||
     "awaiting first tick";
-  const worldModelChip = `${configuredWorldModel} configured`;
-  const worldModelRuntimeChip = app.currentJepaTick?.degraded || app.world.worldModelStatus?.degraded
-    ? `${configuredWorldModel} degraded`
-    : lastTickWorldModel === "surrogate"
-      ? "surrogate fallback"
-      : lastTickWorldModel === "vjepa2"
+  const worldModelChip = !runtimeAvailable
+    ? app.runtimeConnectionLabel
+    : app.world.worldModelStatus?.native_ready
+      ? `${configuredWorldModel} ready`
+      : app.world.worldModelStatus?.preflight_status === "failed" || app.world.worldModelStatus?.preflight_status === "quarantined"
+        ? `${configuredWorldModel} quarantined`
+        : `${configuredWorldModel} configured`;
+  const worldModelRuntimeChip = !runtimeAvailable
+    ? app.runtimeConnectionLabel
+    : app.currentJepaTick?.degraded || app.world.worldModelStatus?.degraded
+      ? `${activeWorldModel} degraded`
+      : activeWorldModel === "surrogate"
+        ? "surrogate fallback"
+      : activeWorldModel === "vjepa2"
         ? "vjepa2 active"
-        : lastTickWorldModel;
+        : activeWorldModel === "awaiting first tick" || activeWorldModel === "not_loaded"
+            ? "waiting for first JEPA tick"
+            : activeWorldModel;
 
   return (
     <>

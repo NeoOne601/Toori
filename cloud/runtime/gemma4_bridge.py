@@ -45,6 +45,28 @@ _PROOF_REPORT_SYSTEM = (
 )
 
 
+def deterministic_rollout_summary(rollout_comparison: dict) -> str:
+    branches = rollout_comparison.get("ranked_branches", [])
+    if not branches:
+        return "No rollout plans are available yet."
+    plan_a = branches[0]
+    plan_b = branches[1] if len(branches) > 1 else None
+
+    def _verb(plan: dict) -> str:
+        return str(plan.get("candidate_action", {}).get("verb", "observe")).replace("_", " ")
+
+    def _summary(plan: dict) -> str:
+        return str(plan.get("predicted_next_state_summary") or "keep observing the current scene").strip()
+
+    blockers = [item.replace("_", " ") for item in plan_a.get("failure_predicates", [])[:2]]
+    blocker_text = ", ".join(blockers) if blockers else "no immediate blockers"
+    fallback_text = f" Fallback is to {_verb(plan_b)} if risk rises." if plan_b else ""
+    return (
+        f"Plan A is to {_verb(plan_a)} because it should {_summary(plan_a)}. "
+        f"Current risk is {plan_a.get('risk_score', 0.0):.2f} with {blocker_text}.{fallback_text}"
+    )
+
+
 @dataclass
 class AnchorNarrationResult:
     text: str; anchor_name: str; depth_stratum: str
@@ -73,18 +95,24 @@ class Gemma4Bridge:
         conf = float(top.get("confidence",0.0))
         patches = len(top.get("patch_indices",[]))
         prior = ""
+        tvlc_ctx = ""
         if setu_descriptions:
             s = setu_descriptions[0]
-            st = s.get("description",{}).get("text","") if isinstance(s.get("description"),dict) else ""
-            sr = s.get("description",{}).get("hallucination_risk",1.0) if isinstance(s.get("description"),dict) else 1.0
-            if st and sr < 0.5: prior = f"\nExisting description (risk={sr:.2f}): {st}"
+            desc = s.get("description", {}) if isinstance(s.get("description"), dict) else {}
+            st = desc.get("text", "")
+            sr = desc.get("hallucination_risk", 1.0)
+            ctx = desc.get("tvlc_context") or s.get("tvlc_context", "")
+            if st and sr < 0.5:
+                prior = f"\nExisting description (risk={sr:.2f}): {st}"
+            if ctx:
+                tvlc_ctx = f"\nVisual connector context: {ctx}"
         depth_ctx = ""
         if isinstance(depth_strata,dict):
             depth_ctx = f"\nDepth confidence: {depth_strata.get('confidence',0):.2f}"
         prompt = (f"JEPA geometric evidence for obs {str(observation_id)[:8]}:\n"
                   f"- Anchor: {name}\n- Stratum: {stratum}\n"
                   f"- Confidence: {conf:.2f}\n- Patch coverage: {patches}/196"
-                  f"{depth_ctx}{prior}\n\n"
+                  f"{depth_ctx}{prior}{tvlc_ctx}\n\n"
                   "Narrate in one sentence what this anchor match describes. Max 20 words.")
         t0 = time.perf_counter()
         r = await self._call(prompt=prompt,image_base64=image_base64,system=_ANCHOR_SYSTEM,max_tokens=64)
@@ -146,14 +174,19 @@ class Gemma4Bridge:
             b_risk = plan_b.get("risk_score", 0.0)
             prompt += f"Plan B fallback: {b_verb} (Risk: {b_risk:.2f})\n"
             
-        prompt += "\nExplain this action plan easily to a user."
+        predicted = (plan_a.get("predicted_next_state_summary") or "keep observing the scene").strip()
+        prompt += (
+            f"Plan A predicted next state: {predicted}\n"
+            "\nExplain this action plan to a user in one or two concrete sentences. "
+            "Mention what the system expects next and when it would fall back."
+        )
         
         t0 = time.perf_counter()
         r = await self._call(prompt=prompt, image_base64=None, system=_ROLLOUT_SYSTEM, max_tokens=128)
         ms = (time.perf_counter()-t0)*1000; self._n+=1; self._ms+=ms
         
         text = (r.get("text") or "").strip()
-        return text if text else "Rollout plan calculated safely."
+        return text if text else deterministic_rollout_summary(rollout_comparison)
 
     async def narrate_proof_report(self, summary_stats: dict) -> str:
         prompt = (

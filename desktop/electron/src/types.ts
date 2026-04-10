@@ -7,6 +7,19 @@ export type ProviderHealth = {
   latency_ms?: number | null;
 };
 
+export type RuntimeFeatureStatus = {
+  name: string;
+  enabled: boolean;
+  healthy: boolean;
+  message: string;
+  source_provider?: string | null;
+};
+
+export type ProviderHealthResponse = {
+  providers: ProviderHealth[];
+  features: RuntimeFeatureStatus[];
+};
+
 export type ReasoningTraceEntry = {
   provider: string;
   healthy: boolean;
@@ -82,6 +95,7 @@ export type PersistenceSignal = {
 export type WorldModelMetrics = {
   prediction_consistency: number;
   surprise_score: number;
+  energy_activation_score: number;
   temporal_continuity_score: number;
   persistence_confidence: number;
   occlusion_recovery_score: number;
@@ -242,7 +256,9 @@ export type ChallengeRun = {
   guide_steps: string[];
   success_criteria: Record<string, boolean>;
   baseline_comparison: BaselineComparison;
+  window_label: string;
   summary: string;
+  narration: string;
 };
 
 export type RecoveryScenario = {
@@ -290,6 +306,15 @@ export type WorldModelStatus = {
   degraded: boolean;
   degrade_reason?: string | null;
   degrade_stage?: string | null;
+  active_backend: string;
+  native_ready: boolean;
+  preflight_status: string;
+  last_failure_at?: string | null;
+  crash_fingerprint?: string | null;
+  native_process_state: string;
+  last_native_exit_code?: number | null;
+  last_native_signal?: number | null;
+  retryable_native_failure: boolean;
   telescope_test: string;
 };
 
@@ -314,6 +339,9 @@ export type ObservationSharePayload = {
 };
 
 export type JEPATickPayload = {
+  tick_id?: string | null;
+  overlay_epoch?: number | null;
+  source_backend?: string | null;
   energy_map: number[][];
   entity_tracks: Array<Record<string, unknown>>;
   talker_event?: string | null;
@@ -341,6 +369,7 @@ export type JEPATickPayload = {
   epistemic_uncertainty?: number | null;
   aleatoric_uncertainty?: number | null;
   surprise_score?: number | null;
+  prediction_error_z?: number | null;
   audio_embedding?: number[] | null;
   audio_energy?: number | null;
   configured_encoder?: string;
@@ -385,7 +414,51 @@ export type WorldStateResponse = {
   atlas?: Record<string, unknown> | null;
 };
 
-export type Settings = Record<string, any>;
+export type RuntimeSnapshotResponse = {
+  session_id: string;
+  current?: SceneState | null;
+  entity_tracks: EntityTrack[];
+  latest_jepa_tick?: JEPATickPayload | null;
+  world_model_status: WorldModelStatus;
+  observations: Observation[];
+  observation_count: number;
+  scene_graph: SceneGraphPayload;
+};
+
+export type SceneGraphNode = {
+  id: string;
+  label: string;
+  depth_stratum: string;
+  depth_confidence?: number;
+  bbox?: BoundingBox | null;
+  source: string;
+  confidence: number;
+  status: string;
+  label_source?: string;
+  label_evidence?: Record<string, unknown> | null;
+};
+
+export type SceneGraphEdge = {
+  source: string;
+  target: string;
+  relation: string;
+  weight: number;
+};
+
+export type SceneGraphPayload = {
+  nodes: SceneGraphNode[];
+  edges: SceneGraphEdge[];
+};
+
+export type Settings = Record<string, any> & {
+  live_features?: {
+    live_lens_use_jepa_tick?: boolean;
+    energy_heatmap_enabled?: boolean;
+    entity_overlay_enabled?: boolean;
+    open_vocab_labels_enabled?: boolean;
+    tvlc_enabled?: boolean;
+  };
+};
 
 export type CameraDeviceOption = {
   deviceId: string;
@@ -454,6 +527,10 @@ export type ConsumerGraphNode = {
   y: number;
   radius?: number;
   tone?: "accent" | "memory" | "live" | "stable";
+  depthStratum?: string;
+  source?: string;
+  confidence?: number;
+  status?: string;
 };
 
 export type ConsumerGraphLink = {
