@@ -14,6 +14,7 @@ struct RecallSheet: View {
     @State private var recallNarration: String?
     @State private var detectedLanguageCode: String?
     @State private var localRecallTask: Task<Void, Never>?
+    @State private var showArchaeology = false
 
     var body: some View {
         NavigationStack {
@@ -133,6 +134,13 @@ struct RecallSheet: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.white)
                 }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showArchaeology = true }) {
+                        Image(systemName: "camera.viewfinder")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                }
             }
         }
         .preferredColorScheme(.dark)
@@ -140,6 +148,9 @@ struct RecallSheet: View {
             HumRevealView(payload: payload) {
                 humRevealPayload = nil
             }
+        }
+        .fullScreenCover(isPresented: $showArchaeology) {
+            SceneArchaeologyView()
         }
         .onPreferenceChange(HumButtonFramePreferenceKey.self) { frame in
             humButtonFrame = frame

@@ -818,3 +818,23 @@ public enum JSONValue: Codable, Hashable, Sendable {
         }
     }
 }
+
+public struct AnalyzeRequest: Codable, Hashable {
+    public let image_base64: String
+    public let session_id: String
+    public let query: String?
+
+    public init(image_base64: String, session_id: String, query: String?) {
+        self.image_base64 = image_base64
+        self.session_id = session_id
+        self.query = query
+    }
+}
+
+public struct AnalyzeResponse: Codable, Hashable {
+    public let hits: [ObservationSummary]
+
+    public init(hits: [ObservationSummary]) {
+        self.hits = hits
+    }
+}

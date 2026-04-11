@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
-
-extension Color {
+import BackgroundTasks
     static let smritiAccent = Color(red: 0.4196, green: 0.3607, blue: 0.9058)
     static let smritiTeal = Color(red: 0.235, green: 0.765, blue: 0.765)
     static let smritiDivider = Color.white.opacity(0.12)
@@ -20,6 +19,7 @@ final class SmritiAppModel: ObservableObject {
         case pulse
         case mandala
         case settings
+        case journal
     }
 
     let eventStore = SmritiEventStore()
@@ -176,6 +176,23 @@ struct SmritiApp: App {
     @State private var showGemmaDownload = false
 
     @StateObject private var appModel = SmritiAppModel()
+    
+    init() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.toori.smriti.journal", using: nil) { task in
+            Task {
+                _ = try? await SilentJournalEngine().generateTodaysJournal()
+                task.setTaskCompleted(success: true)
+                SilentJournalEngine().scheduleDaily()
+            }
+        }
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.toori.smriti.patterns", using: nil) { task in
+            Task {
+                _ = try? await AnticipationEngine().generateWeeklyInsight()
+                task.setTaskCompleted(success: true)
+                AnticipationEngine().scheduleWeekly()
+            }
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -242,6 +259,12 @@ private struct RootShell: View {
                 .tag(SmritiAppModel.RootTab.pulse)
                 .tabItem {
                     Label("Pulse", systemImage: "circle.grid.3x3.fill")
+                }
+                
+            JournalView()
+                .tag(SmritiAppModel.RootTab.journal)
+                .tabItem {
+                    Label("Journal", systemImage: "book.closed")
                 }
 
             MandalaView()

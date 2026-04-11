@@ -20,6 +20,8 @@
 	<string>1</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Smriti needs your camera to match your current scene.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Smriti uses your local network only to reach the memory runtime on your device or private LAN.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -38,7 +40,13 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+        <string>processing</string>
 	</array>
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.toori.smriti.journal</string>
+        <string>com.toori.smriti.patterns</string>
+    </array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIRequiredDeviceCapabilities</key>

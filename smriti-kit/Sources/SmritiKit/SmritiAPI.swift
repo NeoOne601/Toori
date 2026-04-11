@@ -120,6 +120,10 @@ public struct SmritiAPI: Sendable {
         try await self.request(path: "/v1/audio/query", method: "POST", body: request)
     }
 
+    public func analyze(_ request: AnalyzeRequest) async throws -> AnalyzeResponse {
+        try await self.request(path: "/v1/analyze", method: "POST", body: request)
+    }
+
     public func eventStream() async throws -> AsyncThrowingStream<EventMessage, Error> {
         let task = URLSession.shared.webSocketTask(with: websocketURL)
         let decoder = Self.makeDecoder()

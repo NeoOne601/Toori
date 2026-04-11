@@ -16,6 +16,9 @@ struct DetailSheet: View {
                     heroImage
                     surpriseMeter
                     entitySection
+                    if !item.person_names.isEmpty {
+                        peopleOrbitSection
+                    }
                     descriptionSection
                     actionRow
                     if let journalStatusMessage = appModel.journalStatusMessage {
@@ -126,6 +129,23 @@ struct DetailSheet: View {
                     EntityPill(label: match.open_vocab_label ?? match.template_name, systemImage: "questionmark")
                 }
             }
+        }
+    }
+
+    private var peopleOrbitSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Social orbit")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+            
+            PeopleOrbitView(orbits: PeopleOrbitEngine().generateOrbit(for: item.person_names))
+                .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 220)
+                .background(Color.smritiSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.smritiGlassStroke, lineWidth: 0.5)
+                )
         }
     }
 

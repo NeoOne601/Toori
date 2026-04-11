@@ -6,43 +6,14 @@ import UIKit
 import AppKit
 #endif
 
-private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, ObservableObject {
-    var onProgress: ((Double) -> Void)?
-    var onComplete: ((URL?, Error?) -> Void)?
-    
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        if totalBytesExpectedToWrite > 0 {
-            let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-            DispatchQueue.main.async {
-                self.onProgress?(progress)
-            }
-        }
-    }
-    
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        let tempURL = location
-        // File stops existing after this delegate method finishes, so we must copy it.
-        DispatchQueue.main.async {
-            self.onComplete?(tempURL, nil)
-        }
-    }
-    
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error = error {
-            DispatchQueue.main.async {
-                self.onComplete?(nil, error)
-            }
-        }
-    }
-}
+// Removed DownloadDelegate
 
 public struct GemmaDownloadView: View {
     @ObservedObject var manager = GemmaModelManager.shared
     @Environment(\.dismiss) var dismiss
     
     @State private var errorMessage: String?
-    @State private var downloadTask: URLSessionDownloadTask?
-    @StateObject private var delegate = DownloadDelegate()
+    @State private var downloadTimer: Timer?
     
     public init() {}
     
@@ -81,7 +52,7 @@ public struct GemmaDownloadView: View {
                     .foregroundColor(.secondary)
                 
                 Button(role: .cancel) {
-                    downloadTask?.cancel()
+                    downloadTimer?.invalidate()
                     manager.downloadState = .idle
                 } label: {
                     Text("Cancel")
@@ -126,35 +97,53 @@ public struct GemmaDownloadView: View {
         manager.downloadState = .downloading
         manager.downloadProgress = 0.0
         
-        let url = URL(string: "https://huggingface.co/api/models/toori/\(manager.selectedVariant())/download")!
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        #if os(macOS)
+        let targetDir = manager.modelDirectory(for: manager.selectedVariant())
+        try? FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
         
-        delegate.onProgress = { progress in
-            manager.downloadProgress = progress
-        }
+        let expectedSize: Double = manager.detectTier() == .enhanced ? 3_600_000_000 : 1_900_000_000
         
-        delegate.onComplete = { tempLocation, error in
-            if let error = error {
-                manager.downloadState = .error(error.localizedDescription)
-                return
-            }
-            guard let tempLocation = tempLocation else { return }
+        downloadTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            let size = (try? FileManager.default.contentsOfDirectory(at: targetDir, includingPropertiesForKeys: [.fileSizeKey])
+                .compactMap { try $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }
+                .reduce(0, +)) ?? 0
             
-            let targetDir = manager.modelDirectory(for: manager.selectedVariant())
-            try? FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
-            // Just simulating extraction for the sake of the requirement
-            let configURL = targetDir.appendingPathComponent("config.json")
-            try? FileManager.default.copyItem(at: tempLocation, to: configURL)
-            
-            if FileManager.default.fileExists(atPath: configURL.path) {
-                manager.markModelReady()
-                dismiss()
-            } else {
-                manager.downloadState = .error("Failed to extract model config.")
+            DispatchQueue.main.async {
+                manager.downloadProgress = min(1.0, Double(size) / expectedSize)
             }
         }
         
-        downloadTask = session.downloadTask(with: url)
-        downloadTask?.resume()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        let script = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; huggingface-cli download mlx-community/\(manager.selectedVariant()) --local-dir \"\(targetDir.path)\""
+        process.arguments = ["-c", script]
+        
+        process.terminationHandler = { p in
+            DispatchQueue.main.async {
+                self.downloadTimer?.invalidate()
+                self.downloadTimer = nil
+                if p.terminationStatus == 0 {
+                    let configURL = targetDir.appendingPathComponent("config.json")
+                    if FileManager.default.fileExists(atPath: configURL.path) {
+                        self.manager.markModelReady()
+                        self.dismiss()
+                    } else {
+                        self.manager.downloadState = .error("Download finished but config.json missing.")
+                    }
+                } else {
+                    self.manager.downloadState = .error("Download failed. Check that huggingface-cli is installed.")
+                }
+            }
+        }
+        
+        do {
+            try process.run()
+        } catch {
+            downloadTimer?.invalidate()
+            manager.downloadState = .error("Failed to start huggingface-cli.")
+        }
+        #else
+        manager.downloadState = .error("Local model download is not supported on this device.")
+        #endif
     }
 }

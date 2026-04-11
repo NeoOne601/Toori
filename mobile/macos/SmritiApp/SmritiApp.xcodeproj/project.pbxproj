@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		1FBAFDA7195D273FF3EA86CD /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB53CE3EEF8818B5788A3D8 /* SettingsView.swift */; };
 		5A05F1E072EBACDC1CD74E4B /* GemmaDownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68E65F5361384FBDBBB50F4F /* GemmaDownloadView.swift */; };
+		6F845340AE8D387E21EDB369 /* JournalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EF557C2D4159D3A69C66D12 /* JournalView.swift */; };
 		A00100010000000000000001 /* SmritiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000001 /* SmritiApp.swift */; };
 		A00100020000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110020000000000000001 /* AppDelegate.swift */; };
 		A00100030000000000000001 /* SmritiAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110030000000000000001 /* SmritiAPI.swift */; };
@@ -27,6 +28,7 @@
 
 /* Begin PBXFileReference section */
 		68E65F5361384FBDBBB50F4F /* GemmaDownloadView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GemmaDownloadView.swift; sourceTree = "<group>"; };
+		7EF557C2D4159D3A69C66D12 /* JournalView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = JournalView.swift; sourceTree = "<group>"; };
 		A00110010000000000000001 /* SmritiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiApp.swift; sourceTree = "<group>"; };
 		A00110020000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A00110030000000000000001 /* SmritiAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiAPI.swift; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 				A001100F0000000000000001 /* SurpriseBannerView.swift */,
 				68E65F5361384FBDBBB50F4F /* GemmaDownloadView.swift */,
 				BBB53CE3EEF8818B5788A3D8 /* SettingsView.swift */,
+				7EF557C2D4159D3A69C66D12 /* JournalView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -209,6 +212,7 @@
 				A001000E0000000000000001 /* SurpriseBannerView.swift in Sources */,
 				5A05F1E072EBACDC1CD74E4B /* GemmaDownloadView.swift in Sources */,
 				1FBAFDA7195D273FF3EA86CD /* SettingsView.swift in Sources */,
+				6F845340AE8D387E21EDB369 /* JournalView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

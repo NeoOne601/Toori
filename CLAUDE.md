@@ -528,7 +528,137 @@ This means the UI is honest about the current backend, but it does not invent un
   - `/Users/macuser/toori/.xcode-derived/smriti-app/Build/Products/Debug/SmritiApp.app`
 - Manual automation of “click menu bar icon and confirm first-open daemon bootstrap” was not completed in this environment because `osascript` lacked Assistive Access permissions.
 
+### 2026-04-11: Smriti Apple Client Suite — Full Implementation Complete
+
+#### What was built
+
+Five sequential Codex/Antigravity sessions delivered the complete Smriti
+consumer product across macOS and iOS. This section is the handoff reference
+for the next engineer.
+
+#### Repository layout additions
+```text
+smriti-kit/                          Shared Swift package (SmritiKit)
+  Sources/SmritiKit/
+    SmritiAPI.swift                  Async/await localhost API client
+    SmritiModels.swift               Codable DTOs — snake_case, backend-exact
+    SmritiEventStore.swift           WebSocket with exponential reconnect
+    SmritiImageCache.swift           50MB NSCache + SmritiAsyncImage shimmer
+    SmritiDesign.swift               Color.smritiAccent, Animation.smritiSpring
+    SmritiPhotoLibrary.swift         PHPhotoLibrary observer + ingest bridge
+    GemmaModelManager.swift          Hardware tier detection + MLX daemon
+    MultilingualRecallEngine.swift   NLLanguageRecognizer + Gemma narration
+    GemmaDownloadView.swift          huggingface-cli download via Process
+    SilentJournalEngine.swift        Daily Gemma journal + BGTask scheduling
+    AnticipationEngine.swift         Weekly pattern mining + insight generation
+    AnticipationInsightCard.swift    Shared dismissable insight UI component
+    PeopleOrbitEngine.swift          Spatial orbit computation from entity names
+    PeopleOrbitView.swift            Canvas + TimelineView 60fps orbit renderer
+    MemoryCardGenerator.swift        1080×1080 PNG export with "smriti" wordmark
+mobile/macos/SmritiApp/             Standalone macOS menubar app
+  AppDelegate.swift                 NSStatusItem, NSPopover, daemon lifecycle
+  SmritiApp.swift                   App entry, SmritiAppModel, shared state
+  Views/
+    RecallView.swift                Multilingual search + narration + surprise banner
+    MandalaView.swift               Force-directed cluster graph, 120-node cap
+    DetailSheet.swift               NSPanel detail: orbit, surprise bar, share
+    OnboardingSheet.swift           4-step: Photos → folder → folder → ingestion
+    JournalView.swift               7-day calendar + word-reveal + NSSharingServicePicker
+    SurpriseBannerView.swift        5-min cooldown banner, NSHapticFeedbackManager
+    GemmaDownloadView.swift         huggingface-cli download, timer-based progress
+    SettingsView.swift              CapabilityTierSection + Gemma upgrade path
+mobile/ios/SmritiApp/              Standalone iOS app
+  SmritiApp.swift                  @main, BGTask registration, tab shell
+  Views/
+    PulseView.swift                3×3 orb grid, memory bloom, insight card
+    OrbView.swift                  Breathing orb with surprise ring
+    DetailView.swift               Parallax hero, word-reveal, orbit, share
+    RecallSheet.swift              Multilingual recall + hum reveal
+    MandalaView.swift              Canvas + TimelineView, 120-node cap
+    JournalView.swift              7-day strip + animated entry reveal
+    SceneArchaeologyView.swift     AVCaptureSession → POST /v1/analyze → hits
+    OnboardingFlow.swift           4-card swipe: Photos → memory → voice → hum
+    SettingsView.swift             Storage ring + watch folders + tier section
+    GemmaDownloadView.swift        iOS shows error (huggingface-cli macOS only)
+```
+
+#### Critical architectural decisions
+
+**SmritiKit shim pattern**: app-local `SmritiAPI.swift` and `SmritiModels.swift`
+files contain only `import SmritiKit` + `typealias` bridges. The canonical
+implementations live in smriti-kit/Sources/SmritiKit/. Do not add logic to the
+shim files — add it to the package.
+
+**Scene Archaeology uses POST /v1/analyze, not POST /v1/smriti/recall**.
+`/v1/analyze` accepts `image_base64` and returns `hits: [ObservationSummary]`
+ranked by visual similarity. `/v1/smriti/recall` is text-only. This is
+non-negotiable — the backend ignores unknown fields but does not perform
+image similarity on the recall endpoint.
+
+**effectiveSurpriseScore is the canonical surprise field everywhere**.
+It is a computed property on both `SmritiRecallItem` and `ObservationSummary`
+in `SmritiModels.swift`. Do not reference `.setu_score` or `.surprise_score`
+directly in any View file. `surpriseColor(_:)` in `SmritiDesign.swift` maps
+0.0→teal, 1.0→violet.
+
+**macOS is non-sandboxed by design**. The app launches the backend daemon
+via `Process`/`NSTask`. App Sandbox cannot be enabled without breaking the
+daemon launch. PhotoKit access uses usage strings + authorization flow only —
+no sandbox-only Photos entitlement.
+
+**GemmaModelManager hardware tiers**:
+- `.base` (<6GB RAM): all Gemma calls route to `POST /v1/query` on the backend
+- `.standard` (6–10GB): `gemma-4-e2b-it-4bit` via `scripts/mlx_reasoner.py` daemon
+- `.enhanced` (>10GB): `gemma-4-e4b-it-4bit` via same daemon
+Model weights downloaded via `huggingface-cli download mlx-community/{variant}`
+macOS only. iOS always routes to backend.
+
+**mlx_reasoner.py is reused, never replaced**. The macOS GemmaModelManager
+launches `scripts/mlx_reasoner.py` as a persistent daemon using the exact
+JSON-lines stdin/stdout protocol documented above. No new inference scripts.
+
+**MemoryCardGenerator wordmark**: `Text("smriti")` at white 40% opacity,
+bottom-right corner of every exported card. Never remove this — it is the
+primary organic acquisition driver.
+
+**BGTask identifiers registered in iOS Info.plist**:
+- `com.toori.smriti.journal` — SilentJournalEngine, fires after 9pm
+- `com.toori.smriti.patterns` — AnticipationEngine, fires weekly Sunday
+
+**Mandala 120-node cap**: both MandalaView files collapse nodes beyond 120
+into a `more…` meta-node. Cluster edges from removed nodes are aggregated
+onto the meta-node. A warning is logged, never a crash.
+
+#### Verification commands
+
+```bash
+# SmritiKit package
+cd smriti-kit && swift build
+
+# macOS app
+xcodebuild -project mobile/macos/SmritiApp/SmritiApp.xcodeproj \
+  -scheme SmritiApp -destination 'platform=macOS' build
+
+# iOS typecheck (CoreSimulator broken on dev machine)
+xcrun swiftc -typecheck \
+  -sdk $(xcrun --sdk iphonesimulator --show-sdk-path) \
+  -target arm64-apple-ios17.0-simulator \
+  mobile/ios/SmritiApp/**/*.swift
+```
+
+#### What is not yet done
+
+- CLAP projector training data (hum-to-find is random-init only)
+- TVLC connector training on real COCO data
+- SDK clients for audio routes and WorldModelConfig endpoints
+- People Orbit uses deterministic name-hash for angle (real bbox positions
+  require backend to expose per-recall-item track coordinates)
+- GemmaDownloadView on iOS correctly shows an error — full on-device
+  MLX inference on iOS is a future sprint
+- Android client not wired to new endpoints
+
 ---
+
 
 ## Complete API Route Reference
 

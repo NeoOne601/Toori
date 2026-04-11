@@ -201,7 +201,16 @@ final class SmritiAppModel: ObservableObject {
 
     func share(item: SmritiRecallItem) {
         var shareItems: [Any] = [item.primary_description]
-        shareItems.append(URL(fileURLWithPath: item.file_path))
+        
+        let targetPath = item.file_path
+        let summaryText = item.primary_description
+        
+        if let cardURL = MemoryCardGenerator().generateMemoryCard(imagePath: targetPath, date: item.created_at, summary: summaryText) {
+            shareItems.append(cardURL)
+        } else {
+            shareItems.append(URL(fileURLWithPath: targetPath))
+        }
+        
         sharePresenter?(shareItems)
     }
 }

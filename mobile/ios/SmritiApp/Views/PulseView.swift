@@ -12,6 +12,7 @@ struct PulseView: View {
     @State private var bloomCaption: String?
     @State private var bloomResetTask: Task<Void, Never>?
     @State private var lastBloomSignature: String?
+    @State private var insightDismissed = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -23,6 +24,25 @@ struct PulseView: View {
                 if let bloomCaption {
                     bloomCaptionView(bloomCaption)
                         .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                
+                if let insight = UserDefaults.standard.string(forKey: "smriti.insight.latest"),
+                   let storedWeek = UserDefaults.standard.string(forKey: "smriti.insight.week"),
+                   !insightDismissed {
+                    
+                    let cal = Calendar.current
+                    let week = cal.component(.weekOfYear, from: Date())
+                    let year = cal.component(.yearForWeekOfYear, from: Date())
+                    
+                    if storedWeek == "\(year)-W\(week)" {
+                        AnticipationInsightCard(
+                            insight: insight,
+                            onDismiss: { insightDismissed = true },
+                            onSeePattern: { appModel.selectedTab = .journal }
+                        )
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .animation(.smritiSpring, value: insightDismissed)
+                    }
                 }
 
                 LazyVGrid(columns: columns, spacing: 20) {

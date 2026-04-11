@@ -35,6 +35,9 @@ struct DetailContent: View {
                     surpriseMeter
                     metricRow
                     entityRow
+                    if !memory.entityPills.isEmpty {
+                        peopleOrbitRow
+                    }
                     descriptionBlock
                     actionRow
                 }
@@ -196,6 +199,26 @@ struct DetailContent: View {
         .padding(.horizontal, 22)
     }
 
+    private var peopleOrbitRow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Social orbit")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.68))
+
+            PeopleOrbitView(orbits: PeopleOrbitEngine().generateOrbit(for: memory.entityPills.map(\.label)))
+                .frame(height: 220)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.smritiSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.smritiStroke, lineWidth: 0.5)
+                )
+        }
+        .padding(.horizontal, 22)
+    }
+
     private var descriptionBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Setu-2")
@@ -251,10 +274,13 @@ struct DetailContent: View {
 
     private var shareItems: [Any] {
         var items: [Any] = [memory.shareText]
-        if let heroPath = memory.heroPath {
-            items.append(URL(fileURLWithPath: heroPath))
-        } else if let fallbackPath = memory.fallbackThumbnailPath {
-            items.append(URL(fileURLWithPath: fallbackPath))
+        let generator = MemoryCardGenerator()
+        if let targetPath = memory.heroPath ?? memory.fallbackThumbnailPath {
+            if let cardURL = generator.generateMemoryCard(imagePath: targetPath, date: memory.creationDate, summary: memory.descriptionText) {
+                items.append(cardURL)
+            } else {
+                items.append(URL(fileURLWithPath: targetPath))
+            }
         }
         return items
     }

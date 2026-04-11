@@ -10,6 +10,8 @@ struct RecallView: View {
     @StateObject private var recallEngine = MultilingualRecallEngine()
     @State private var recallNarration: String?
     @State private var detectedLanguageCode: String?
+    @State private var showJournal = false
+    @State private var insightDismissed = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -130,6 +132,24 @@ struct RecallView: View {
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 12) {
+                            if let insight = UserDefaults.standard.string(forKey: "smriti.insight.latest"),
+                               let storedWeek = UserDefaults.standard.string(forKey: "smriti.insight.week"),
+                               !insightDismissed {
+                                
+                                let currentWeek = ISO8601DateFormatter().string(from: Date()).prefix(8) // Approx, week calculation logic will be exact in the engine.
+                                // Actually let's use the explicit check: 
+                                let cal = Calendar.current
+                                let week = cal.component(.weekOfYear, from: Date())
+                                let year = cal.component(.yearForWeekOfYear, from: Date())
+                                if storedWeek == "\(year)-W\(week)" {
+                                    AnticipationInsightCard(
+                                        insight: insight,
+                                        onDismiss: { insightDismissed = true },
+                                        onSeePattern: { showJournal = true }
+                                    )
+                                }
+                            }
+                            
                             if let narration = recallNarration {
                                 Text(narration)
                                     .font(.body)
@@ -153,6 +173,15 @@ struct RecallView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .gesture(DragGesture(minimumDistance: 50).onEnded { value in
+                if value.translation.width < 0 {
+                    showJournal = true
+                }
+            })
+            .sheet(isPresented: $showJournal) {
+                JournalView()
+                    .frame(width: 400, height: 500)
+            }
         }
     }
 

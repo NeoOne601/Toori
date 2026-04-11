@@ -110,6 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 if await isBackendHealthy() {
                     appModel.backendPhase = .ready
                     appModel.maybePresentOnboarding()
+                    SilentJournalEngine().scheduleDaily()
+                    AnticipationEngine().scheduleWeekly()
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(500))
