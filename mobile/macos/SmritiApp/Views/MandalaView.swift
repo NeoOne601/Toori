@@ -1,11 +1,15 @@
 import SwiftUI
 import CoreVideo
+import OSLog
+
+private let mandalaLogger = Logger(subsystem: "com.toori.smriti", category: "Mandala")
 
 struct MandalaView: View {
     @EnvironmentObject private var appModel: SmritiAppModel
     @StateObject private var simulation = MandalaSimulation()
     @State private var gestureScale: CGFloat = 1
     @State private var gestureOffset: CGSize = .zero
+    @State private var lastLoggedClusterCount: Int?
 
     var body: some View {
         GeometryReader { geometry in
@@ -21,10 +25,11 @@ struct MandalaView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else if let data = appModel.mandalaData, !data.nodes.isEmpty {
+                    let displayData = truncatedMandalaData(from: data)
                     Canvas { context, size in
-                        simulation.update(data: data, canvasSize: size)
-                        drawEdges(context: &context, data: data, size: size)
-                        drawNodes(context: &context, data: data, size: size)
+                        simulation.update(data: displayData, canvasSize: size)
+                        drawEdges(context: &context, data: displayData, size: size)
+                        drawNodes(context: &context, data: displayData, size: size)
                     }
                     .contentShape(Rectangle())
                     .gesture(dragGesture)
@@ -37,7 +42,7 @@ struct MandalaView: View {
                             .padding(14)
                     }
                     .overlay {
-                        if let selected = simulation.selectedNode(in: data) {
+                        if let selected = simulation.selectedNode(in: displayData) {
                             MandalaOrbitOverlay(
                                 node: selected,
                                 point: simulation.displayPoint(for: selected.id, in: geometry.size)
@@ -49,6 +54,11 @@ struct MandalaView: View {
                     }
                     .onDisappear {
                         simulation.stop()
+                    }
+                    .task(id: data.nodes.count) {
+                        guard data.nodes.count > 120, lastLoggedClusterCount != data.nodes.count else { return }
+                        mandalaLogger.warning("Truncating mandala cluster graph from \(data.nodes.count, privacy: .public) nodes to 120 plus a meta-node.")
+                        lastLoggedClusterCount = data.nodes.count
                     }
                 } else {
                     VStack(spacing: 12) {
@@ -148,6 +158,67 @@ struct MandalaView: View {
                 )
             }
         }
+    }
+
+    private func truncatedMandalaData(from data: SmritiMandalaData) -> SmritiMandalaData {
+        guard data.nodes.count > 120 else { return data }
+
+        let sortedNodes = data.nodes.sorted { lhs, rhs in
+            if lhs.media_count == rhs.media_count {
+                return lhs.id < rhs.id
+            }
+            return lhs.media_count > rhs.media_count
+        }
+        let keptNodes = Array(sortedNodes.prefix(120))
+        let removedNodes = Array(sortedNodes.dropFirst(120))
+        guard !removedNodes.isEmpty else { return data }
+
+        let keptIDs = Set(keptNodes.map(\.id))
+        let removedIDs = Set(removedNodes.map(\.id))
+        let moreNodeID = (keptNodes.map(\.id).min() ?? 0) - 1
+        let aggregatedCount = removedNodes.reduce(0) { $0 + $1.media_count }
+
+        var edgeTotals: [Int: Double] = [:]
+        var keptEdges: [SmritiClusterEdge] = []
+
+        for edge in data.edges {
+            let sourceKept = keptIDs.contains(edge.source)
+            let targetKept = keptIDs.contains(edge.target)
+            let sourceRemoved = removedIDs.contains(edge.source)
+            let targetRemoved = removedIDs.contains(edge.target)
+
+            switch (sourceKept, targetKept, sourceRemoved, targetRemoved) {
+            case (true, true, _, _):
+                keptEdges.append(edge)
+            case (true, false, _, true):
+                edgeTotals[edge.source, default: 0] += edge.similarity
+            case (false, true, true, _):
+                edgeTotals[edge.target, default: 0] += edge.similarity
+            default:
+                continue
+            }
+        }
+
+        let moreNode = SmritiClusterNode(
+            id: moreNodeID,
+            label: "more…",
+            media_count: aggregatedCount,
+            centroid: [0, 0],
+            dominant_depth_stratum: nil,
+            temporal_span_days: nil
+        )
+
+        let moreEdges = edgeTotals
+            .sorted { $0.key < $1.key }
+            .map { keptID, similarity in
+                SmritiClusterEdge(source: moreNodeID, target: keptID, similarity: similarity)
+            }
+
+        return SmritiMandalaData(
+            nodes: keptNodes + [moreNode],
+            edges: keptEdges + moreEdges,
+            generated_at: data.generated_at
+        )
     }
 }
 
@@ -254,7 +325,8 @@ final class MandalaSimulation: ObservableObject {
     func update(data: SmritiMandalaData, canvasSize: CGSize) {
         latestData = data
         self.canvasSize = canvasSize
-        if states.count == data.nodes.count {
+        let nodeIDs = Set(data.nodes.map(\.id))
+        if states.count == data.nodes.count, Set(states.keys) == nodeIDs {
             return
         }
         var seeded: [Int: NodeState] = [:]

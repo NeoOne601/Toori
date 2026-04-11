@@ -1,0 +1,298 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.SmritiKit-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources",
+      "importPath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "SmritiKit",
+      "moduleOutputPath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule",
+      "objects" : [
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/include/SmritiKit-Swift.h",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "smriti_kit"
+      ],
+      "outputFileMapPath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift"
+      ],
+      "tempsPath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "SmritiKit" : [
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "SmritiKit",
+      "-package-name",
+      "smriti_kit",
+      "-c",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift",
+      "-I",
+      "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/include/SmritiKit-Swift.h",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "smriti_kit",
+      "-driver-use-frontend-path",
+      "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "SmritiKit" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources"
+    },
+    "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt"
+    }
+  }
+}

@@ -1256,6 +1256,96 @@ This turn improves truthfulness and operator guidance, but it does **not** solve
 8. **Docs sync** — update `docs/system-design.md`, `docs/user-manual.md`, `docs/plugin-guide.md` whenever interfaces or workflows change
 9. **Keep planning/recovery backend stable** before widening the client surface
 
+### 2026-04-11 SmritiKit extraction + PhotoKit onboarding
+
+This repo now has a local shared Swift package for the standalone Smriti clients plus a PhotoKit-first onboarding flow.
+
+#### What changed
+
+1. **Shared package is now canonical**
+- `smriti-kit/` is the single source of truth for shared Apple-client code.
+- `smriti-kit/Sources/SmritiKit/SmritiAPI.swift` now owns the shared localhost/LAN-safe async client for Smriti recall, clusters, journals, storage, watch folders, runtime snapshot, ingest, tag-person, event stream, observation listing, and audio query.
+- `smriti-kit/Sources/SmritiKit/SmritiModels.swift` now owns the shared snake_case Codable contracts plus the iOS observation/audio models.
+- `smriti-kit/Sources/SmritiKit/SmritiEventStore.swift` owns the shared WebSocket event stream with reconnect logic and lifecycle hooks.
+- `smriti-kit/Sources/SmritiKit/SmritiImageCache.swift` owns the shared image cache and `SmritiAsyncImage`.
+- `smriti-kit/Sources/SmritiKit/SmritiDesign.swift` owns shared accent/animation constants.
+
+2. **PhotoKit import support was added to the package**
+- `smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift` now requests Photos access, observes library changes, exports recent/new local assets, and POSTs each exported file to `/v1/smriti/ingest`.
+- The exporter explicitly disables iCloud/network fetches with `PHImageRequestOptions.isNetworkAccessAllowed = false`.
+- Both image and video `PHAsset`s are handled.
+- Temporary exported files are deleted immediately after a successful ingest, and temp URLs are marked excluded from backup on iOS.
+- The implementation preserves Smriti’s local-only privacy model and does not call any non-local host.
+
+3. **Both apps now consume `SmritiKit` through shim files**
+- `mobile/macos/SmritiApp/SmritiAPI.swift`
+- `mobile/macos/SmritiApp/Models/SmritiModels.swift`
+- `mobile/ios/SmritiApp/SmritiAPI.swift`
+- `mobile/ios/SmritiApp/SmritiModels.swift`
+- `mobile/ios/SmritiApp/SmritiEventStore.swift`
+- These files now `import SmritiKit` and expose typealiases so the existing app code keeps compiling without repo-wide import churn.
+- Both Xcode projects already had a local package reference to `../../../smriti-kit`; the package remains linked in both app targets.
+
+4. **Photos-first onboarding is now live on both platforms**
+- macOS `OnboardingSheet.swift` now shows 4 visual onboarding steps:
+  - Photos permission/import
+  - Pictures folder selection
+  - Additional folder selection
+  - Ingestion progress
+- iOS `OnboardingFlow.swift` now shows 4 cards:
+  - Photos permission/import
+  - Your memory, alive
+  - Ask in plain language
+  - Hum to find
+- Both onboarding surfaces show live `Importing N memories…` status from `SmritiPhotoLibrary.newAssetCount`.
+- macOS completion now allows either Photos authorization or at least one watch folder.
+
+5. **Mandala graph is now capped safely**
+- Both `mobile/macos/SmritiApp/Views/MandalaView.swift` and `mobile/ios/SmritiApp/Views/MandalaView.swift` now cap cluster graphs at 120 nodes.
+- Remaining clusters are collapsed into a single `more…` meta-node with summed `media_count`.
+- Edge weights from removed nodes are aggregated onto the meta-node.
+- The graph logs a warning instead of crashing when the API returns an oversized cluster set.
+
+6. **macOS package build compatibility**
+- `mobile/macos/SmritiApp/SmritiApp.xcodeproj/project.pbxproj` now sets `ONLY_ACTIVE_ARCH = YES` for Debug so `xcodebuild -destination 'platform=macOS' build` works cleanly with the local Swift package on this machine.
+
+#### Important architectural note
+
+- The standalone macOS Smriti app remains **non-sandboxed** because it launches the local runtime daemon with `Process`/`NSTask`.
+- For that reason, this pass added PhotoKit authorization and Info.plist usage strings, but it did **not** introduce App Sandbox or sandbox-only Photos entitlements.
+
+#### Verification completed
+
+- `cd smriti-kit && swift build` passed.
+- `xcodebuild -project mobile/macos/SmritiApp/SmritiApp.xcodeproj -scheme SmritiApp -destination 'platform=macOS' build` passed.
+- Direct iOS typecheck passed with:
+  - an explicit iPhoneSimulator SDK path
+  - a locally compiled `SmritiKit` module
+  - `xcrun swiftc -typecheck ... mobile/ios/SmritiApp/**/*.swift`
+
+#### Environment caveat
+
+- This machine’s iOS destination registry is still unhealthy for `xcodebuild` simulator destinations, so iOS verification was completed with direct `swiftc` typecheck against the simulator SDK rather than a normal simulator build destination.
+
+---
+
+### 2026-04-11 Viral Smriti Interactions
+
+This update introduces canonical surprise tracking and viral UI moments to the Apple client surfaces.
+
+#### What changed
+
+1. **Surprise Field Canonicalization**
+- `effectiveSurpriseScore` has been introduced as the single proxy metric for both `SmritiRecallItem` and `ObservationSummary`, unifying access to `setu_score` and `novelty` metrics respectively.
+- Direct ad-hoc usages of these literal string fields in Views have been removed to ensure reliable type-checked metric tracking.
+
+2. **Unified Aesthetics**
+- Introduced `surpriseColor(_:)` in `SmritiKit/SmritiDesign.swift` to serve as a singular design token for computing a dynamic teal-to-violet hue based on the normalized surprise score of a given memory.
+- Standardized surprise meter representation across platforms using this canonical helper instead of redundant inline `LinearGradient` implementations.
+
+3. **Viral Moment Architecture**
+- Created the standalone `SurpriseBannerView` in the macOS app architecture, explicitly designed to render high-surprise memory captures gracefully out-of-band during usage.
+
 ---
 
 ## Mermaid System Diagram

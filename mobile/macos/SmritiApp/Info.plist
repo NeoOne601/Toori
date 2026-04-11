@@ -24,5 +24,7 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Smriti watches your Photos library to build your private memory. Nothing leaves your device.</string>
 </dict>
 </plist>

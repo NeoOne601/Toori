@@ -1,0 +1,47 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "SmritiKit-arm64-apple-macosx-debug.module": ["<SmritiKit-arm64-apple-macosx-debug.module>"]
+  "main": ["<SmritiKit-arm64-apple-macosx-debug.module>"]
+  "test": ["<SmritiKit-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift"]
+    outputs: ["/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources"]
+    description: "Write auxiliary file /Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources"
+
+  "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+    outputs: ["/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt"
+
+  "<SmritiKit-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule"]
+    outputs: ["<SmritiKit-arm64-apple-macosx-debug.module>"]
+
+  "C.SmritiKit-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift","/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/swift-version--3A2FA223471A04D5.txt","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources"]
+    outputs: ["/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.swift.o","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule"]
+    description: "Compiling Swift Module 'SmritiKit' (6 sources)"
+    args: ["/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","SmritiKit","-emit-dependencies","-emit-module","-emit-module-path","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule","-output-file-map","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/sources","-I","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j8","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/include/SmritiKit-Swift.h","-swift-version","5","-plugin-path","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk","-F","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk","-Xcc","-F","-Xcc","/Volumes/Apple/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","smriti_kit"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/macuser/toori/smriti-kit/Sources/SmritiKit/","/Users/macuser/toori/smriti-kit/Package.swift","/Users/macuser/toori/smriti-kit/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

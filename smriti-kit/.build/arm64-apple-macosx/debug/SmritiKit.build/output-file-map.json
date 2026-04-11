@@ -1,0 +1,47 @@
+{
+  "": {
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/primary.swiftdeps"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.dia"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.dia"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.dia"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiImageCache.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiImageCache.dia"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiModels.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiModels.dia"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiPhotoLibrary.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiPhotoLibrary.dia"
+  }
+}

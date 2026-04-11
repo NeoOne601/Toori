@@ -1,0 +1,328 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B00100010000000000000001 /* SmritiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110010000000000000001 /* SmritiApp.swift */; };
+		B00100020000000000000001 /* SmritiAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110020000000000000001 /* SmritiAPI.swift */; };
+		B00100030000000000000001 /* SmritiEventStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110030000000000000001 /* SmritiEventStore.swift */; };
+		B00100040000000000000001 /* SmritiModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110040000000000000001 /* SmritiModels.swift */; };
+		B00100050000000000000001 /* PulseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110050000000000000001 /* PulseView.swift */; };
+		B00100060000000000000001 /* OrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110060000000000000001 /* OrbView.swift */; };
+		B00100070000000000000001 /* DetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110070000000000000001 /* DetailView.swift */; };
+		B00100080000000000000001 /* MandalaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110080000000000000001 /* MandalaView.swift */; };
+		B00100090000000000000001 /* RecallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110090000000000000001 /* RecallSheet.swift */; };
+		B001000A0000000000000001 /* VoiceRecallButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001100A0000000000000001 /* VoiceRecallButton.swift */; };
+		B001000B0000000000000001 /* HumToFindButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001100B0000000000000001 /* HumToFindButton.swift */; };
+		B001000C0000000000000001 /* RecallResultCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001100C0000000000000001 /* RecallResultCard.swift */; };
+		B001000D0000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001100D0000000000000001 /* SettingsView.swift */; };
+		B001000E0000000000000001 /* OnboardingFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B001100E0000000000000001 /* OnboardingFlow.swift */; };
+		B001000F0000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B001100F0000000000000001 /* Assets.xcassets */; };
+		B00100100000000000000001 /* SmritiKit in Frameworks */ = {isa = PBXBuildFile; productRef = B00180020000000000000001 /* SmritiKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B00110010000000000000001 /* SmritiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiApp.swift; sourceTree = "<group>"; };
+		B00110020000000000000001 /* SmritiAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiAPI.swift; sourceTree = "<group>"; };
+		B00110030000000000000001 /* SmritiEventStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiEventStore.swift; sourceTree = "<group>"; };
+		B00110040000000000000001 /* SmritiModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiModels.swift; sourceTree = "<group>"; };
+		B00110050000000000000001 /* PulseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PulseView.swift; sourceTree = "<group>"; };
+		B00110060000000000000001 /* OrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbView.swift; sourceTree = "<group>"; };
+		B00110070000000000000001 /* DetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailView.swift; sourceTree = "<group>"; };
+		B00110080000000000000001 /* MandalaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MandalaView.swift; sourceTree = "<group>"; };
+		B00110090000000000000001 /* RecallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallSheet.swift; sourceTree = "<group>"; };
+		B001100A0000000000000001 /* VoiceRecallButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecallButton.swift; sourceTree = "<group>"; };
+		B001100B0000000000000001 /* HumToFindButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HumToFindButton.swift; sourceTree = "<group>"; };
+		B001100C0000000000000001 /* RecallResultCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallResultCard.swift; sourceTree = "<group>"; };
+		B001100D0000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		B001100E0000000000000001 /* OnboardingFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlow.swift; sourceTree = "<group>"; };
+		B001100F0000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B00110100000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00110110000000000000001 /* SmritiApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SmritiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B00120010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00100100000000000000001 /* SmritiKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		B00130010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				B00130020000000000000001 /* SmritiApp */,
+				B00130030000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B00130020000000000000001 /* SmritiApp */ = {
+			isa = PBXGroup;
+			children = (
+				B00110010000000000000001 /* SmritiApp.swift */,
+				B00110020000000000000001 /* SmritiAPI.swift */,
+				B00110030000000000000001 /* SmritiEventStore.swift */,
+				B00110040000000000000001 /* SmritiModels.swift */,
+				B00130040000000000000001 /* Views */,
+				B001100F0000000000000001 /* Assets.xcassets */,
+				B00110100000000000000001 /* Info.plist */,
+			);
+			name = SmritiApp;
+			sourceTree = "<group>";
+		};
+		B00130030000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B00110110000000000000001 /* SmritiApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B00130040000000000000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				B00110050000000000000001 /* PulseView.swift */,
+				B00110060000000000000001 /* OrbView.swift */,
+				B00110070000000000000001 /* DetailView.swift */,
+				B00110080000000000000001 /* MandalaView.swift */,
+				B00110090000000000000001 /* RecallSheet.swift */,
+				B001100A0000000000000001 /* VoiceRecallButton.swift */,
+				B001100B0000000000000001 /* HumToFindButton.swift */,
+				B001100C0000000000000001 /* RecallResultCard.swift */,
+				B001100D0000000000000001 /* SettingsView.swift */,
+				B001100E0000000000000001 /* OnboardingFlow.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B00140010000000000000001 /* SmritiApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00170020000000000000001 /* Build configuration list for PBXNativeTarget "SmritiApp" */;
+			buildPhases = (
+				B00120020000000000000001 /* Sources */,
+				B00120010000000000000001 /* Frameworks */,
+				B00120030000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			packageProductDependencies = (
+				B00180020000000000000001 /* SmritiKit */,
+			);
+			name = SmritiApp;
+			productName = SmritiApp;
+			productReference = B00110110000000000000001 /* SmritiApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B00150010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					B00140010000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = B00170010000000000000001 /* Build configuration list for PBXProject "SmritiApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B00130010000000000000001;
+			productRefGroup = B00130030000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			packageReferences = (
+				B00180010000000000000001 /* XCLocalSwiftPackageReference "smriti-kit" */,
+			);
+			targets = (
+				B00140010000000000000001 /* SmritiApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		B00120030000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B001000F0000000000000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B00120020000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00100010000000000000001 /* SmritiApp.swift in Sources */,
+				B00100020000000000000001 /* SmritiAPI.swift in Sources */,
+				B00100030000000000000001 /* SmritiEventStore.swift in Sources */,
+				B00100040000000000000001 /* SmritiModels.swift in Sources */,
+				B00100050000000000000001 /* PulseView.swift in Sources */,
+				B00100060000000000000001 /* OrbView.swift in Sources */,
+				B00100070000000000000001 /* DetailView.swift in Sources */,
+				B00100080000000000000001 /* MandalaView.swift in Sources */,
+				B00100090000000000000001 /* RecallSheet.swift in Sources */,
+				B001000A0000000000000001 /* VoiceRecallButton.swift in Sources */,
+				B001000B0000000000000001 /* HumToFindButton.swift in Sources */,
+				B001000C0000000000000001 /* RecallResultCard.swift in Sources */,
+				B001000D0000000000000001 /* SettingsView.swift in Sources */,
+				B001000E0000000000000001 /* OnboardingFlow.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		B00160010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		B00160020000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B00160030000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.toori.smriti;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B00160040000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.toori.smriti;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B00170010000000000000001 /* Build configuration list for PBXProject "SmritiApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00160010000000000000001 /* Debug */,
+				B00160020000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00170020000000000000001 /* Build configuration list for PBXNativeTarget "SmritiApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00160030000000000000001 /* Debug */,
+				B00160040000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00180010000000000000001 /* XCLocalSwiftPackageReference "smriti-kit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../../smriti-kit;
+		};
+		B00180020000000000000001 /* SmritiKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00180010000000000000001 /* XCLocalSwiftPackageReference "smriti-kit" */;
+			productName = SmritiKit;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = B00150010000000000000001 /* Project object */;
+}

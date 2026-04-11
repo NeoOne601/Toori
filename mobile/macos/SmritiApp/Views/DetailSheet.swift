@@ -104,13 +104,7 @@ struct DetailSheet: View {
                         .fill(Color.white.opacity(0.08))
 
                     Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.smritiTeal, Color.smritiAccent],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
+                        .fill(surpriseColor(item.surpriseProxy))
                         .frame(width: geometry.size.width * barProgress)
                 }
             }
