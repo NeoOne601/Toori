@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		8157DDC4D52FD912283939C4 /* GemmaDownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F694B1631554597F996389 /* GemmaDownloadView.swift */; };
 		B00100010000000000000001 /* SmritiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110010000000000000001 /* SmritiApp.swift */; };
 		B00100020000000000000001 /* SmritiAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110020000000000000001 /* SmritiAPI.swift */; };
 		B00100030000000000000001 /* SmritiEventStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110030000000000000001 /* SmritiEventStore.swift */; };
@@ -26,6 +27,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A6F694B1631554597F996389 /* GemmaDownloadView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GemmaDownloadView.swift; sourceTree = "<group>"; };
 		B00110010000000000000001 /* SmritiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiApp.swift; sourceTree = "<group>"; };
 		B00110020000000000000001 /* SmritiAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiAPI.swift; sourceTree = "<group>"; };
 		B00110030000000000000001 /* SmritiEventStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmritiEventStore.swift; sourceTree = "<group>"; };
@@ -100,6 +102,7 @@
 				B001100C0000000000000001 /* RecallResultCard.swift */,
 				B001100D0000000000000001 /* SettingsView.swift */,
 				B001100E0000000000000001 /* OnboardingFlow.swift */,
+				A6F694B1631554597F996389 /* GemmaDownloadView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -119,10 +122,10 @@
 			);
 			dependencies = (
 			);
+			name = SmritiApp;
 			packageProductDependencies = (
 				B00180020000000000000001 /* SmritiKit */,
 			);
-			name = SmritiApp;
 			productName = SmritiApp;
 			productReference = B00110110000000000000001 /* SmritiApp.app */;
 			productType = "com.apple.product-type.application";
@@ -152,12 +155,12 @@
 				Base,
 			);
 			mainGroup = B00130010000000000000001;
-			productRefGroup = B00130030000000000000001 /* Products */;
-			projectDirPath = "";
-			projectRoot = "";
 			packageReferences = (
 				B00180010000000000000001 /* XCLocalSwiftPackageReference "smriti-kit" */,
 			);
+			productRefGroup = B00130030000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
 			targets = (
 				B00140010000000000000001 /* SmritiApp */,
 			);
@@ -194,6 +197,7 @@
 				B001000C0000000000000001 /* RecallResultCard.swift in Sources */,
 				B001000D0000000000000001 /* SettingsView.swift in Sources */,
 				B001000E0000000000000001 /* OnboardingFlow.swift in Sources */,
+				8157DDC4D52FD912283939C4 /* GemmaDownloadView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -313,16 +317,22 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
 		B00180010000000000000001 /* XCLocalSwiftPackageReference "smriti-kit" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../../smriti-kit;
+			relativePath = "../../../smriti-kit";
 		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
 		B00180020000000000000001 /* SmritiKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B00180010000000000000001 /* XCLocalSwiftPackageReference "smriti-kit" */;
 			productName = SmritiKit;
 		};
-/* End XCConfigurationList section */
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B00150010000000000000001 /* Project object */;
 }

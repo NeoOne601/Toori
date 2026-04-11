@@ -10,6 +10,11 @@ struct RecallSheet: View {
     @State private var humButtonFrame: CGRect = .zero
     @State private var lastHumRevealSignature: String?
 
+    @StateObject private var recallEngine = MultilingualRecallEngine()
+    @State private var recallNarration: String?
+    @State private var detectedLanguageCode: String?
+    @State private var localRecallTask: Task<Void, Never>?
+
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
@@ -34,6 +39,16 @@ struct RecallSheet: View {
                             )
                     }
 
+                    if let lang = detectedLanguageCode, lang != "en" {
+                        let displayLanguageName = Locale.current.localizedString(forLanguageCode: lang) ?? "English"
+                        Label(displayLanguageName, systemImage: "text.bubble")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.smritiAccent.opacity(0.12))
+                            .cornerRadius(8)
+                    }
+
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Voice recall")
                             .font(.system(size: 17, weight: .semibold))
@@ -44,6 +59,16 @@ struct RecallSheet: View {
                                 .font(.system(size: 13))
                                 .foregroundStyle(.white.opacity(0.52))
                         } else {
+                            if let narration = recallNarration {
+                                Text(narration)
+                                    .font(.body)
+                                    .italic()
+                                    .padding(12)
+                                    .background(Color.smritiAccent.opacity(0.08))
+                                    .cornerRadius(10)
+                                    .animation(.smritiSpring, value: recallNarration != nil)
+                            }
+                            
                             ForEach(appModel.recallResults) { item in
                                 RecallResultCard(
                                     thumbnailPath: item.thumbnail_path,
@@ -121,9 +146,15 @@ struct RecallSheet: View {
         }
         .onAppear {
             lastHumRevealSignature = appModel.audioResults.first.map(\.id)
+            if !appModel.lastTranscript.isEmpty {
+                scheduleRecall()
+            }
         }
         .onChange(of: appModel.audioResults, initial: false) { _, newResults in
             scheduleHumReveal(for: newResults)
+        }
+        .onChange(of: appModel.lastTranscript, initial: false) { _, _ in
+            scheduleRecall()
         }
     }
 
@@ -170,6 +201,35 @@ struct RecallSheet: View {
             )
         }
         humRevealPayload = HumRevealPayload(result: first, startPoint: startPoint)
+    }
+
+    private func scheduleRecall() {
+        localRecallTask?.cancel()
+        localRecallTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            
+            let query = appModel.lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard query.count >= 2 else {
+                appModel.recallResults = []
+                recallNarration = nil
+                detectedLanguageCode = nil
+                return
+            }
+            
+            appModel.isRecallLoading = true
+            do {
+                let result = try await recallEngine.query(query)
+                appModel.recallResults = result.items
+                recallNarration = result.narration
+                detectedLanguageCode = result.detectedLanguageCode
+            } catch {
+                appModel.recallResults = []
+                recallNarration = nil
+                detectedLanguageCode = nil
+            }
+            appModel.isRecallLoading = false
+        }
     }
 }
 

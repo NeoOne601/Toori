@@ -24,6 +24,14 @@
       "inputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift"
         },
         {
@@ -59,6 +67,8 @@
       "moduleName" : "SmritiKit",
       "moduleOutputPath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule",
       "objects" : [
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o",
@@ -119,6 +129,14 @@
       "outputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o"
         },
         {
@@ -148,6 +166,8 @@
       ],
       "prepareForIndexing" : false,
       "sources" : [
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift",
@@ -170,6 +190,8 @@
       "-package-name",
       "smriti_kit",
       "-c",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift",
@@ -252,6 +274,14 @@
         {
           "kind" : "virtual",
           "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift"
         },
         {
           "kind" : "file",

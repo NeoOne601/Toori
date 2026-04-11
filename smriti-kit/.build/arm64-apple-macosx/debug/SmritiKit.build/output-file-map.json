@@ -2,6 +2,20 @@
   "": {
     "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/primary.swiftdeps"
   },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.dia"
+  },
+  "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift": {
+    "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.d",
+    "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.swift.o",
+    "swiftmodule": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine~partial.swiftmodule",
+    "swift-dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.swiftdeps",
+    "diagnostics": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.dia"
+  },
   "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift": {
     "dependencies": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.d",
     "object": "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o",

@@ -173,6 +173,7 @@ final class SmritiAppModel: ObservableObject {
 struct SmritiApp: App {
     @AppStorage("smriti.backendHost") private var backendHost = "127.0.0.1:7777"
     @AppStorage("smriti.hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var showGemmaDownload = false
 
     @StateObject private var appModel = SmritiAppModel()
 
@@ -201,6 +202,15 @@ struct SmritiApp: App {
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.visible)
                         .presentationBackground(.ultraThinMaterial)
+                        .onAppear {
+                            let manager = GemmaModelManager.shared
+                            if !manager.isModelPresent(), manager.detectTier() != .base {
+                                showGemmaDownload = true
+                            }
+                        }
+                }
+                .fullScreenCover(isPresented: $showGemmaDownload) {
+                    GemmaDownloadView()
                 }
                 .fullScreenCover(isPresented: onboardingPresentationBinding) {
                     OnboardingFlow {

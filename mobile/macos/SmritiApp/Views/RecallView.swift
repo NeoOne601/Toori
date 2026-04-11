@@ -7,6 +7,9 @@ struct RecallView: View {
     @State private var recallTask: Task<Void, Never>?
     @State private var dragTranslation: CGFloat = 0
     @StateObject private var surpriseCoordinator = SurpriseMomentCoordinator()
+    @StateObject private var recallEngine = MultilingualRecallEngine()
+    @State private var recallNarration: String?
+    @State private var detectedLanguageCode: String?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -105,6 +108,16 @@ struct RecallView: View {
                     .stroke(Color.smritiGlassStroke, lineWidth: 0.5)
             )
 
+            if let lang = detectedLanguageCode, lang != "en" {
+                let displayLanguageName = Locale.current.localizedString(forLanguageCode: lang) ?? "English"
+                Label(displayLanguageName, systemImage: "text.bubble")
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.smritiAccent.opacity(0.12))
+                    .cornerRadius(8)
+            }
+
             Group {
                 if appModel.recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 {
                     RecallEmptyState(message: "Your memory is building. Show Smriti what matters.")
@@ -116,7 +129,18 @@ struct RecallView: View {
                     RecallEmptyState(message: "Your memory is building. Show Smriti what matters.")
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if let narration = recallNarration {
+                                Text(narration)
+                                    .font(.body)
+                                    .italic()
+                                    .padding(12)
+                                    .background(Color.smritiAccent.opacity(0.08))
+                                    .cornerRadius(10)
+                                    .animation(.smritiSpring, value: recallNarration != nil)
+                            }
+                            
+                            LazyVStack(spacing: 12) {
                             ForEach(Array(appModel.recallResults.enumerated()), id: \.element.id) { index, item in
                                 SmritiRecallCard(item: item, index: index) {
                                     appModel.openDetail(for: item)
@@ -124,6 +148,7 @@ struct RecallView: View {
                             }
                         }
                         .padding(.bottom, 4)
+                        }
                     }
                 }
             }
@@ -136,7 +161,27 @@ struct RecallView: View {
         recallTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            await appModel.runRecall()
+            
+            let query = appModel.recallQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard query.count >= 2 else {
+                appModel.recallResults = []
+                recallNarration = nil
+                detectedLanguageCode = nil
+                return
+            }
+            
+            appModel.isSearching = true
+            do {
+                let result = try await recallEngine.query(query)
+                appModel.recallResults = result.items
+                recallNarration = result.narration
+                detectedLanguageCode = result.detectedLanguageCode
+            } catch {
+                appModel.recallResults = []
+                recallNarration = nil
+                detectedLanguageCode = nil
+            }
+            appModel.isSearching = false
         }
     }
 }

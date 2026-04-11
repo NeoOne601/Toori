@@ -65,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.delegate = self
         popover.contentSize = NSSize(width: 380, height: 520)
 
-        let rootView = SmritiRootView()
+        let rootView = PopoverRootView()
             .environmentObject(appModel)
         let hostingController = NSHostingController(rootView: rootView)
         hostingController.view.wantsLayer = true
@@ -206,6 +206,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let picker = NSSharingServicePicker(items: items)
         let point = contentView.convert(contentView.bounds.centerPoint, to: nil)
         picker.show(relativeTo: NSRect(origin: point, size: .zero), of: contentView, preferredEdge: .minY)
+    }
+}
+
+private struct PopoverRootView: View {
+    @EnvironmentObject var appModel: SmritiAppModel
+    @AppStorage("smriti.hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var showGemmaDownload = false
+
+    var body: some View {
+        SmritiRootView()
+            .sheet(isPresented: $showGemmaDownload) {
+                GemmaDownloadView()
+            }
+            .onChange(of: hasCompletedOnboarding) { _, _ in checkGemma() }
+            .onAppear { checkGemma() }
+    }
+
+    private func checkGemma() {
+        // Only trigger if backend is ready and onboarding is done
+        // Note: appModel.backendPhase might not be visible here if it's enum, 
+        // but hasCompletedOnboarding is true. We'll simply check GemmaManager.
+        if hasCompletedOnboarding {
+            let manager = GemmaModelManager.shared
+            if !manager.isModelPresent(), manager.detectTier() != .base {
+                showGemmaDownload = true
+            }
+        }
     }
 }
 

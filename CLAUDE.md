@@ -1348,6 +1348,32 @@ This update introduces canonical surprise tracking and viral UI moments to the A
 
 ---
 
+### 2026-04-11 Multilingual Recall Engine and Gemma Integration
+
+This update connects Smriti Apple clients natively to the Gemma 4 reasoning capabilities through a tier-based capability escalation architecture on the device.
+
+#### Core changes
+
+1. **GemmaModelManager tier detection**
+- `GemmaModelManager.swift` detects physical memory at runtime (`ProcessInfo.processInfo.physicalMemory`).
+- Devices < 6GB RAM are graded as `.base`, routing all Gemma reasoning dynamically through backend `/v1/query`.
+- Devices 6-10GB are graded `.standard`, capable of downloading and executing `gemma-4-e2b-it-4bit`.
+- Devices > 10GB are `.enhanced`, capable of running the larger `gemma-4-e4b-it-4bit` model.
+- Model variant selection and routing fall gracefully based on this tier structure, allowing Settings UI logic to cleanly reveal capabilities based on `DeviceTier` thresholds.
+- iOS strictly leverages the `.base` routing through backend APIs preserving battery and isolating ML compute constraints directly back to the `127.0.0.1` Smriti daemon.
+
+2. **Daemon `mlx_reasoner.py` reuse on macOS**
+- Instead of porting inference orchestration explicitly to Swift/C++, the manager spins up `scripts/mlx_reasoner.py` cleanly as a persistent `Foundation.Process` daemon.
+- Communicates continuously via canonical STDIN/STDOUT JSON-Lines protocol (`{"prompt":...}`, `{"text":...}`).
+- Reduces architectural surface area drastically by reusing existing tested logic.
+
+3. **MultilingualRecallEngine NLP integration**
+- Uses onboard Apple `NLLanguageRecognizer` to detect search language.
+- Non-English queries proxy translation dynamically through Gemma, hitting standard Smriti index using English for precision recall.
+- Results stream asynchronously and populate the native UI (both macOS and iOS via transparent SwiftUI hooks), rendering contextual language badges and localized result descriptions.
+
+---
+
 ## Mermaid System Diagram
 
 ```mermaid
