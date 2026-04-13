@@ -115,7 +115,12 @@ public struct GemmaDownloadView: View {
         
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        let script = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; huggingface-cli download mlx-community/\(manager.selectedVariant()) --local-dir \"\(targetDir.path)\""
+        let python3 = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+        let script = """
+        "\(python3)" -m huggingface_hub download \
+          "mlx-community/\(manager.selectedVariant())" \
+          --local-dir "\(targetDir.path)"
+        """
         process.arguments = ["-c", script]
         
         process.terminationHandler = { p in
@@ -131,7 +136,7 @@ public struct GemmaDownloadView: View {
                         self.manager.downloadState = .error("Download finished but config.json missing.")
                     }
                 } else {
-                    self.manager.downloadState = .error("Download failed. Check that huggingface-cli is installed.")
+                    self.manager.downloadState = .error("Download failed. Check that huggingface_hub is installed.")
                 }
             }
         }
@@ -140,7 +145,7 @@ public struct GemmaDownloadView: View {
             try process.run()
         } catch {
             downloadTimer?.invalidate()
-            manager.downloadState = .error("Failed to start huggingface-cli.")
+            manager.downloadState = .error("Failed to start download process.")
         }
         #else
         manager.downloadState = .error("Local model download is not supported on this device.")

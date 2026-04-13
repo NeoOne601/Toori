@@ -120,7 +120,11 @@ public final class GemmaModelManager: ObservableObject {
     private func generateLocal(prompt: String, maxTokens: Int) async throws -> String {
         if daemonProcess == nil || daemonProcess?.isRunning == false {
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            let python311 = "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11"
+            let resolvedPython = FileManager.default.fileExists(atPath: python311)
+                ? python311
+                : "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+            process.executableURL = URL(fileURLWithPath: resolvedPython)
             // The scripts folder is at the repo root. In apps, currentDirectoryPath is repo root or build folder.
             process.arguments = ["scripts/mlx_reasoner.py"]
             process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

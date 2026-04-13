@@ -21,6 +21,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         configurePopover()
     }
 
+    @objc
+    private func quitApp() {
+        // Terminate daemon if we launched it
+        if UserDefaults.standard.bool(forKey: daemonOwnedKey) {
+            let savedPID = UserDefaults.standard.integer(forKey: daemonPIDKey)
+            if savedPID > 0 {
+                kill(pid_t(savedPID), SIGTERM)
+            }
+        }
+        NSApp.terminate(nil)
+    }
+
+    private func makeStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        let quitItem = NSMenuItem(
+            title: "Quit Smriti",
+            action: #selector(quitApp),
+            keyEquivalent: "q"
+        )
+        quitItem.keyEquivalentModifierMask = [.command]
+        menu.addItem(quitItem)
+        return menu
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         healthTask?.cancel()
         if UserDefaults.standard.bool(forKey: daemonOwnedKey) {
@@ -55,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             button.contentTintColor = NSColor(smritiAccent: ())
             button.action = #selector(togglePopover(_:))
             button.target = self
+
+            // Right-click menu with quit action
+            statusItem.menu = makeStatusMenu()
+
+            // Allow left-click to open popover even when menu is set
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
     }
 
@@ -76,17 +106,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     @objc
     private func togglePopover(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(sender)
+        guard let event = NSApp.currentEvent else { return }
+
+        if event.type == .rightMouseUp {
+            // Right-click: menu handles itself, nothing to do
             return
         }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        withAnimation(.smritiSpring) {
-            button.highlight(true)
+
+        // Left-click: toggle popover, temporarily clear menu to allow it
+        statusItem.menu = nil
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            withAnimation(.smritiSpring) {
+                button.highlight(true)
+            }
+            if !hasCheckedBackend {
+                hasCheckedBackend = true
+                ensureBackendReady()
+            }
         }
-        if !hasCheckedBackend {
-            hasCheckedBackend = true
-            ensureBackendReady()
+        // Restore menu after a brief delay so right-click works again
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            self.statusItem.menu = self.makeStatusMenu()
         }
     }
 
