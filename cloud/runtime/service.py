@@ -1987,14 +1987,35 @@ class RuntimeContainer:
                 self._precompute_perception_for_worker, frame
             )
         )
-        result = await self._run_jepa_tick(
-            session_id=request.session_id,
-            observation_id=response.observation.id,
-            frame=frame,
-            priority=0 if request.query else 3,
-            precomputed_patch_tokens=patch_tokens_bytes,
-            precomputed_mask_results_json=mask_results_json,
-        )
+        # If parent-side perception failed, fall back to inline JEPA
+        # immediately. Workers now have TOORI_JEPA_WORKER_NO_PERCEPTION=1
+        # and will raise if they receive a bare frame without
+        # pre-computed tokens.
+        if patch_tokens_bytes is None and self._jepa_pool is not None:
+            get_logger("runtime").warning(
+                "worker_perception_precompute_unavailable",
+                session_id=request.session_id,
+                action="falling back to inline JEPA",
+            )
+            correlation_id = CorrelationContext.get()
+            if correlation_id == "no-correlation":
+                correlation_id = CorrelationContext.new()
+            result = self._inline_jepa_result(
+                session_id=request.session_id,
+                observation_id=response.observation.id,
+                frame=frame,
+                correlation_id=correlation_id,
+                fallback_reason="parent perception pre-computation failed",
+            )
+        else:
+            result = await self._run_jepa_tick(
+                session_id=request.session_id,
+                observation_id=response.observation.id,
+                frame=frame,
+                priority=0 if request.query else 3,
+                precomputed_patch_tokens=patch_tokens_bytes,
+                precomputed_mask_results_json=mask_results_json,
+            )
         settings = self.get_settings()
         self._apply_fallback_anchor_labels(result.jepa_tick_dict)
         if settings.live_features.tvlc_enabled is False:
@@ -2709,7 +2730,7 @@ class RuntimeContainer:
         if self._jepa_pool is None:
             if not self._ensure_native_jepa_ready():
                 raise RuntimeError(self._jepa_safe_fallback_reason or "native JEPA unavailable")
-            self._jepa_pool = JEPAWorkerPool(disable_vjepa2=False)
+            self._jepa_pool = JEPAWorkerPool(disable_vjepa2=True)
         return self._jepa_pool
 
     def _degraded_jepa_result(

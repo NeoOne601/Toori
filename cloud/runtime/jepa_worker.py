@@ -416,12 +416,19 @@ def _crash_fingerprint(stage: str, error: str) -> str:
 
 
 def _apply_worker_env_defaults(*, disable_vjepa2: bool = False) -> None:
+    """Set env vars inside the subprocess after it starts."""
     os.environ["TOORI_VJEPA2_DEVICE"] = "cpu"
     os.environ["TOORI_DINOV2_DEVICE"] = "cpu"
     if disable_vjepa2:
+        # Tick workers: disable V-JEPA2 and perception pipeline.
+        # The parent pre-computes all tokens; loading them in the worker
+        # causes SIGSEGV on 8GB M1 due to memory exhaustion.
         os.environ["TOORI_VJEPA2_DISABLE"] = "1"
+        os.environ["TOORI_JEPA_WORKER_NO_PERCEPTION"] = "1"
     else:
+        # Preflight: ensure V-JEPA2 is NOT disabled.
         os.environ.pop("TOORI_VJEPA2_DISABLE", None)
+        os.environ.pop("TOORI_JEPA_WORKER_NO_PERCEPTION", None)
     if not os.environ.get("TOORI_VJEPA2_FRAMES", "").strip() and os.environ.get("TOORI_VJEPA2_DEVICE", "").lower() == "cpu":
         os.environ["TOORI_VJEPA2_FRAMES"] = "4"
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -430,6 +437,14 @@ def _apply_worker_env_defaults(*, disable_vjepa2: bool = False) -> None:
 
 
 def _worker_env(*, disable_vjepa2: bool = False) -> dict[str, str]:
+    """Build environment for JEPA subprocesses.
+
+    Args:
+        disable_vjepa2: If True (tick workers), sets TOORI_VJEPA2_DISABLE=1
+            and TOORI_JEPA_WORKER_NO_PERCEPTION=1 so the worker never loads
+            heavy models.  If False (preflight), these vars are REMOVED so
+            the preflight can verify V-JEPA2 loads correctly.
+    """
     env = dict(os.environ)
     repo_root = str(Path.cwd())
     existing_pythonpath = env.get("PYTHONPATH", "").strip()
@@ -437,9 +452,18 @@ def _worker_env(*, disable_vjepa2: bool = False) -> dict[str, str]:
     env["TOORI_VJEPA2_DEVICE"] = "cpu"
     env["TOORI_DINOV2_DEVICE"] = "cpu"
     if disable_vjepa2:
+        # Tick workers must NEVER load V-JEPA2 — the parent pre-computes
+        # all perception tokens.  Loading V-JEPA2 in the subprocess
+        # would spike memory to ~2.1GB and cause SIGSEGV on 8GB M1.
         env["TOORI_VJEPA2_DISABLE"] = "1"
+        # Tell ImmersiveJEPAEngine to skip PerceptionPipeline init —
+        # workers receive pre-computed patch tokens from the parent.
+        env["TOORI_JEPA_WORKER_NO_PERCEPTION"] = "1"
     else:
+        # Preflight needs V-JEPA2 ENABLED to verify it loads.
+        # Explicitly remove these in case the parent process had them.
         env.pop("TOORI_VJEPA2_DISABLE", None)
+        env.pop("TOORI_JEPA_WORKER_NO_PERCEPTION", None)
     if not env.get("TOORI_VJEPA2_FRAMES", "").strip() and env.get("TOORI_VJEPA2_DEVICE", "").lower() == "cpu":
         env["TOORI_VJEPA2_FRAMES"] = "4"
     env["HF_HUB_OFFLINE"] = "1"
@@ -645,6 +669,19 @@ def _serve_worker_subprocess_main(worker_id: int, *, disable_vjepa2: bool = Fals
     from cloud.jepa_service.engine import ImmersiveJEPAEngine
 
     _apply_worker_env_defaults(disable_vjepa2=disable_vjepa2)
+
+    # Defense-in-depth: cap worker virtual memory at 3GB to fail
+    # with MemoryError instead of SIGSEGV on 8GB M1.  macOS uses
+    # RLIMIT_AS; silently skip on platforms that don't support it.
+    try:
+        import resource
+        _WORKER_MEM_LIMIT = 3 * 1024 * 1024 * 1024  # 3 GB
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard == resource.RLIM_INFINITY or hard > _WORKER_MEM_LIMIT:
+            resource.setrlimit(resource.RLIMIT_AS, (_WORKER_MEM_LIMIT, _WORKER_MEM_LIMIT))
+    except Exception:
+        pass  # non-fatal — RLIMIT_AS unavailable on some kernels
+
     engines: OrderedDict[str, ImmersiveJEPAEngine] = OrderedDict()
     logger = get_logger("jepa_worker").bind(worker_id=worker_id)
 
@@ -659,7 +696,10 @@ def _serve_worker_subprocess_main(worker_id: int, *, disable_vjepa2: bool = Fals
             engine = ImmersiveJEPAEngine(device="cpu")
             engines[session_id] = engine
         engines.move_to_end(session_id)
-        while len(engines) > 8:
+        # Cap at 2 engines (down from 8). Each engine carries
+        # predictor layers + session state; on 8GB M1 with the
+        # RLIMIT_AS guard, 2 is the safe maximum.
+        while len(engines) > 2:
             engines.popitem(last=False)
         return engine
 

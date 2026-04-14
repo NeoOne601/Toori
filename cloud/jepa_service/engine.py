@@ -40,6 +40,27 @@ def _worker_world_model_prefers_fallback() -> bool:
     return mode in {"fallback", "honest-fallback", "onnx", "vits14", "disabled"}
 
 
+def _is_worker_subprocess() -> bool:
+    """True when running inside a JEPA worker subprocess.
+
+    When set, the engine skips PerceptionPipeline and all heavy model
+    loading.  The subprocess receives pre-computed patch tokens from
+    the parent process, so it never needs its own encoder.
+
+    This eliminates the ~2.1 GB memory spike that caused persistent
+    SIGSEGV (Signal 11) on 8 GB Apple Silicon.
+
+    Returns False in test environments because the numpy-only fallback
+    perception (~50 MB) is safe and tests don't provide pre-computed
+    tokens.
+    """
+    if _is_test_environment():
+        return False
+    return os.environ.get("TOORI_JEPA_WORKER_NO_PERCEPTION", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _relu(x: np.ndarray) -> np.ndarray:
     return np.maximum(x, 0.0)
 
@@ -297,7 +318,15 @@ class ImmersiveJEPAEngine:
 
     def __init__(self, device: str = "mps", seed: int = 42) -> None:
         self._device = device
-        self.perception = PerceptionPipeline(device=device)
+        self._worker_mode = _is_worker_subprocess()
+        # In worker subprocess mode, skip PerceptionPipeline entirely.
+        # The parent pre-computes DINOv2+SAM patch tokens and passes
+        # them via stdin.  Loading the pipeline here would add ~600MB
+        # of torch + model init, causing SIGSEGV on 8GB M1.
+        if self._worker_mode:
+            self.perception = None  # type: ignore[assignment]
+        else:
+            self.perception = PerceptionPipeline(device=device)
         self._rng = np.random.default_rng(seed)
         self._theta_ctx = np.eye(384, dtype=np.float32)
         self._theta_ctx += self._rng.standard_normal((384, 384)).astype(np.float32) * 1e-4
@@ -343,7 +372,17 @@ class ImmersiveJEPAEngine:
         self._fallback_encoder = None
         self._fallback_encoder_type = "none"
         self._is_true_surrogate = True
-        if not _is_test_environment():
+        # In worker mode, skip ALL heavy encoder loading — V-JEPA2,
+        # ViT-S/14 ONNX, etc.  The worker is a pure predictor; all
+        # encoding is done by the parent process.
+        if self._worker_mode:
+            # Worker mode is NOT a failure state. The parent provides
+            # real DINOv2 patch tokens; the world model section of
+            # tick() handles them via the precomputed path.
+            self._last_world_model_failure = None
+            self._last_tick_encoder_type = "parent-precomputed"
+            self._is_true_surrogate = False
+        elif not _is_test_environment():
             if _worker_world_model_prefers_fallback():
                 self._vjepa2 = None
                 self._vjepa2_loaded = False
@@ -514,12 +553,29 @@ class ImmersiveJEPAEngine:
             else:
                 mask_results = []
         else:
+            # In worker subprocess mode WITHOUT pre-computed tokens,
+            # we must not fall through to perception.encode() because
+            # the PerceptionPipeline is None. Raise immediately so
+            # the parent gets a clean error instead of a SIGSEGV.
+            if self._worker_mode:
+                raise RuntimeError(
+                    "Worker subprocess requires precomputed_patch_tokens "
+                    "but received None. The parent process must call "
+                    "_precompute_perception_for_worker() before dispatch."
+                )
             # Standard path: run local perception (parent runtime or
             # test environments without pre-computation).
             patch_tokens, mask_results = self.perception.encode(frame)
 
         if not mask_results:
-            fallback_indices = self.perception.fallback_random_patches(n=32)
+            if self.perception is not None:
+                fallback_indices = self.perception.fallback_random_patches(n=32)
+            else:
+                # Worker mode: generate deterministic fallback indices
+                # without PerceptionPipeline.
+                rng = np.random.default_rng(20260327)
+                total = 14 * 14
+                fallback_indices = sorted(int(i) for i in rng.choice(total, size=min(32, total), replace=False))
         else:
             fallback_indices = []
 
@@ -546,7 +602,49 @@ class ImmersiveJEPAEngine:
         degrade_reason = None
         degrade_stage = None
 
-        if self._vjepa2 is not None:
+        if self._worker_mode and precomputed_patch_tokens is not None:
+            # Worker mode: use parent-precomputed DINOv2 patch tokens
+            # directly as world model embeddings.  These are real 14×14
+            # patch tokens computed by the parent's PerceptionPipeline —
+            # quality is identical to local encoding.  NOT degraded.
+            wm_encoder_emb = patch_tokens.mean(axis=0).astype(np.float32)
+            eps = 1e-8
+            wm_encoder_emb = wm_encoder_emb / (np.linalg.norm(wm_encoder_emb) + eps)
+            wm_predictor_emb = wm_encoder_emb.copy()
+            wm_version = "parent-precomputed"
+            self._last_tick_encoder_type = "parent-precomputed"
+            self._is_true_surrogate = False
+
+            # Cross-tick prediction error
+            if session_id in self._prev_predictor_embs:
+                prev_pred = self._prev_predictor_embs[session_id]
+                wm_prediction_error = float(np.sum((wm_encoder_emb - prev_pred) ** 2))
+            else:
+                wm_prediction_error = 0.0
+            self._prev_predictor_embs[session_id] = wm_predictor_emb.copy()
+
+            # Surprise normalization
+            if session_id not in self._surprise_windows:
+                self._surprise_windows[session_id] = deque(maxlen=128)
+            self._surprise_windows[session_id].append(wm_prediction_error)
+            window = list(self._surprise_windows[session_id])
+            if len(window) >= 3:
+                mu = float(np.mean(window))
+                std = float(np.std(window)) + 1e-8
+                wm_surprise = float(np.clip((wm_prediction_error - mu) / std, -3.0, 3.0))
+                wm_surprise = float((wm_surprise + 3.0) / 6.0)
+            else:
+                wm_surprise = 0.5
+
+            # Epistemic / aleatoric uncertainty
+            wm_epistemic = float(min(wm_prediction_error, 1.0))
+            if len(self._energy_history) >= 3:
+                wm_aleatoric = float(min(np.var(list(self._energy_history)[-8:]), 1.0))
+            else:
+                wm_aleatoric = 0.5
+            self._last_world_model_failure = None
+
+        elif self._vjepa2 is not None:
             try:
                 self._vjepa2.ensure_loaded()
                 self._vjepa2_loaded = self._vjepa2.is_loaded

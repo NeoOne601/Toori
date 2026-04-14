@@ -681,13 +681,30 @@ class MlxReasoningProvider:
                 self._daemon = None
                 raise RuntimeError(f"daemon stdin broken: {exc}") from exc
 
-            # Read response with timeout
+            # Read response with loop to skip non-JSON native stdout pollution
+            response_line = ""
             try:
                 stdout_fd = daemon.stdout.fileno()  # type: ignore[union-attr]
-                ready, _, _ = select.select([stdout_fd], [], [], timeout_s)
-                if not ready:
-                    raise RuntimeError(f"daemon response timed out after {timeout_s}s")
-                response_line = daemon.stdout.readline()  # type: ignore[union-attr]
+                while True:
+                    ready, _, _ = select.select([stdout_fd], [], [], timeout_s)
+                    if not ready:
+                        raise RuntimeError(f"daemon response timed out after {timeout_s}s")
+                    
+                    line = daemon.stdout.readline()  # type: ignore[union-attr]
+                    if not line:
+                        break  # EOF 
+                        
+                    line_str = line.strip()
+                    if not line_str:
+                        continue
+                        
+                    if line_str.startswith("{"):
+                        response_line = line
+                        break
+                    else:
+                        from .observability import get_logger
+                        get_logger("runtime").warning(f"mlx background warning: {line_str}")
+
             except (OSError, ValueError) as exc:
                 self._daemon = None
                 raise RuntimeError(f"daemon stdout error: {exc}") from exc

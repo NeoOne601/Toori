@@ -24,11 +24,31 @@
       "inputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationInsightCard.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift"
         },
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MemoryCardGenerator.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/PeopleOrbitEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SilentJournalEngine.swift"
         },
         {
           "kind" : "file",
@@ -67,8 +87,13 @@
       "moduleName" : "SmritiKit",
       "moduleOutputPath" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/Modules/SmritiKit.swiftmodule",
       "objects" : [
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/AnticipationEngine.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/AnticipationInsightCard.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MemoryCardGenerator.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/PeopleOrbitEngine.swift.o",
+        "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SilentJournalEngine.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiAPI.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiDesign.swift.o",
         "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SmritiEventStore.swift.o",
@@ -129,11 +154,31 @@
       "outputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/AnticipationEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/AnticipationInsightCard.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/GemmaModelManager.swift.o"
         },
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MemoryCardGenerator.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/MultilingualRecallEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/PeopleOrbitEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/.build/arm64-apple-macosx/debug/SmritiKit.build/SilentJournalEngine.swift.o"
         },
         {
           "kind" : "file",
@@ -166,8 +211,13 @@
       ],
       "prepareForIndexing" : false,
       "sources" : [
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationEngine.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationInsightCard.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MemoryCardGenerator.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/PeopleOrbitEngine.swift",
+        "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SilentJournalEngine.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift",
         "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift",
@@ -190,8 +240,13 @@
       "-package-name",
       "smriti_kit",
       "-c",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationEngine.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationInsightCard.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MemoryCardGenerator.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/PeopleOrbitEngine.swift",
+      "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SilentJournalEngine.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiAPI.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiDesign.swift",
       "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SmritiEventStore.swift",
@@ -277,11 +332,31 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/AnticipationInsightCard.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/GemmaModelManager.swift"
         },
         {
           "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MemoryCardGenerator.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/MultilingualRecallEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/PeopleOrbitEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/macuser/toori/smriti-kit/Sources/SmritiKit/SilentJournalEngine.swift"
         },
         {
           "kind" : "file",

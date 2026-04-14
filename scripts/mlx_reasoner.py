@@ -13,6 +13,21 @@ import base64, json, sys, time, tempfile, os
 from pathlib import Path
 from typing import Optional
 
+# Setup secure FD redirect
+# This prevents internal C++/Python warnings (e.g. from mlx) passing through to API stdout
+try:
+    REAL_STDOUT_FD = os.dup(1)
+    os.dup2(2, 1)
+except Exception:
+    REAL_STDOUT_FD = 1
+
+def emit_json(payload: dict):
+    if REAL_STDOUT_FD == 1:
+        sys.stdout.write(json.dumps(payload) + "\n")
+        sys.stdout.flush()
+    else:
+        os.write(REAL_STDOUT_FD, json.dumps(payload).encode('utf-8') + b'\n')
+
 LOCAL_MODEL_PATH = "/Volumes/Apple/AI Model/gemma-4-e4b-it-4bit"
 FALLBACK_HF_REPO = "mlx-community/gemma-4-e4b-it-4bit"
 DEFAULT_MAX_TOKENS = 512
@@ -80,9 +95,8 @@ def _save_tmp_image(b64: str) -> str:
 
 def _write_error(msg):
     print(f"[mlx_reasoner] ERROR: {msg}", file=sys.stderr, flush=True)
-    sys.stdout.write(json.dumps({"text":"","tokens_generated":0,"model":"gemma-4-e4b",
-                                  "latency_ms":0.0,"local":True,"error":msg}) + "\n")
-    sys.stdout.flush()
+    emit_json({"text":"","tokens_generated":0,"model":"gemma-4-e4b",
+               "latency_ms":0.0,"local":True,"error":msg})
 
 def _lightweight_healthcheck():
     """Validate environment and model paths without loading weights into RAM."""
@@ -122,8 +136,7 @@ def _lightweight_healthcheck():
 def main():
     if "--healthcheck" in sys.argv:
         result = _lightweight_healthcheck()
-        sys.stdout.write(json.dumps(result) + "\n")
-        sys.stdout.flush()
+        emit_json(result)
         sys.exit(0 if result["success"] else 1)
 
     model, tokenizer, loaded_path = _get_model()
@@ -136,14 +149,13 @@ def main():
             p = json.loads(raw)
             # Handle healthcheck ping from daemon mode
             if p.get("type") == "healthcheck":
-                sys.stdout.write(json.dumps({
+                emit_json({
                     "type": "healthcheck",
                     "success": True,
                     "status": "READY",
                     "model": model_label,
                     "message": f"daemon alive ({model_label})",
-                }) + "\n")
-                sys.stdout.flush()
+                })
                 continue
             user_text = str(p.get("prompt","")).strip()
             image_b64 = p.get("image_base64") or None
@@ -159,7 +171,7 @@ def main():
             latency = (time.perf_counter() - t0) * 1000.0
             out = {"text":text,"tokens_generated":tc,"model":model_label,
                    "latency_ms":round(latency,1),"local":True,"vision_used":tmp is not None}
-            sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+            emit_json(out)
         except json.JSONDecodeError as e: _write_error(f"JSON: {e}")
         except Exception as e: _write_error(str(e))
         finally:
