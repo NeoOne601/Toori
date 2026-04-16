@@ -118,7 +118,8 @@ class Setu2Bridge:
         patch_tokens: Optional[np.ndarray] = None,
         anchor_match: Optional[dict[str, Any]] = None,
     ) -> SetuDescription:
-        tvlc_context, connector_type = self._resolve_tvlc_context(patch_tokens)
+        patch_indices = anchor_match.get("patch_indices") if anchor_match else None
+        tvlc_context, connector_type = self._resolve_tvlc_context(patch_tokens, patch_indices)
         if not gate_result.passes:
             return SetuDescription(
                 text=f"Unclear region ({', '.join(gate_result.failure_reasons[:1])})",
@@ -214,7 +215,8 @@ class Setu2Bridge:
         uncertainty_map = gate_payload.get("uncertainty_map")
         if hasattr(uncertainty_map, "tolist"):
             uncertainty_map = uncertainty_map.tolist()
-        tvlc_context, connector_type = self._resolve_tvlc_context(patch_tokens)
+        patch_indices = payload.get("patch_indices")
+        tvlc_context, connector_type = self._resolve_tvlc_context(patch_tokens, patch_indices)
 
         if not passes:
             failure = str(failure_reasons[0]) if failure_reasons else "insufficient evidence"
@@ -243,24 +245,43 @@ class Setu2Bridge:
             connector_type=connector_type,
         )
 
-    def _resolve_tvlc_context(self, patch_tokens: Optional[np.ndarray]) -> tuple[Optional[str], Optional[str]]:
+    def _resolve_tvlc_context(
+        self, 
+        patch_tokens: Optional[np.ndarray], 
+        patch_indices: Optional[list[int]] = None
+    ) -> tuple[Optional[str], Optional[str]]:
         if patch_tokens is None:
             return None, None
         patches = np.asarray(patch_tokens, dtype=np.float32)
         if patches.shape != (196, 384):
             return None, None
+            
         patch_id = id(patches)
-        if self._tvlc_cache_patch_id == patch_id:
-            return self._tvlc_cache_value
         connector = self._get_tvlc_connector()
         if connector is None:
             return None, None
+            
         try:
-            context = connector.to_gemma_context(patches)
-            connector_type = "tvlc_trained" if connector.is_trained else "tvlc_random_init"
-            self._tvlc_cache_patch_id = patch_id
-            self._tvlc_cache_value = (context, connector_type)
-            return self._tvlc_cache_value
+            # 1. Get or compute global context (cached per frame)
+            if self._tvlc_cache_patch_id == patch_id:
+                global_context, connector_type = self._tvlc_cache_value
+            else:
+                global_context = connector.to_gemma_context(patches)
+                connector_type = "tvlc_trained" if connector.is_trained else "tvlc_random_init"
+                self._tvlc_cache_patch_id = patch_id
+                self._tvlc_cache_value = (global_context, connector_type)
+                
+            # 2. If anchor indices provided, score locally and inject at priority
+            if patch_indices and connector.is_trained:
+                local_label, local_score = connector.score_anchor(patches, patch_indices)
+                if local_label and local_score > 0.0:
+                    # Inject local_label:local_score; natively ahead of global prototype matches
+                    prefix = "prototype_matches="
+                    if prefix in global_context:
+                        parts = global_context.split(prefix, 1)
+                        global_context = f"{parts[0]}{prefix}{local_label}:{local_score:.2f};{parts[1]}"
+                        
+            return global_context, connector_type
         except Exception as exc:
             log.debug("setu2_tvlc_context_failed", error=str(exc))
             return None, None

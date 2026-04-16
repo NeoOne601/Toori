@@ -23,6 +23,8 @@ N_QUERIES = 32
 PATCH_DIM = 384
 GEMMA_DIM = 2048
 N_PATCHES = 196
+
+
 N_HEADS = 8
 HEAD_DIM = GEMMA_DIM // N_HEADS
 SEED = 20260327
@@ -75,14 +77,14 @@ class TVLCConnector:
             GEMMA_DIM,
         )
 
-    def project(self, patch_tokens: np.ndarray) -> np.ndarray:
-        """
-        Project DINOv2 patch tokens to Gemma 4 visual tokens.
+    def _forward_with_attention(
+        self, patch_tokens: np.ndarray, valid_patches: list[int] | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Shared forward pass returning both visual tokens and attention.
 
-        Args:
-            patch_tokens: np.ndarray[196, 384] — unit-norm DINOv2 patches
         Returns:
-            np.ndarray[32, 2048] — visual tokens in Gemma 4 embedding space
+            visual_tokens: np.ndarray[32, 2048] — in Gemma 4 space
+            attn_weights:  np.ndarray[8, 32, 196] — cross-attention weights
         """
         patches = np.asarray(patch_tokens, dtype=np.float32)
         if patches.shape != (N_PATCHES, PATCH_DIM):
@@ -103,9 +105,20 @@ class TVLCConnector:
 
         scale = HEAD_DIM ** -0.5
         attn = np.matmul(q, k.transpose(0, 2, 1)) * scale
+
+        if valid_patches is not None:
+            mask = np.ones(N_PATCHES, dtype=bool)
+            # Ensure at least one valid patch to avoid NaN softmaxes
+            valid = valid_patches if valid_patches else [0]
+            mask[valid] = False
+            attn[:, :, mask] = -1e9
+
         attn -= attn.max(axis=-1, keepdims=True)
         attn = np.exp(attn)
         attn /= attn.sum(axis=-1, keepdims=True) + 1e-9
+
+        # Preserve attention weights before consuming them
+        attn_weights = attn.copy()
 
         out = np.matmul(attn, v)
         out = out.transpose(1, 0, 2).reshape(N_QUERIES, GEMMA_DIM)
@@ -128,7 +141,70 @@ class TVLCConnector:
         queries = (queries - mean) / std
         queries = queries * self._ln2_g + self._ln2_b
 
-        return queries.astype(np.float32)
+        return queries.astype(np.float32), attn_weights
+
+    def project(self, patch_tokens: np.ndarray) -> np.ndarray:
+        """
+        Project DINOv2 patch tokens to Gemma 4 visual tokens.
+
+        Args:
+            patch_tokens: np.ndarray[196, 384] — unit-norm DINOv2 patches
+        Returns:
+            np.ndarray[32, 2048] — visual tokens in Gemma 4 embedding space
+        """
+        visual_tokens, _attn = self._forward_with_attention(patch_tokens)
+        return visual_tokens
+
+    def score_anchor(
+        self,
+        patch_tokens: np.ndarray,
+        patch_indices: list[int],
+    ) -> tuple[str, float]:
+        """Score specific anchor patches against semantic prototypes.
+
+        Uses logits attention masking: applies -1e9 to the background patches 
+        before softmax. This perfectly preserves the Perceiver's norm 
+        distributions while letting us simply average the 32 output tokens
+        identically to the target projection format trained using Gemma 4.
+
+        Returns:
+            (label, score) — best matching prototype label and cosine similarity.
+        """
+        if not self.has_semantic_prototypes or not patch_indices:
+            return "", 0.0
+        patches = np.asarray(patch_tokens, dtype=np.float32)
+        if patches.shape != (N_PATCHES, PATCH_DIM):
+            return "", 0.0
+        valid = [i for i in patch_indices if 0 <= i < N_PATCHES]
+        if not valid:
+            return "", 0.0
+
+        try:
+            visual_tokens, _attn_weights = self._forward_with_attention(patches, valid_patches=valid)
+        except Exception:
+            return "", 0.0
+
+        # WEIGHTED CONSENSUS SCORING:
+        # Instead of taking the single absolute maximum (which is prone to noise),
+        # we average the Top-N query matches for each prototype.
+        # This ensures that a label is only chosen if multiple features of the object 
+        # (e.g. shape, color, texture) consistently point to the same semantic target.
+        proto_norms = np.linalg.norm(self._prototype_vectors, axis=1) + 1e-9 # [N_PROTOS]
+        q_norms = np.linalg.norm(visual_tokens, axis=1) + 1e-9 # [32]
+        
+        # Dot product for all prototypes against all 32 queries -> [N_PROTOS, 32]
+        sim_matrix = (self._prototype_vectors @ visual_tokens.T) / (proto_norms[:, None] * q_norms[None, :])
+        
+        # Take the top 3 matches for each prototype across the slots and average them
+        # Sort each row in descending order and take the top 3
+        top_sims = np.sort(sim_matrix, axis=1)[:, -3:] 
+        sims = top_sims.mean(axis=1)
+        
+        if sims.size == 0:
+            return "", 0.0
+            
+        best = int(np.argmax(sims))
+        return str(self._prototype_labels[best]), float(sims[best])
 
     def to_gemma_context(self, patch_tokens: np.ndarray) -> str:
         """

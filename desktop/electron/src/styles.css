@@ -2444,16 +2444,42 @@ textarea {
   position: absolute;
   top: 1rem;
   right: 1rem;
-  z-index: 4;
+  z-index: 10;
   display: flex;
-  gap: 0.5rem;
-  padding: 0.4rem 0.7rem;
+  gap: 0.4rem;
+  padding: 0.35rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(7, 12, 18, 0.58);
+  background: rgba(7, 12, 18, 0.45);
+  backdrop-filter: blur(12px);
+}
+
+.consumer-mode__depth-btn {
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+
+.consumer-mode__depth-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.consumer-mode__depth-btn.is-inactive {
   color: var(--muted);
-  font-size: 0.74rem;
-  backdrop-filter: blur(10px);
+  opacity: 0.45;
+}
+
+.consumer-mode__depth-btn:not(.is-inactive) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .consumer-mode__graph-details {

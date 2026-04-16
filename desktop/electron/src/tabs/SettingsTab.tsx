@@ -699,6 +699,84 @@ export default function SettingsTab() {
         </div>
         <SmritiStorageSettings onStatusChange={(msg) => app.world.setStatus(msg)} />
       </article>
+
+      <article className="panel">
+        <div className="panel-head">
+          <h3>Model Cache</h3>
+          <span>AI model weights and package cache locations</span>
+        </div>
+        <p className="field-hint" style={{ marginBottom: "1rem" }}>
+          These paths show where model downloads and runtime caches are stored.
+          When the external <code>/Volumes/Apple</code> volume is mounted, all caches redirect there automatically
+          via <code>run_runtime.sh</code>, keeping the internal disk free.
+        </p>
+        <div className="stack">
+          {[
+            {
+              label: "HuggingFace models",
+              path: "/Volumes/Apple/.cache/huggingface",
+              note: "V-JEPA 2 weights, tokenizer assets, model metadata",
+            },
+            {
+              label: "Gemma 4 weights (MLX)",
+              path: "/Volumes/Apple/AI Model/gemma-4-e4b-it-4bit",
+              note: "Local on-device Gemma 4 used for narration and semantic relabeling",
+            },
+            {
+              label: "TVLC training cache",
+              path: "/Volumes/Apple/tvlc_train_cache → .toori/tvlc_train_cache",
+              note: "Pre-cached Gemma semantic targets and DINOv2 patch tokens for TVLC training",
+            },
+            {
+              label: "TVLC connector weights",
+              path: "models/vision/tvlc_connector.npz",
+              note: "Trained Perceiver Resampler — 167 MB, random_init: false",
+            },
+            {
+              label: "UV package cache",
+              path: "/Volumes/Apple/.cache/uv",
+              note: "Python package installer cache — kept on external to avoid filling internal disk",
+            },
+            {
+              label: "Torch model cache",
+              path: "/Volumes/Apple/.cache/torch",
+              note: "PyTorch hub downloads (DINOv2, MobileSAM)",
+            },
+          ].map(({ label, path, note }) => {
+            const isExternal = path.startsWith("/Volumes/Apple");
+            return (
+              <div key={label} className="list-row compact">
+                <div>
+                  <strong>{label}</strong>
+                  <p style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all", margin: "0.2rem 0" }}>
+                    {path}
+                  </p>
+                  <p style={{ opacity: 0.6, fontSize: "0.78rem", margin: 0 }}>{note}</p>
+                </div>
+                <span
+                  style={{
+                    fontSize: "0.72rem",
+                    padding: "0.2rem 0.5rem",
+                    borderRadius: "0.9rem",
+                    background: isExternal ? "var(--accent, #6b5ce7)" : "var(--border, #444)",
+                    color: "white",
+                    whiteSpace: "nowrap",
+                    alignSelf: "flex-start",
+                  }}
+                >
+                  {isExternal ? "📦 external" : "💾 internal"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <p className="field-hint" style={{ marginTop: "1rem" }}>
+          To redirect a cache to the external volume, move it with{" "}
+          <code>mv ~/.cache/huggingface /Volumes/Apple/.cache/huggingface</code> then symlink it back.
+          The runtime re-reads these paths from environment variables set in{" "}
+          <code>scripts/run_runtime.sh</code> on every launch.
+        </p>
+      </article>
     </form>
   );
 }

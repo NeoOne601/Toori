@@ -25,11 +25,6 @@ export function isPlaceholderVisionLabel(value?: string | null): boolean {
     return true;
   }
   if (
-    normalized === "tracked region" ||
-    normalized === "tracked entity" ||
-    normalized === "grounded entity" ||
-    normalized === "proposal box" ||
-    normalized === "person standing" ||
     normalized === "unknown object" ||
     normalized === "object" ||
     normalized.includes("histogram") ||
@@ -73,7 +68,7 @@ export function formatEntityBaseLabel(entity: {
     metadataValue(entity.metadata ?? undefined, "caption"),
     metadataValue(entity.metadata ?? undefined, "top_label"),
   ].filter((item) => item && !isPlaceholderVisionLabel(item));
-  return candidates[0] || "tracked region";
+  return candidates[0] || "localized object";
 }
 
 export function formatRelativeTime(value?: string | null): string {

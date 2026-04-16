@@ -215,6 +215,7 @@ class RuntimeContainer:
         self.smriti_daemon = None
         self._sag_templates_path = self._smriti_storage.templates_path or str(Path(self._smriti_storage.data_dir or self.data_dir) / "sag_templates.json")
         self._setu2_bridge = None
+        self._pending_enrichment_task: asyncio.Task | None = None
 
     @staticmethod
     def _clean_label(value: object) -> str:
@@ -275,16 +276,18 @@ class RuntimeContainer:
             "sunglasses": "sunglasses",
             "lab_coat": "lab coat",
             "barrette": "barrette",
-            "unknown": "object",
+            "unknown": "region",
         }
-        anchor_key = str(anchor_name or "").strip()
-        depth = str(depth_stratum or "unknown").strip().lower()
-        label = mapping.get(anchor_key, cls._clean_label(anchor_key).lower())
-        if cls._is_absurd_composite_label(label):
-            label = "object"
-        if label == "object" and depth and depth != "unknown":
-            return f"object {depth}".strip()
-        return label or "object"
+        return mapping.get(label, label)
+
+    def _fallback_anchor_label(self, label: str, depth_stratum: str = "unknown") -> str:
+        label = str(label)
+        if re.match(r"^entity-?\d+$", label) or label in {"object", "proposal box", "grounded entity", "unknown object"}:
+            stratum = str(depth_stratum).lower().strip()
+            if stratum in {"foreground", "midground", "background"}:
+                return f"{stratum} region"
+            return "localized region"
+        return label or "region"
 
     def _latest_jepa_tick(self) -> JEPATick | None:
         latest_tick: JEPATick | None = None
@@ -779,24 +782,153 @@ class RuntimeContainer:
         }
         return summary, metadata
 
-    def _apply_fallback_anchor_labels(self, tick_dict: dict[str, Any]) -> None:
+    @staticmethod
+    def _extract_tvlc_prototype_label(
+        description_records: list[dict[str, Any]],
+        index: int,
+    ) -> str | None:
+        """Extract the top TVLC prototype match label from setu_descriptions.
+
+        Returns the label string when the connector is trained and a
+        high-confidence prototype match exists, otherwise None.
+        """
+        if index >= len(description_records):
+            return None
+        record = description_records[index]
+        if not isinstance(record, dict):
+            return None
+        payload = record.get("description")
+        if not isinstance(payload, dict):
+            return None
+        connector_type = str(payload.get("connector_type") or "").strip()
+        if connector_type != "tvlc_trained":
+            return None
+        context = str(payload.get("tvlc_context") or "").strip().lower()
+        if "prototype_matches=" not in context:
+            return None
+        # Parse "prototype_matches=label1:score1;label2:score2; ..."
+        fragment = context.split("prototype_matches=", 1)[1]
+        fragment = fragment.split("slot_activations=", 1)[0]
+        for entry in fragment.split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            label, _, score_str = entry.partition(":")
+            normalized = " ".join(label.replace("_", " ").split()).strip()
+            if not normalized:
+                continue
+            try:
+                score = float(score_str)
+            except (ValueError, TypeError):
+                score = 0.0
+            if score >= 0.18:
+                return normalized
+        return None
+
+    def _is_placeholder_vision_label(self, label: Any) -> bool:
+        """ Check if a label is a generic system-generated placeholder (e.g. 'localized object 1'). """
+        if not label or not isinstance(label, str):
+            return True
+        norm = label.lower().strip()
+        placeholders = ["localized object", "foreground", "midground", "background", "unresolved", "entity", "grounded_entity"]
+        return any(p in norm for p in placeholders)
+
+    def _apply_fallback_anchor_labels(self, tick_dict: dict[str, Any], *, patch_tokens: np.ndarray | None = None) -> None:
+        """ Enrich both anchors AND entity tracks with semantic labels using TVLC Consensus. """
         anchors = tick_dict.get("anchor_matches")
-        if not isinstance(anchors, list):
+        tracks = tick_dict.get("entity_tracks")
+        descriptions = tick_dict.get("setu_descriptions")
+        
+        if not isinstance(anchors, list) or not isinstance(descriptions, list):
             return
-        for anchor in anchors:
-            if not isinstance(anchor, dict):
-                continue
-            if str(anchor.get("open_vocab_label") or "").strip():
-                continue
-            anchor["open_vocab_label"] = self._fallback_anchor_label(
-                anchor.get("template_name") or anchor.get("name") or "object",
-                anchor.get("depth_stratum") or "unknown",
-            )
-            anchor["label_source"] = "deterministic_alias"
-            anchor["label_evidence"] = {
-                "policy": "strict_evidence_gate",
-                "reason": "trained_tvlc_or_mlx_unavailable",
-            }
+
+        desc_list = descriptions if isinstance(descriptions, list) else []
+        tvlc_engine = None
+        try:
+            from cloud.perception.tvlc_connector import TVLCConnector
+            if TVLCConnector.is_available():
+                if not hasattr(self, "_mandatory_tvlc_connector"):
+                    self._mandatory_tvlc_connector = TVLCConnector()
+                tvlc_engine = self._mandatory_tvlc_connector
+        except Exception:
+            pass
+
+        # 1. Label ANCHORS (The Graph Dots)
+        for index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict): continue
+            if str(anchor.get("open_vocab_label") or "").strip(): continue
+            
+            label, score = self._perform_semantic_pass(tvlc_engine, anchor, patch_tokens, desc_list, index)
+            if label:
+                self._enrich_node_with_label(anchor, label, score)
+            else:
+                self._apply_deterministic_fallback(anchor)
+
+        # 2. UNIVERSAL LABELING (The Video Rectangles - Proposal Boxes)
+        if isinstance(tracks, list) and patch_tokens is not None and tvlc_engine:
+            for track in tracks:
+                if not isinstance(track, dict): continue
+                # Skip if already uniquely identified
+                if str(track.get("label") or "").strip() and not self._is_placeholder_vision_label(track.get("label")):
+                    continue
+                
+                box = track.get("metadata", {}).get("bbox_pixels")
+                if box:
+                    track_indices = self._get_patch_indices_for_box(box)
+                    if track_indices:
+                        name, conf = tvlc_engine.score_anchor(patch_tokens, track_indices)
+                        if name and conf >= 0.42:
+                            track["label"] = name
+                            track["last_similarity"] = float(conf)
+                            if "metadata" not in track: track["metadata"] = {}
+                            track["metadata"]["primary_object_label"] = name
+                            track["metadata"]["label_evidence"] = {"model": "tvlc_v2_4k", "conf": conf}
+
+    def _perform_semantic_pass(self, engine, node, tokens, descs, idx):
+        label = self._extract_tvlc_prototype_label(descs, idx)
+        score = 0.0
+        if not label and engine is not None and tokens is not None:
+            indices = node.get("patch_indices")
+            if indices:
+                label, score = engine.score_anchor(tokens, indices)
+                if score < 0.42: return None, 0.0
+        return label, score
+
+    def _enrich_node_with_label(self, node, label, score):
+        node["open_vocab_label"] = label
+        node["label_source"] = "tvlc_prototype_match"
+        node["label_evidence"] = {
+            "policy": "mandatory_semantic_pass_consensus",
+            "similarity": float(score),
+            "model": "tvlc_v2_consensus_4096"
+        }
+
+    def _apply_deterministic_fallback(self, node):
+        node["open_vocab_label"] = self._fallback_anchor_label(
+            node.get("template_name") or node.get("name") or "object",
+            node.get("depth_stratum") or "unknown",
+        )
+        node["label_source"] = "deterministic_alias"
+
+    def _get_patch_indices_for_box(self, box: dict) -> list[int]:
+        """ Map pixel-space bounding box to 14x14 grid patch indices. """
+        try:
+            x, y = box.get("x", 0), box.get("y", 0)
+            w, h = box.get("width", 0), box.get("height", 0)
+            grid_size = 14
+            # Robust mapping assuming 640x480 resampler input
+            start_col = max(0, min(grid_size - 1, int(x * grid_size / 640)))
+            end_col = max(0, min(grid_size - 1, int((x + w) * grid_size / 640)))
+            start_row = max(0, min(grid_size - 1, int(y * grid_size / 480)))
+            end_row = max(0, min(grid_size - 1, int((y + h) * grid_size / 480)))
+            
+            indices = []
+            for r in range(start_row, end_row + 1):
+                for c in range(start_col, end_col + 1):
+                    indices.append(r * grid_size + c)
+            return indices
+        except Exception:
+            return []
 
     def _strip_disabled_tvlc_context(self, tick_dict: dict[str, Any]) -> None:
         descriptions = tick_dict.get("setu_descriptions")
@@ -2017,7 +2149,14 @@ class RuntimeContainer:
                 precomputed_mask_results_json=mask_results_json,
             )
         settings = self.get_settings()
-        self._apply_fallback_anchor_labels(result.jepa_tick_dict)
+        patch_tokens_arr = None
+        if patch_tokens_bytes is not None:
+            try:
+                patch_tokens_arr = np.frombuffer(patch_tokens_bytes, dtype=np.float32).reshape(196, 384)
+            except Exception:
+                pass
+        
+        self._apply_fallback_anchor_labels(result.jepa_tick_dict, patch_tokens=patch_tokens_arr)
         if settings.live_features.tvlc_enabled is False:
             self._strip_disabled_tvlc_context(result.jepa_tick_dict)
         observation = self._update_observation_from_tick(
@@ -2054,17 +2193,27 @@ class RuntimeContainer:
 
         threshold = float(self._jepa_energy_ema[request.session_id] + (2.0 * jepa_tick.energy_std))
         should_talk = bool(jepa_tick.talker_event)
-        self.events.publish(
-            "jepa.energy_map",
-            {
-                "grid": [14, 14],
-                "values": np.asarray(jepa_tick.energy_map, dtype=np.float32).ravel().tolist(),
-                "mean_energy": jepa_tick.mean_energy,
-                "threshold": threshold,
-                "should_talk": should_talk,
-                "sigreg_loss": jepa_tick.sigreg_loss,
-            },
-        )
+        # ADAPTIVE HEATMAP THROTTLING: 
+        # Only broadcast at high frequency if energy is actually rising,
+        # otherwise throttle to 10Hz to save CPU/Network for SAM2 tracking stability.
+        now_ms = int(time.time() * 1000)
+        last_heatmap_ms = getattr(self, "_last_heatmap_broadcast_ms", 0)
+        is_high_energy = jepa_tick.mean_energy > 0.4
+        
+        if is_high_energy or (now_ms - last_heatmap_ms > 100):
+            self._last_heatmap_broadcast_ms = now_ms
+            self.events.publish(
+                "jepa.energy_map",
+                {
+                    "grid": [14, 14],
+                    # OPTIMIZATION: Ravel and send as float32 list with minimal overhead
+                    "values": jepa_tick.energy_map.ravel().tolist(),
+                    "mean_energy": float(jepa_tick.mean_energy),
+                    "threshold": threshold,
+                    "should_talk": should_talk,
+                    "sigreg_loss": float(jepa_tick.sigreg_loss or 0),
+                },
+            )
         self.events.publish(
             "jepa_tick",
             {
@@ -2087,7 +2236,10 @@ class RuntimeContainer:
         if talker_event is not None:
             self.events.publish("jepa.talker_event", talker_event.model_dump(mode="json"))
         if settings.live_features.open_vocab_labels_enabled:
-            asyncio.create_task(
+            # Cancel any pending enrichment to prevent GPU crash accumulation
+            if self._pending_enrichment_task is not None and not self._pending_enrichment_task.done():
+                self._pending_enrichment_task.cancel()
+            self._pending_enrichment_task = asyncio.create_task(
                 self._finish_living_lens_enrichment(
                     session_id=request.session_id,
                     observation_id=response.observation.id,
@@ -2144,6 +2296,10 @@ class RuntimeContainer:
         for index, anchor in enumerate(anchors):
             if not isinstance(anchor, dict):
                 continue
+            # Skip if TVLC already confidently matched a prototype!
+            if anchor.get("label_source") == "tvlc_prototype_match" and str(anchor.get("open_vocab_label") or "").strip():
+                continue
+                
             gate = description_records[index].get("gate", {}) if index < len(description_records) and isinstance(description_records[index], dict) else {}
             if gate and not bool(gate.get("passes", False)):
                 continue
@@ -2165,39 +2321,36 @@ class RuntimeContainer:
         if not candidates:
             return
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        if max_anchors is not None:
-            candidates = candidates[:max(int(max_anchors), 0)]
-        results = await asyncio.gather(
-            *[
-                enricher.get_open_vocab_label_with_evidence(
+        
+        # Hard limit MLX bounding-box fallback reasoning to max 1 sequential call.
+        # This prevents 55-second blocks and Metal CompletionQueue errors during high motion!
+        allowed = min(max(int(max_anchors), 0) if max_anchors is not None else 1, 1)
+        candidates = candidates[:allowed]
+        
+        for candidate in candidates:
+            _confidence, _patch_count, index, anchor, gate, tvlc_context, connector_type = candidate
+            try:
+                selected_label, selected_evidence = await enricher.get_open_vocab_label_with_evidence(
                     anchor_name=str(anchor.get("template_name") or "object"),
                     depth_stratum=str(anchor.get("depth_stratum") or gate.get("depth_stratum") or "unknown"),
-                    confidence=confidence,
-                    patch_count=patch_count,
+                    confidence=_confidence,
+                    patch_count=_patch_count,
                     tvlc_context=tvlc_context,
                     connector_type=connector_type,
                     image_base64=self._anchor_crop_base64(observation=observation, anchor=anchor),
                 )
-                for confidence, patch_count, _index, anchor, gate, tvlc_context, connector_type in candidates
-            ],
-            return_exceptions=True,
-        )
-        for candidate, label in zip(candidates, results):
-            if isinstance(label, Exception):
-                continue
-            selected_label = label[0] if isinstance(label, tuple) else label
-            selected_evidence = label[1] if isinstance(label, tuple) and isinstance(label[1], dict) else {}
-            _confidence, _patch_count, index, anchor, _gate, _tvlc_context, _connector_type = candidate
-            if isinstance(anchor, dict) and str(selected_label or "").strip():
-                anchor["open_vocab_label"] = str(selected_label).strip()
-                anchor["label_source"] = "open_vocab_tvlc_mlx" if _connector_type == "tvlc_trained" else "deterministic_alias"
-                anchor["label_evidence"] = {
-                    "policy": "strict_evidence_gate",
-                    "connector_type": _connector_type,
-                    "label_gate_passed": bool(selected_evidence.get("semantic_gate_passed", True)),
-                    "anchor_index": index,
-                    **selected_evidence,
-                }
+                if isinstance(anchor, dict) and str(selected_label or "").strip():
+                    anchor["open_vocab_label"] = str(selected_label).strip()
+                    anchor["label_source"] = "open_vocab_tvlc_mlx" if connector_type == "tvlc_trained" else "deterministic_alias"
+                    anchor["label_evidence"] = {
+                        "policy": "strict_evidence_gate",
+                        "connector_type": connector_type,
+                        "label_gate_passed": bool((selected_evidence or {}).get("semantic_gate_passed", True)),
+                        "anchor_index": index,
+                        **(selected_evidence or {}),
+                    }
+            except Exception:
+                pass
 
     async def shutdown(self) -> None:
         if self._jepa_pool is not None:

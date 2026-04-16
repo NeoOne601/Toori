@@ -801,7 +801,7 @@ class ImmersiveJEPAEngine:
             )
             description = self._setu2.describe_region(
                 gate_result,
-                patch_tokens=s_ctx,
+                patch_tokens=patch_tokens,
                 anchor_match=match.to_dict(),
             )
             setu_descriptions.append(

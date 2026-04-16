@@ -448,22 +448,34 @@ class CocoTVLCDataset(Dataset[Any]):
             }
         with Image.open(record.image_path) as image:
             embedding = self._dino.encode(image.convert("RGB"))
-        target = self._teacher.canonicalize(record.caption)
-        target_tokens = _target_tokens(target, self._target_builder)
+        gemma_cache = self._cache_dir / f"{record.annotation_id}_gemma.npz"
+        if gemma_cache.exists():
+            g_data = np.load(str(gemma_cache))
+            target_tokens = g_data["target_tokens"]
+            primary_label = str(g_data["primary_label"])
+            summary = str(g_data["summary"])
+            target_source = str(g_data["target_source"])
+        else:
+            target = self._teacher.canonicalize(record.caption)
+            target_tokens = _target_tokens(target, self._target_builder)
+            primary_label = target.primary_label
+            summary = target.summary
+            target_source = target.source
+
         np.savez(
             str(cache_file),
             patch_tokens=embedding.patch_tokens.astype(np.float32),
             target_tokens=target_tokens.astype(np.float32),
-            primary_label=np.array(target.primary_label),
-            summary=np.array(target.summary),
-            target_source=np.array(target.source),
+            primary_label=np.array(primary_label),
+            summary=np.array(summary),
+            target_source=np.array(target_source),
         )
         return {
             "patch_tokens": torch.from_numpy(embedding.patch_tokens.astype(np.float32)),
             "target_tokens": torch.from_numpy(target_tokens.astype(np.float32)),
-            "primary_label": target.primary_label,
-            "summary": target.summary,
-            "target_source": target.source,
+            "primary_label": primary_label,
+            "summary": summary,
+            "target_source": target_source,
         }
 
 

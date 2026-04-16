@@ -157,13 +157,16 @@ export default function ConsumerMode({
   const graphRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
   const [graphSize, setGraphSize] = useState({ width: 0, height: 0 });
+  const [activeDepths, setActiveDepths] = useState<Set<DepthKey>>(new Set(["foreground", "midground", "background", "unresolved"]));
+  
   const semanticNodes = useMemo(
     () =>
       nodes.filter((node) => {
         const label = humanizeLabel(node.label);
-        return label && !isPlaceholderVisionLabel(label);
+        const lane = depthKey(node.depthStratum);
+        return label && !isPlaceholderVisionLabel(label) && activeDepths.has(lane);
       }),
-    [nodes],
+    [nodes, activeDepths],
   );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(semanticNodes[0]?.id || null);
   const selectedNode = semanticNodes.find((node) => node.id === selectedNodeId) || semanticNodes[0] || null;
@@ -250,7 +253,7 @@ export default function ConsumerMode({
         },
       }));
     return [...nodesData, ...linksData];
-  }, [graphSize.height, graphSize.width, links, semanticNodes]);
+  }, [graphSize.height, graphSize.width, links, semanticNodes, activeDepths]);
 
   useEffect(() => {
     const container = graphRef.current;
@@ -358,11 +361,36 @@ export default function ConsumerMode({
       <div className="consumer-mode__layout">
         <div className="consumer-mode__graph-shell">
           <div className="consumer-mode__graph-hint">Spatial scene graph. Tap a node for details.</div>
-          <div className="consumer-mode__depth-legend" aria-hidden="true">
-            <span>{depthLegendLabel("foreground")}</span>
-            <span>{depthLegendLabel("midground")}</span>
-            <span>{depthLegendLabel("background")}</span>
-            <span>{depthLegendLabel("unresolved")}</span>
+          <div className="consumer-mode__depth-legend">
+            {[
+              { id: "foreground", label: "Foreground" },
+              { id: "midground", label: "Midground" },
+              { id: "background", label: "Background" },
+              { id: "unresolved", label: "Unresolved" },
+            ].map((depth) => {
+              const isActive = activeDepths.has(depth.id as DepthKey);
+              return (
+                <button
+                  key={depth.id}
+                  type="button"
+                  className={isActive ? "consumer-mode__depth-btn title-case" : "consumer-mode__depth-btn title-case is-inactive"}
+                  onClick={() => {
+                    const next = new Set(activeDepths);
+                    if (next.has(depth.id as DepthKey)) {
+                      if (next.size > 1) {
+                        next.delete(depth.id as DepthKey);
+                      }
+                    } else {
+                      next.add(depth.id as DepthKey);
+                    }
+                    setActiveDepths(next);
+                  }}
+                  title={`Toggle ${depth.label} visibility`}
+                >
+                  {depth.label}
+                </button>
+              );
+            })}
           </div>
           <div ref={graphRef} className="consumer-mode__graph" />
           {!semanticNodes.length ? <div className="consumer-mode__empty">{ui.emptyLabel}</div> : null}

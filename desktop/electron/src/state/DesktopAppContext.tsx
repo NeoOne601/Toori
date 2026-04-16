@@ -235,19 +235,37 @@ function resolveConsumerTrackLabel(
 ) {
   const metadata = (track.metadata || {}) as Record<string, unknown>;
   const sceneCandidates = sceneLabelCandidates(sceneState);
+  
+  // SEMANTIC PRIORITIZATION:
+  // 1. Backend-assigned Primary Label (TVLC result)
+  // 2. Atlas/Graph Node Link
+  // 3. Scene Context/Gemma Alert
+  // 4. Trace Metadata
   const candidates = [
     humanizeLabel(String(metadata.primary_object_label || "")),
     humanizeLabel(String(atlasNode?.label || "")),
     sceneCandidates[index] || "",
-    humanizeLabel(String(metadata.caption || "")),
     humanizeLabel(String(metadata.top_label || "")),
+    humanizeLabel(String(metadata.caption || "")),
     humanizeLabel(String((sceneState?.metadata as Record<string, unknown> | undefined)?.primary_object_label || "")),
-    formatEntityBaseLabel(track),
     humanizeLabel(proposalLabel || ""),
-    `Entity ${index + 1}`,
   ].filter((item) => item && !isGenericEntityLabel(item));
+
+  const similarity = (metadata.label_evidence as any)?.conf ?? (track.last_similarity ?? 0);
   const fallbackLabel = formatEntityBaseLabel(track);
-  return candidates[0] || (!isGenericEntityLabel(fallbackLabel) ? fallbackLabel : `Unresolved ${index + 1}`);
+  const picked = candidates[0] || fallbackLabel;
+  
+  if (!picked || isGenericEntityLabel(picked)) {
+      // If we are unresolved, show a numbered entity to allow referencing in prompts
+      return `Entity ${index + 1}`;
+  }
+  
+  // Show confidence score only for meaningful semantic labels
+  const confidence = (similarity > 0 && !isPlaceholderVisionLabel(picked)) 
+    ? ` ${Math.round(similarity * 100)}%` 
+    : "";
+    
+  return `${picked}${confidence}`;
 }
 
 function useDesktopAppValue() {
@@ -926,7 +944,7 @@ function useDesktopAppValue() {
     depthStratum: "unresolved",
   }));
   const consumerNodes = mergeConsumerNodes(
-    sceneGraphNodes.length > 0
+    (sceneGraphNodes.length > 0
       ? sceneGraphNodes
       : consumerNodesFromAnchors.length > 0
       ? consumerNodesFromAnchors
@@ -936,7 +954,18 @@ function useDesktopAppValue() {
       ? consumerNodesFromTracks
       : atlasNodeData.length > 0
         ? atlasNodeData
-        : consumerBoxFallback,
+        : consumerBoxFallback
+    ).filter((node: ConsumerGraphNode) => {
+        // High-fidelity filter for Consumer View: 
+        // 1. Must have a real label (not Unresolved)
+        // 2. OR Must have confidence > 0.6 and not be a tiny box
+        const isUnresolved = String(node.label || "").startsWith("Unresolved");
+        const hasSemanticName = !isUnresolved;
+        const confidence = (node as any).confidence ?? 0.7;
+        const isHighConfidence = confidence > 0.62;
+        
+        return hasSemanticName || isHighConfidence;
+    })
   );
   const consumerLeadLabel = consumerNodes[0]?.label || sceneLabelCandidates(consumerSceneState)[0] || "it";
   const consumerTrackMessageSource = consumerNodes.length

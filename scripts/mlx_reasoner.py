@@ -178,5 +178,14 @@ def main():
             if tmp and os.path.exists(tmp):
                 try: os.unlink(tmp)
                 except OSError: pass
+            
+            # Explicitly clear MLX Metal buffers to prevent SIGABRT on long batches
+            try:
+                import mlx.core as mx
+                import gc
+                gc.collect()
+                mx.metal.clear_cache()
+            except Exception:
+                pass
 
 if __name__ == "__main__": main()

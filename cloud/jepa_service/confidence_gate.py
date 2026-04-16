@@ -80,8 +80,6 @@ class EpistemicConfidenceGate:
             failures.append(f"anchor_confidence={anchor_match.confidence:.3f} < τ={self._tau_anchor}")
 
         variance = float(np.var(energy_history[-8:])) if len(energy_history) >= 3 else 1.0
-        if variance > self._tau_variance:
-            failures.append(f"energy_variance={variance:.3f} > τ={self._tau_variance}")
 
         passes = len(failures) == 0
         consistency = float(
@@ -90,8 +88,6 @@ class EpistemicConfidenceGate:
             + 0.25 * max(0.0, 1.0 - (variance / max(self._tau_variance, 1e-6)))
         )
         consistency = round(min(consistency, 1.0), 4)
-        uncertainty_map = self._build_uncertainty_map(anchor_match, depth_strata)
-        hallucination_risk = round(1.0 - consistency, 4)
 
         # Sprint 6: Information-theoretic uncertainty from world model
         epistemic = 0.0
@@ -99,13 +95,19 @@ class EpistemicConfidenceGate:
         if prediction_error is not None:
             # Epistemic: model's predictive uncertainty (how wrong was prediction)
             epistemic = round(min(float(prediction_error), 1.0), 4)
-            # High prediction error lowers gate confidence
-            if prediction_error > 0.5:
-                failures.append(f"prediction_error={prediction_error:.3f} > 0.5")
-                passes = len(failures) == 0
+
         if surprise_score is not None:
             # Aleatoric: inherent scene variability (normalized surprise)
             aleatoric = round(min(float(surprise_score), 1.0), 4)
+
+        # High variance or prediction errors now penalize score rather than hard-failing
+        if variance > self._tau_variance:
+            consistency = max(0.0, consistency - 0.2)
+        if epistemic > 0.5:
+            consistency = max(0.0, consistency - 0.3)
+            
+        uncertainty_map = self._build_uncertainty_map(anchor_match, depth_strata)
+        hallucination_risk = round(1.0 - consistency, 4)
 
         result = GateResult(
             passes=passes,
