@@ -10,7 +10,8 @@ import re
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter, time as epoch_time
+import time
+from time import perf_counter
 from typing import Any, Optional
 
 import numpy as np
@@ -825,18 +826,53 @@ class RuntimeContainer:
                 return normalized
         return None
 
-    def _is_placeholder_vision_label(self, label: Any) -> bool:
-        """ Check if a label is a generic system-generated placeholder (e.g. 'localized object 1'). """
-        if not label or not isinstance(label, str):
-            return True
-        norm = label.lower().strip()
-        placeholders = ["localized object", "foreground", "midground", "background", "unresolved", "entity", "grounded_entity"]
+    def _is_placeholder_vision_label(self, value: str | None) -> bool:
+        if not value: return True
+        norm = str(value).lower().replace("_", " ").strip()
+        placeholders = [
+            "localized object", "foreground", "midground", "background", 
+            "unresolved", "entity", "grounded_entity", "identifying"
+        ]
         return any(p in norm for p in placeholders)
 
+    async def _async_apply_zero_shot_labels(
+        self,
+        tracks: list[EntityTrack],
+        patch_tokens: np.ndarray,
+        tvlc_engine: Any
+    ) -> None:
+        """Run Zero-Shot Semantic Consensus in the background without blocking the UI/Camera heartbeat"""
+        def _score_all():
+            updated = False
+            for track in tracks:
+                if str(track.label or "").strip() and not self._is_placeholder_vision_label(track.label):
+                    continue
+                box = track.metadata.get("bbox_pixels") if isinstance(track.metadata, dict) else None
+                if box:
+                    indices = self._get_patch_indices_for_box(box)
+                    if indices:
+                        name, conf = tvlc_engine.score_anchor(patch_tokens, indices)
+                        # Require 0.35 confidence to override the UI placeholder with a real noun
+                        if name and conf >= 0.35:
+                            track.label = name
+                            track.last_similarity = float(conf)
+                            if not isinstance(track.metadata, dict):
+                                track.metadata = {}
+                            track.metadata["primary_object_label"] = name
+                            track.metadata["label_source"] = "latent_manifold_gemma4"
+                            track.metadata["label_evidence"] = {"model": "tvlc_v2_consensus", "conf": conf}
+                            updated = True
+            return updated
+
+        # Yield to event loop, execute CPU-bound matrix dot products in thread
+        updated = await asyncio.to_thread(_score_all)
+        if updated:
+            # Commit the newly resolved open-vocab labels to the system database
+            self.store.save_entity_tracks(tracks)
+
     def _apply_fallback_anchor_labels(self, tick_dict: dict[str, Any], *, patch_tokens: np.ndarray | None = None) -> None:
-        """ Enrich both anchors AND entity tracks with semantic labels using TVLC Consensus. """
+        """ Enrich anchors with semantic labels using TVLC Consensus. """
         anchors = tick_dict.get("anchor_matches")
-        tracks = tick_dict.get("entity_tracks")
         descriptions = tick_dict.get("setu_descriptions")
         
         if not isinstance(anchors, list) or not isinstance(descriptions, list):
@@ -848,7 +884,8 @@ class RuntimeContainer:
             from cloud.perception.tvlc_connector import TVLCConnector
             if TVLCConnector.is_available():
                 if not hasattr(self, "_mandatory_tvlc_connector"):
-                    self._mandatory_tvlc_connector = TVLCConnector()
+                    from cloud.perception.tvlc_connector import TVLCConnector
+                    self._mandatory_tvlc_connector = TVLCConnector(TVLCConnector.default_weights_path())
                 tvlc_engine = self._mandatory_tvlc_connector
         except Exception:
             pass
@@ -863,26 +900,6 @@ class RuntimeContainer:
                 self._enrich_node_with_label(anchor, label, score)
             else:
                 self._apply_deterministic_fallback(anchor)
-
-        # 2. UNIVERSAL LABELING (The Video Rectangles - Proposal Boxes)
-        if isinstance(tracks, list) and patch_tokens is not None and tvlc_engine:
-            for track in tracks:
-                if not isinstance(track, dict): continue
-                # Skip if already uniquely identified
-                if str(track.get("label") or "").strip() and not self._is_placeholder_vision_label(track.get("label")):
-                    continue
-                
-                box = track.get("metadata", {}).get("bbox_pixels")
-                if box:
-                    track_indices = self._get_patch_indices_for_box(box)
-                    if track_indices:
-                        name, conf = tvlc_engine.score_anchor(patch_tokens, track_indices)
-                        if name and conf >= 0.42:
-                            track["label"] = name
-                            track["last_similarity"] = float(conf)
-                            if "metadata" not in track: track["metadata"] = {}
-                            track["metadata"]["primary_object_label"] = name
-                            track["metadata"]["label_evidence"] = {"model": "tvlc_v2_4k", "conf": conf}
 
     def _perform_semantic_pass(self, engine, node, tokens, descs, idx):
         label = self._extract_tvlc_prototype_label(descs, idx)
@@ -2247,6 +2264,27 @@ class RuntimeContainer:
                     base_metadata=dict(response.observation.metadata or {}) if isinstance(response.observation.metadata, dict) else None,
                 )
             )
+
+        # 6. ENRICHMENT: Universal Semantic Labeling for all Tracked Entities
+        # We spawn this as an asyncio background task that mutates the in-memory Pydantic
+        # tracks exactly so we do not block the 30 FPS camera heartbeat tick response.
+        try:
+            if hasattr(self, "tvlc") and self.tvlc is not None and jepa_tick.patch_tokens is not None:
+                # 6(a). Spawn UI Track labeling directly on the persistent Pydantic models
+                asyncio.create_task(
+                    self._async_apply_zero_shot_labels(
+                        tracks=immersive_tracks,
+                        patch_tokens=jepa_tick.patch_tokens,
+                        tvlc_engine=self.tvlc
+                    )
+                )
+                
+                # 6(b). Still enrich the anchors array (which the MLX agent loops over later)
+                tick_payload = jepa_tick.to_payload().model_dump(mode="json")
+                self._apply_fallback_anchor_labels(tick_payload, patch_tokens=jepa_tick.patch_tokens)
+        except Exception as e:
+            # Defensive: Log and continue so a labeling failure doesn't crash the heartbeat
+            print(f"[warning] Semantic labeling failed for tick: {e}")
 
         return LivingLensTickResponse(
             **response.model_dump(),

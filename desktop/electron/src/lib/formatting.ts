@@ -63,12 +63,21 @@ export function formatEntityBaseLabel(entity: {
   label?: string | null;
   metadata?: Record<string, unknown> | null;
 }): string {
+  const metadata = entity.metadata ?? {};
+  
+  // High-Priority: Latent Manifold Projection (Elite Zero-Shot)
+  const primary = humanizeLabel(String(metadata.primary_object_label || ""));
+  if (primary && metadata.label_source === "latent_manifold_gemma4") {
+    return primary;
+  }
+
   const candidates = [
     humanizeLabel(entity.label),
-    metadataValue(entity.metadata ?? undefined, "caption"),
-    metadataValue(entity.metadata ?? undefined, "top_label"),
+    metadataValue(metadata as Record<string, unknown>, "caption"),
+    metadataValue(metadata as Record<string, unknown>, "top_label"),
   ].filter((item) => item && !isPlaceholderVisionLabel(item));
-  return candidates[0] || "localized object";
+  
+  return candidates[0] || primary || "localized object";
 }
 
 export function formatRelativeTime(value?: string | null): string {

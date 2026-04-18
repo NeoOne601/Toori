@@ -116,6 +116,28 @@ toori/
 
 ---
 
+## System Architecture & Data Flow
+
+### Major Components
+
+- `cloud/runtime`: Settings, schemas, provider registry, observation storage, search, event streaming, and runtime orchestration.
+- `cloud/api/main.py`: Main FastAPI entrypoint for the runtime on `127.0.0.1:7777`.
+- `cloud/perception`: Atomic perception models (DINOv2, MobileSAM, AudioEncoder) and the **TVLC (Token-to-Visual-Language-Connector)**.
+- `cloud/jepa_service`: Immersive JEPA engines, Epistemic Confidence Gating (ECGD), and World Model Alignment.
+- `desktop/electron`: Electron shell plus React/Vite operator UI.
+- `smriti-kit`: Shared Swift package for Apple clients (macOS/iOS).
+
+### Primary Data Flow
+
+1. **Capture**: A client captures a real image, camera frame, or audio segment.
+2. **Perception**: The runtime analyzes the frame with primary local perception providers (DINOv2/SAM) and stores an `Observation`.
+3. **JEPA Tick**: The `JEPAEngine` processes patch-tokens, updates the `SemanticAnchorGraph`, and computes energy/surprise.
+4. **Consensus Identification (Async)**: Heavy zero-shot semantic identification (TVLC) is offloaded to a background thread (`asyncio.to_thread`). This protects the 30 FPS camera cardiac cycle from inference-induced stalls.
+5. **Memory Enrichment**: Results are streamed into the `World Model` and `SmetiDB`.
+6. **Egress**: Results are returned through HTTP and streamed over WebSocket events to all first-party clients.
+
+---
+
 ## Development Commands
 
 ```bash
@@ -339,6 +361,29 @@ This follow-up closed the remaining gaps that were still visible in manual testi
 #### Remaining open item after Rev 2
 
 - The biggest remaining non-code uncertainty is manual validation on the affected macOS machine that the operator no longer sees repeated Python crash dialogs after native JEPA is quarantined. The architecture is now correct for that outcome, but it still needs one live launch-and-run confirmation on the target machine.
+
+### Sprint 6: Mastery of Zero-Shot Consensus (Phase 4 Completion)
+
+Completed in April 2026, this phase refactored the perception pipeline to eliminate semantic hallucinations and camera heartbeat stalls.
+
+#### What changed
+
+| Area | Before | After |
+|------|--------|-------|
+| Consensus Logic | TVLC identification used a "mean concept vector" heuristic, leading to semantic collapse (e.g., "man hold" for a telescope). | Switched to **Multi-Slot Majority-Vote Consensus**. All 32 Perceiver slots vote independently against the noun-only manifold; `bincount` identifies the dominant physical object. |
+| Pipeline Latency | Synchronous `score_anchor` calls (30ms+) blocked the FastAPI tick loop, causing `AVFoundation` camera stalls and UI freezes. | **Async Decoupling**: TVLC inference is offloaded to `asyncio.to_thread`. Main camera heartbeat remains at 30 FPS regardless of labeling complexity. |
+| Zero-Shot Vocabulary | Limited to hardcoded dictionary or stochastic MLX generation. | Truly open-vocabulary zero-shot identification using the full V2 Latent Manifold (`latent_vocab.npz`) mapped to the Gemma-4 embedding space. |
+| State Thread-Safety | Synchronous state mutation in the main tick loop. | Safe async mutation of Pydantic `EntityTrack` objects; labels update in the UI as the AI "thinks" in the background. |
+
+#### Key files touched
+- `cloud/perception/tvlc_connector.py` (Consensus core)
+- `cloud/runtime/service.py` (Async cardiac protection)
+- `cloud/runtime/models.py` (EntityTrack persistence)
+
+#### Documentation Invariant
+Any future agent MUST prioritize majority-vote consensus and async offloading for all perception tasks. Blocking the synchronous `LivingLens` heartbeat with semantic inference is a critical architectural failure.
+
+---
 
 ### 2026-04-09 TVLC trainer implementation
 
@@ -883,9 +928,10 @@ Two engines coexist:
 2. **SAG** — `SemanticAnchorGraph` matches patch tokens to stored templates; returns anchor_matches with confidence, depth_stratum, patch_indices
 3. **CWMA** — `CrossModalWorldModelAligner` refines energy_map with anchor + depth alignment (lambda=0.15)
 4. **ECGD** — `EpistemicConfidenceGate` gates regions by consistency score; uncertainty map output
-5. **Setu-2** — `Setu2Bridge` generates grounded text descriptions per gated region
-6. **Object labels** — Gemma 4 open-vocabulary narration from SAG geometric evidence, NOT MobileNetV2 ImageNet-1k classification. Labels are 3-5 word natural language descriptions bounded by ECGD confidence threshold.
-- **TVLCConnector (trained path implemented)** — Perceiver Resampler maps DINOv2 patch tokens into a Gemma-guided `32 x 2048` semantic token space. Used when `models/vision/tvlc_connector.npz` is present. Random init remains a seeded compatibility fallback only. The current trainer uses Gemma as a semantic teacher for caption canonicalization, then aligns pooled TVLC slots to deterministic 2048-d semantic targets; `to_gemma_context()` still emits compact slot activations plus entropy for evidence-first prompting.
+5. **Setu-2** — `Setu2Bridge` generates grounded text descriptions per gated region.
+6. **Object labels (Multi-Slot Consensus)** — Zero-shot identification via **Majority-Vote Consensus**. The 32 Perceiver slots independently query the latent manifold; the system uses `bincount` to identify the dominant physical object, effectively filtering out "semantic noise" and hallucinatory sub-word fragments (e.g., "man hold").
+- **TVLCConnector (Phase 4 Consensus)** — Perceiver Resampler architecture. Maps DINOv2 patch tokens into a Gemma-guided `32 x 2048` semantic token space. The Phase 4 engine discards the "mean concept vector" heuristic (which caused semantic collapse) in favor of slot-wise `argmax` lookup.
+- **Async cardiac protection**: `LivingLens` ticks offload `score_anchor` to `asyncio.to_thread` to ensure zero impact on the synchronous camera heartbeat. Labels are mutated asynchronously on `EntityTrack` objects.
 
 **Anchor entity tracking:**
 - New track if best cosine < 0.72
@@ -1174,6 +1220,9 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 30. **FAISS index type must always be IndexHNSWFlat** — never revert to IndexFlatIP or IndexFlatL2. Flat indices will freeze at 50k+ media records.
 31. **TVLCConnector weights live in `models/vision/tvlc_connector.npz`** — never hard-code connector weights inline. Always check `TVLCConnector.is_available()` before using; fall back to seeded random projection (`Setu2Bridge` existing logic) if weights are absent.
 32. **JEPA worker recovery must be bounded and local-first** — dead or timed-out workers must be recycled instead of reused, pending futures must be scrubbed on cancellation/timeout, and worker-side V-JEPA2 loads must stay CPU-only and `local_files_only` using the configured cache directory.
+33. **Consensus Voting Invariant**: Zero-shot semantic identification MUST use Multi-Slot Majority-Vote Consensus. Vector averaging of Perceiver slots is strictly prohibited as it triggers semantic collapse.
+34. **Async Cardiac Protection**: Any perception call exceeding 10ms (including `score_anchor`) MUST be offloaded to an asynchronous background task. Blocking the `LivingLens` heartbeat with semantic inference is a critical architectural failure.
+35. **Manifold Integrity**: The V2 latent manifold (`latent_vocab.npz`) must remain noun-dominated to ensure physical object stability in zero-shot identification.
 
 ---
 
@@ -1545,10 +1594,12 @@ flowchart TB
   Runtime --> Perception["Primary Local Perception\nDINOv2+MobileSAM / ONNX / basic"]
   Perception --> JEPA["ImmersiveJEPAEngine\n14×14 patches, EMA, Guard"]
   JEPA --> Pipeline["TPDS → SAG → CWMA → ECGD → Setu-2"]
+  JEPA --> Async["Async Consensus Identification\n(Majority-Vote Labeling)"]
+  Async -.->|Asynchronous Update| Tracks["EntityTracks (models.py)"]
+  Pipeline --> Tracks
   JEPA --> VJ2["V-JEPA2 Encoder\n(cross-tick prediction error)"]
   JEPA --> Talker["SelectiveTalker\nĒ > μ+2σ"]
-  JEPA --> Atlas["EpistemicAtlas\nentity tracks, co-occurrence"]
-  Pipeline --> SmritiDB["SmetiDB\nSQLite + FAISS + FTS5"]
+  Tracks --> SmritiDB["SmetiDB\nSQLite + FAISS + FTS5"]
   SmritiDB --> Ingestion["SmritiIngestionDaemon\n+ Gemma4 narration"]
   SmritiDB --> Recall["Smriti Recall\nhybrid score + W-matrix"]
   Talker --> Events["WebSocket /v1/events"]

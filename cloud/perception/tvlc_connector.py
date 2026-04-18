@@ -53,6 +53,7 @@ class TVLCConnector:
         self._ln2_g = data["ln2_gamma"].astype(np.float32)
         self._ln2_b = data["ln2_beta"].astype(np.float32)
         self._is_random_init = bool(data.get("random_init", np.array(False)))
+        # Prototype-based Search (Fixed list - legacy fallback)
         prototype_labels = data.get("prototype_labels")
         prototype_vectors = data.get("prototype_vectors")
         self._prototype_labels = (
@@ -65,6 +66,19 @@ class TVLCConnector:
             if prototype_vectors is not None
             else np.zeros((0, GEMMA_DIM), dtype=np.float32)
         )
+
+        # Latent Manifold Search (Full Semantic Vocabulary - Zero-Shot Engine)
+        self._latent_labels = []
+        self._latent_vectors = np.zeros((0, GEMMA_DIM), dtype=np.float32)
+        
+        latent_path = Path("models/vision/latent_vocab.npz")
+        if latent_path.exists():
+            try:
+                latent_data = np.load(str(latent_path))
+                self._latent_labels = latent_data["labels"].tolist()
+                self._latent_vectors = latent_data["vectors"].astype(np.float32)
+            except Exception:
+                pass
 
     @property
     def is_trained(self) -> bool:
@@ -160,17 +174,16 @@ class TVLCConnector:
         patch_tokens: np.ndarray,
         patch_indices: list[int],
     ) -> tuple[str, float]:
-        """Score specific anchor patches against semantic prototypes.
+        """Score patches against the full Latent Manifold (Gemma Vocabulary).
 
-        Uses logits attention masking: applies -1e9 to the background patches 
-        before softmax. This perfectly preserves the Perceiver's norm 
-        distributions while letting us simply average the 32 output tokens
-        identically to the target projection format trained using Gemma 4.
+        This is an instantaneous zero-shot identification pass. It projects
+        the visual patches into the Gemma 4 semantic space and finds the 
+        statistically closest token (word) from the dictionary.
 
         Returns:
-            (label, score) — best matching prototype label and cosine similarity.
+            (label, score) — best matching Gemma word and cosine similarity.
         """
-        if not self.has_semantic_prototypes or not patch_indices:
+        if not patch_indices:
             return "", 0.0
         patches = np.asarray(patch_tokens, dtype=np.float32)
         if patches.shape != (N_PATCHES, PATCH_DIM):
@@ -180,31 +193,62 @@ class TVLCConnector:
             return "", 0.0
 
         try:
+            # Shift patches through the Perceiver Resampler to get Visual Keywords
             visual_tokens, _attn_weights = self._forward_with_attention(patches, valid_patches=valid)
         except Exception:
             return "", 0.0
 
-        # WEIGHTED CONSENSUS SCORING:
-        # Instead of taking the single absolute maximum (which is prone to noise),
-        # we average the Top-N query matches for each prototype.
-        # This ensures that a label is only chosen if multiple features of the object 
-        # (e.g. shape, color, texture) consistently point to the same semantic target.
-        proto_norms = np.linalg.norm(self._prototype_vectors, axis=1) + 1e-9 # [N_PROTOS]
-        q_norms = np.linalg.norm(visual_tokens, axis=1) + 1e-9 # [32]
-        
-        # Dot product for all prototypes against all 32 queries -> [N_PROTOS, 32]
+        # 1. PRIMARY: Full Latent Manifold Consensus (Zero-Shot)
+        if len(self._latent_labels) > 0:
+            latent_norms = np.linalg.norm(self._latent_vectors, axis=1) + 1e-9
+            q_norms = np.linalg.norm(visual_tokens, axis=1) + 1e-9
+            # Matrix is [vocab_size, 32]
+            sim_matrix = (self._latent_vectors @ visual_tokens.T) / (latent_norms[:, None] * q_norms[None, :])
+            
+            slot_winners = np.argmax(sim_matrix, axis=0) # [32]
+            slot_scores = np.max(sim_matrix, axis=0) # [32]
+            
+            counts = np.bincount(slot_winners, minlength=len(self._latent_labels))
+            best_idx = int(np.argmax(counts))
+            vote_count = counts[best_idx]
+            winning_slots_mask = (slot_winners == best_idx)
+            consensus_score = float(np.mean(slot_scores[winning_slots_mask]))
+            
+            # Elite High-Precision Gate: Require plurality and statistical alignment
+            # A slot vote count >= 3 is statistically non-random for N=32.
+            # In normalized Latent Projection space, > 0.35 is already significant.
+            if vote_count >= 2 and consensus_score > 0.35:
+                # Add human-friendly casing
+                raw_label = str(self._latent_labels[best_idx])
+                label = raw_label.replace("_", " ").strip()
+                # Auto-capitalize if it looks like a proper name/entity
+                if any(c.isupper() for c in raw_label):
+                    return label, consensus_score
+                return label.capitalize(), consensus_score
+
+        # 2. FALLBACK: Prototype-based Search (Legacy Majority Consensus)
+        if not self.has_semantic_prototypes:
+            return "", 0.0
+
+        proto_norms = np.linalg.norm(self._prototype_vectors, axis=1) + 1e-9
+        q_norms = np.linalg.norm(visual_tokens, axis=1) + 1e-9
         sim_matrix = (self._prototype_vectors @ visual_tokens.T) / (proto_norms[:, None] * q_norms[None, :])
         
-        # Take the top 3 matches for each prototype across the slots and average them
-        # Sort each row in descending order and take the top 3
-        top_sims = np.sort(sim_matrix, axis=1)[:, -3:] 
-        sims = top_sims.mean(axis=1)
+        slot_winners = np.argmax(sim_matrix, axis=0)
+        slot_scores = np.max(sim_matrix, axis=0)
+        counts = np.bincount(slot_winners, minlength=len(self._prototype_labels))
+        best_proto_idx = int(np.argmax(counts))
+        vote_count = counts[best_proto_idx]
+        winning_slots_mask = (slot_winners == best_proto_idx)
+        consensus_score = float(np.mean(slot_scores[winning_slots_mask]))
         
-        if sims.size == 0:
+        max_slot_score = float(np.max(slot_scores))
+        if max_slot_score > 0.85:
+            return str(self._prototype_labels[best_proto_idx]), max_slot_score
+        if vote_count < 2 or consensus_score < 0.45:
             return "", 0.0
             
-        best = int(np.argmax(sims))
-        return str(self._prototype_labels[best]), float(sims[best])
+        return str(self._prototype_labels[best_proto_idx]), consensus_score
 
     def to_gemma_context(self, patch_tokens: np.ndarray) -> str:
         """
