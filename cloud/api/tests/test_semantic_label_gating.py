@@ -4,10 +4,13 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import numpy as np
 from PIL import Image
+from fastapi.testclient import TestClient
 
 from cloud.runtime.app import create_app
-from cloud.runtime.models import BoundingBox, Observation
+from cloud.runtime.models import BoundingBox, EntityTrack, Observation
+from cloud.runtime.service import RuntimeContainer
 from cloud.runtime.smriti_gemma4_enricher import SmetiGemma4Enricher
 from cloud.runtime.world_model import build_object_summary, extract_entity_labels
 
@@ -167,3 +170,103 @@ def test_semantic_extractor_can_reject_gemma_label_against_tvlc_hint(monkeypatch
     assert label == "telescope"
     assert evidence["semantic_gate_passed"] is False
     assert evidence["reason"] == "semantic_mismatch_to_tvlc_hint"
+
+
+def _make_track(*, track_id: str = "trk_1", session_id: str = "demo") -> EntityTrack:
+    now = datetime(2026, 4, 18, tzinfo=timezone.utc)
+    return EntityTrack(
+        id=track_id,
+        session_id=session_id,
+        label="entity-1",
+        status="visible",
+        first_seen_at=now,
+        last_seen_at=now,
+        first_observation_id="obs-1",
+        last_observation_id="obs-1",
+        observations=["obs-1"],
+        visibility_streak=1,
+        occlusion_count=0,
+        reidentification_count=0,
+        persistence_confidence=0.8,
+        continuity_score=0.8,
+        last_similarity=0.8,
+        prototype_embedding=[0.0] * 384,
+        status_history=["visible"],
+        metadata={},
+    )
+
+
+def test_slot_entropy_reports_spread_votes_as_high_entropy():
+    from cloud.perception.tvlc_connector import _slot_entropy
+
+    spread = np.array([4, 4, 4, 4, 4, 4, 4, 4], dtype=np.int64)
+    concentrated = np.array([12, 0, 0, 0], dtype=np.int64)
+
+    assert _slot_entropy(spread, 32) > 0.9
+    assert _slot_entropy(concentrated, 12) == 0.0
+
+
+def test_semantic_pass_rejects_incoherent_compound_labels(tmp_path):
+    runtime = RuntimeContainer(data_dir=str(tmp_path))
+    label, score = runtime._perform_semantic_pass(
+        SimpleNamespace(score_anchor=lambda tokens, indices: ("woman man", 0.93)),
+        {"patch_indices": [1, 2], "template_name": "person_torso", "depth_stratum": "foreground"},
+        np.zeros((196, 384), dtype=np.float32),
+        [],
+        0,
+    )
+
+    assert label is None
+    assert score == 0.0
+
+
+def test_semantic_pass_vetoes_person_label_for_non_person_sag_template(tmp_path):
+    runtime = RuntimeContainer(data_dir=str(tmp_path))
+    label, score = runtime._perform_semantic_pass(
+        SimpleNamespace(score_anchor=lambda tokens, indices: ("man", 0.93)),
+        {"patch_indices": [10, 11], "template_name": "cylindrical_object", "depth_stratum": "background"},
+        np.zeros((196, 384), dtype=np.float32),
+        [],
+        0,
+    )
+
+    assert label is None
+    assert score == 0.0
+
+
+def test_fallback_anchor_label_covers_new_sag_aliases(tmp_path):
+    runtime = RuntimeContainer(data_dir=str(tmp_path))
+
+    assert runtime._fallback_anchor_label("cylindrical_object", "foreground") == "object"
+    assert runtime._fallback_anchor_label("cylindrical_object", "midground") == "cylindrical object"
+    assert runtime._fallback_anchor_label("screen_display", "background") == "screen"
+    assert runtime._fallback_anchor_label("desk_surface", "background") == "surface"
+    assert runtime._fallback_anchor_label("background_plane", "background") == "background"
+    assert runtime._fallback_anchor_label("chair_seated", "midground") == "chair"
+    assert runtime._fallback_anchor_label("hand_region", "foreground") == "hand"
+    assert runtime._fallback_anchor_label("person_torso", "foreground") == "person"
+    assert runtime._fallback_anchor_label("unknown", "midground") == "object"
+
+
+def test_confirm_entity_label_route_persists_confirmed_label(tmp_path):
+    app = create_app(data_dir=str(tmp_path))
+    runtime = app.state.runtime
+    runtime.store.save_entity_tracks([_make_track(track_id="trk_demo")])
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/entity-tracks/trk_demo/label",
+        params={"session_id": "demo"},
+        json={"label": "telescope", "confirmed": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "updated": True,
+        "track_id": "trk_demo",
+        "label": "telescope",
+    }
+
+    tracks = runtime.store.list_entity_tracks(session_id="demo", limit=8)
+    assert tracks[0].label == "telescope"
+    assert tracks[0].metadata["confirmed_label"] == "telescope"

@@ -1,3 +1,4 @@
+import subprocess
 import sys
 
 import numpy as np
@@ -43,4 +44,13 @@ def test_culturally_agnostic_entity_tick_does_not_require_labels():
 
 
 def test_torch_not_imported_by_engine_module_import():
-    assert "torch" not in sys.modules
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import cloud.jepa_service.engine; assert 'torch' not in sys.modules",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr.strip()

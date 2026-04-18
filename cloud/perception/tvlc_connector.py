@@ -24,10 +24,31 @@ PATCH_DIM = 384
 GEMMA_DIM = 2048
 N_PATCHES = 196
 
+# Consensus gating thresholds for score_anchor()
+ENTROPY_REJECT_THRESHOLD: float = 0.72
+PLURALITY_MIN_FRACTION: float = 0.25
+CONSENSUS_SCORE_MIN: float = 0.42
+
 
 N_HEADS = 8
 HEAD_DIM = GEMMA_DIM // N_HEADS
 SEED = 20260327
+
+
+def _slot_entropy(counts: np.ndarray, n_slots: int) -> float:
+    """Normalized Shannon entropy of the slot vote distribution.
+
+    Returns a value in [0, 1]. A value near 1.0 means votes are
+    spread uniformly across many vocabulary tokens — i.e., the
+    Perceiver slots genuinely disagree and no label is trustworthy.
+    """
+    probs = counts.astype(np.float64) / max(n_slots, 1)
+    probs = probs[probs > 0.0]
+    if probs.size == 0:
+        return 1.0
+    entropy = float(-np.sum(probs * np.log2(probs)))
+    max_entropy = float(np.log2(probs.size)) if probs.size > 1 else 1.0
+    return entropy / max_entropy if max_entropy > 0.0 else 0.0
 
 
 class TVLCConnector:
@@ -77,6 +98,25 @@ class TVLCConnector:
                 latent_data = np.load(str(latent_path))
                 self._latent_labels = latent_data["labels"].tolist()
                 self._latent_vectors = latent_data["vectors"].astype(np.float32)
+
+                # Reduce the gravitational pull of humanoid tokens.
+                # COCO training data is ~40% person images; these tokens cluster
+                # tightly in Gemma 4 embedding space and attract non-person geometry.
+                _HUMANOID_PENALTY_TOKENS: frozenset[str] = frozenset({
+                    "man", "woman", "boy", "girl", "person", "people",
+                    "human", "figure", "child", "adult", "male", "female",
+                    "crowd",
+                })
+                _HUMANOID_PENALTY_FACTOR: float = 0.78
+
+                for _i, _word in enumerate(self._latent_labels):
+                    if str(_word).lower().strip() in _HUMANOID_PENALTY_TOKENS:
+                        self._latent_vectors[_i] *= _HUMANOID_PENALTY_FACTOR
+
+                # Re-normalize to unit vectors after applying the penalty.
+                _norms = np.linalg.norm(self._latent_vectors, axis=1, keepdims=True)
+                _norms = np.where(_norms < 1e-8, 1.0, _norms)
+                self._latent_vectors = self._latent_vectors / _norms
             except Exception:
                 pass
 
@@ -192,6 +232,12 @@ class TVLCConnector:
         if not valid:
             return "", 0.0
 
+        # Fast path: if neither latent vocab nor prototypes are loaded,
+        # a full Perceiver forward pass cannot produce a meaningful label.
+        # Return immediately to avoid wasting CPU time.
+        if len(self._latent_labels) == 0 and not self.has_semantic_prototypes:
+            return "", 0.0
+
         try:
             # Shift patches through the Perceiver Resampler to get Visual Keywords
             visual_tokens, _attn_weights = self._forward_with_attention(patches, valid_patches=valid)
@@ -210,14 +256,18 @@ class TVLCConnector:
             
             counts = np.bincount(slot_winners, minlength=len(self._latent_labels))
             best_idx = int(np.argmax(counts))
-            vote_count = counts[best_idx]
             winning_slots_mask = (slot_winners == best_idx)
             consensus_score = float(np.mean(slot_scores[winning_slots_mask]))
-            
-            # Elite High-Precision Gate: Require plurality and statistical alignment
-            # A slot vote count >= 3 is statistically non-random for N=32.
-            # In normalized Latent Projection space, > 0.35 is already significant.
-            if vote_count >= 2 and consensus_score > 0.35:
+
+            _n_slots = int(visual_tokens.shape[0])  # N_QUERIES = 32
+            _entropy = _slot_entropy(counts, _n_slots)
+            _plurality_fraction = float(counts[best_idx]) / max(_n_slots, 1)
+
+            if (
+                _entropy <= ENTROPY_REJECT_THRESHOLD
+                and _plurality_fraction >= PLURALITY_MIN_FRACTION
+                and consensus_score > CONSENSUS_SCORE_MIN
+            ):
                 # Add human-friendly casing
                 raw_label = str(self._latent_labels[best_idx])
                 label = raw_label.replace("_", " ").strip()

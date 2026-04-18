@@ -311,6 +311,7 @@ class _TrackState:
     ghost_embedding: Optional[np.ndarray] = None
     cosine_history: deque[float] = field(default_factory=lambda: deque(maxlen=60))
     just_created: bool = True
+    confirmed_label: str = ""
 
 
 class ImmersiveJEPAEngine:
@@ -997,6 +998,8 @@ class ImmersiveJEPAEngine:
                 state.reidentification_count += 1
             else:
                 state.status = "visible"
+            if state.confirmed_label:
+                state.label = state.confirmed_label
             state.status_history.append(state.status)
             state.cosine_history.append(best_similarity)
             matched_tracks.add(best_track_id)
@@ -1032,7 +1035,7 @@ class ImmersiveJEPAEngine:
                 EntityTrack(
                     id=state.id,
                     session_id=session_id,
-                    label=state.label,
+                    label=state.confirmed_label or state.label,
                     status=state.status,  # type: ignore[arg-type]
                     first_seen_at=state.first_seen_at,
                     last_seen_at=state.last_seen_at,
@@ -1055,6 +1058,7 @@ class ImmersiveJEPAEngine:
                         "duration_ms": duration_ms,
                         "cosine_history": [float(item) for item in state.cosine_history],
                         "just_created": state.just_created,
+                        **({"confirmed_label": state.confirmed_label} if state.confirmed_label else {}),
                     },
                 )
             )

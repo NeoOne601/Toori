@@ -440,6 +440,11 @@ class EntityTrack(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EntityLabelCorrectionRequest(BaseModel):
+    label: str
+    confirmed: bool = True
+
+
 class SceneState(BaseModel):
     id: str
     session_id: str

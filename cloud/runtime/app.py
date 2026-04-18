@@ -27,6 +27,7 @@ from .models import (
     AudioQueryRequest,
     AudioQueryResponse,
     ChallengeEvaluateRequest,
+    EntityLabelCorrectionRequest,
     JEPAForecastRequest,
     LivingLensTickRequest,
     PlanningRolloutRequest,
@@ -395,6 +396,22 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         observation_limit: int = Query(default=12, ge=1, le=48),
     ):
         return app.state.runtime.get_runtime_snapshot(session_id, observation_limit=observation_limit)
+
+    @app.post(
+        "/v1/entity-tracks/{track_id}/label",
+        dependencies=[Depends(require_auth), Depends(rate_limit_dependency("entity_tracks.label"))],
+    )
+    async def confirm_entity_label(
+        track_id: str,
+        request: EntityLabelCorrectionRequest,
+        session_id: str = "default",
+    ) -> dict:
+        success = app.state.runtime.confirm_entity_label(
+            session_id=session_id,
+            track_id=track_id,
+            label=request.label,
+        )
+        return {"updated": success, "track_id": track_id, "label": request.label}
 
     @app.post(
         "/v1/tool-state/observe",

@@ -256,17 +256,22 @@ class RuntimeContainer:
             return cleaned
         return ""
 
-    @classmethod
-    def _fallback_anchor_label(cls, anchor_name: object, depth_stratum: object = "unknown") -> str:
+    def _fallback_anchor_label(self, label: str, depth_stratum: str = "unknown") -> str:
+        normalized = self._clean_label(label)
+        key = normalized.lower().replace(" ", "_")
+        stratum = str(depth_stratum).lower().strip()
+
+        if key == "cylindrical_object":
+            return "object" if stratum == "foreground" else "cylindrical object"
+
         mapping = {
-            "person_torso": "person standing",
+            "screen_display": "screen",
+            "desk_surface": "surface",
+            "background_plane": "background",
             "chair_seated": "chair",
-            "cylindrical_object": "cylindrical object",
-            "screen_display": "display screen",
-            "desk_surface": "desk surface",
-            "hand_region": "hand or arm",
+            "hand_region": "hand",
+            "person_torso": "person",
             "spherical_object": "round object",
-            "background_plane": "background surface",
             "telescope": "telescope",
             "neck_brace": "neck brace",
             "tie": "tie",
@@ -277,18 +282,16 @@ class RuntimeContainer:
             "sunglasses": "sunglasses",
             "lab_coat": "lab coat",
             "barrette": "barrette",
-            "unknown": "region",
+            "unknown": "object",
         }
-        return mapping.get(label, label)
+        if key in mapping:
+            return mapping[key]
 
-    def _fallback_anchor_label(self, label: str, depth_stratum: str = "unknown") -> str:
-        label = str(label)
-        if re.match(r"^entity-?\d+$", label) or label in {"object", "proposal box", "grounded entity", "unknown object"}:
-            stratum = str(depth_stratum).lower().strip()
+        if re.match(r"^entity-?\d+$", key) or key in {"object", "proposal_box", "grounded_entity", "unknown_object"}:
             if stratum in {"foreground", "midground", "background"}:
                 return f"{stratum} region"
             return "localized region"
-        return label or "region"
+        return normalized or "object"
 
     def _latest_jepa_tick(self) -> JEPATick | None:
         latest_tick: JEPATick | None = None
@@ -901,14 +904,93 @@ class RuntimeContainer:
             else:
                 self._apply_deterministic_fallback(anchor)
 
+    _PERSON_CLASS_TOKENS: frozenset[str] = frozenset({
+        "man", "woman", "boy", "girl", "person", "people",
+        "human", "figure", "child", "adult", "male", "female",
+    })
+
+    _PERSON_SAG_TEMPLATES: frozenset[str] = frozenset({
+        "person_torso", "hand_region",
+    })
+
+    _NON_PERSON_SAG_TEMPLATES: frozenset[str] = frozenset({
+        "cylindrical_object", "screen_display", "desk_surface",
+        "background_plane", "chair_seated",
+    })
+
+    @staticmethod
+    def _label_is_person_class(label: str) -> bool:
+        """True if the TVLC label contains any person-class token."""
+        tokens = frozenset(label.lower().split())
+        return bool(tokens & RuntimeContainer._PERSON_CLASS_TOKENS)
+
+    @staticmethod
+    def _label_is_coherent(label: str) -> bool:
+        """False if the label is known incoherent multi-slot word salad."""
+        tokens = label.lower().split()
+        if len(tokens) == 1:
+            return True
+        if len(tokens) > 3:
+            return False
+        token_set = frozenset(tokens)
+        _INCOHERENT_PAIRS: frozenset[frozenset[str]] = frozenset({
+            frozenset({"man", "boy"}),
+            frozenset({"woman", "man"}),
+            frozenset({"train", "people"}),
+            frozenset({"cat", "dog"}),
+            frozenset({"woman", "pulling"}),
+            frozenset({"man", "hold"}),
+            frozenset({"boy", "girl"}),
+        })
+        if token_set in _INCOHERENT_PAIRS:
+            return False
+        _GENDER_TOKENS: frozenset[str] = frozenset({
+            "man", "boy", "male", "woman", "girl", "female",
+        })
+        if len(token_set & _GENDER_TOKENS) > 1:
+            return False
+        return True
+
     def _perform_semantic_pass(self, engine, node, tokens, descs, idx):
         label = self._extract_tvlc_prototype_label(descs, idx)
         score = 0.0
+
         if not label and engine is not None and tokens is not None:
             indices = node.get("patch_indices")
             if indices:
                 label, score = engine.score_anchor(tokens, indices)
-                if score < 0.42: return None, 0.0
+                if score < 0.42:
+                    return None, 0.0
+
+        if not label:
+            return None, 0.0
+
+        if not self._label_is_coherent(label):
+            get_logger("runtime").info(
+                "tvlc_compound_rejected",
+                label=label,
+                node_template=node.get("template_name"),
+            )
+            return None, 0.0
+
+        if self._label_is_person_class(label):
+            sag_template = str(node.get("template_name") or "")
+            if sag_template in self._NON_PERSON_SAG_TEMPLATES:
+                get_logger("runtime").info(
+                    "tvlc_sag_person_veto",
+                    tvlc_label=label,
+                    sag_template=sag_template,
+                )
+                return None, 0.0
+            depth = str(node.get("depth_stratum") or "")
+            if sag_template == "unknown" and depth not in ("foreground", ""):
+                get_logger("runtime").info(
+                    "tvlc_depth_person_veto",
+                    tvlc_label=label,
+                    depth_stratum=depth,
+                )
+                return None, 0.0
+
         return label, score
 
     def _enrich_node_with_label(self, node, label, score):
@@ -987,6 +1069,75 @@ class RuntimeContainer:
                 ticks[index] = replacement
                 return
         ticks.append(replacement)
+
+    def confirm_entity_label(
+        self,
+        session_id: str,
+        track_id: str,
+        label: str,
+    ) -> bool:
+        """Persist a user-confirmed label for an entity track."""
+        cleaned_label = self._clean_label(label)
+        if not cleaned_label:
+            return False
+
+        tracks = self.store.list_entity_tracks(session_id=session_id, limit=512)
+        track = next((item for item in tracks if item.id == track_id), None)
+        if track is None:
+            return False
+
+        track.metadata = dict(track.metadata or {})
+        track.metadata["confirmed_label"] = cleaned_label
+        track.label = cleaned_label
+        self.store.save_entity_tracks([track])
+
+        patch_indices: list[int] = [
+            int(index)
+            for index in (track.metadata.get("patch_indices") or [])
+            if isinstance(index, (int, np.integer))
+        ]
+        sag = None
+        for engine in (self._immersive_engines.get(session_id), self._fallback_engines.get(session_id)):
+            if engine is None:
+                continue
+            state = getattr(engine, "_track_states", {}).get(track_id)
+            if state is None:
+                continue
+            state.confirmed_label = cleaned_label
+            state.label = cleaned_label
+            if state.patch_indices:
+                patch_indices = [int(index) for index in state.patch_indices]
+            if hasattr(engine, "_sag"):
+                sag = engine._sag
+
+        for previous_track in self._previous_tracks:
+            if previous_track.id != track_id:
+                continue
+            previous_track.metadata = dict(previous_track.metadata or {})
+            previous_track.metadata["confirmed_label"] = cleaned_label
+            previous_track.label = cleaned_label
+
+        get_logger("runtime").info(
+            "entity_label_confirmed",
+            session_id=session_id,
+            track_id=track_id,
+            label=cleaned_label,
+        )
+
+        try:
+            if sag is not None and patch_indices:
+                sag.learn_template_from_confirmation(
+                    region_patches=patch_indices,
+                    confirmed_label=cleaned_label,
+                    patch_tokens=np.zeros((196, 384), dtype=np.float32),
+                )
+                self._save_sag_templates()
+        except Exception as _exc:
+            get_logger("runtime").debug(
+                "sag_learn_from_correction_failed",
+                error=str(_exc),
+            )
+        return True
 
     async def _finish_living_lens_enrichment(
         self,
@@ -2947,7 +3098,7 @@ class RuntimeContainer:
             planning_time_ms=0.0,
             caption_score=0.0,
             retrieval_score=0.0,
-            timestamp_ms=int(epoch_time() * 1000),
+            timestamp_ms=int(time.time() * 1000),
             warmup=False,
             mask_results=[],
             mean_energy=0.0,
@@ -3004,6 +3155,45 @@ class RuntimeContainer:
             worker_id=None,
         )
 
+    def _safe_fallback_jepa_result(
+        self,
+        *,
+        session_id: str,
+        observation_id: str | None,
+        frame: np.ndarray,
+        correlation_id: str,
+        fallback_reason: str,
+        degrade_stage: str,
+    ) -> JEPAWorkResult:
+        trace = PipelineTrace(correlation_id=correlation_id)
+        trace.record_error("jepa_worker", fallback_reason)
+        trace.record_error("jepa_worker_pool", degrade_stage)
+        with trace_stage(trace, "tick.safe_fallback"):
+            engine = self._fallback_engine_for_session(session_id)
+            tick = engine.tick(
+                frame,
+                session_id=session_id,
+                observation_id=observation_id,
+            )
+            tick.degraded = True
+            tick.degrade_reason = fallback_reason
+            tick.degrade_stage = degrade_stage
+        state_vector = (
+            np.asarray(engine._last_state, dtype=np.float32).reshape(-1).tolist()
+            if getattr(engine, "_last_state", None) is not None
+            else None
+        )
+        return JEPAWorkResult(
+            correlation_id=correlation_id,
+            session_id=session_id,
+            observation_id=observation_id,
+            jepa_tick_dict=tick.to_payload().model_dump(mode="json"),
+            pipeline_trace=trace.to_dict(),
+            error=None,
+            state_vector=state_vector,
+            worker_id=None,
+        )
+
     async def _run_jepa_tick(
         self,
         *,
@@ -3017,21 +3207,22 @@ class RuntimeContainer:
         correlation_id = CorrelationContext.get()
         if correlation_id == "no-correlation":
             correlation_id = CorrelationContext.new()
+        if self._jepa_circuit_reason:
+            return self._degraded_jepa_result(
+                session_id=session_id,
+                observation_id=observation_id,
+                correlation_id=correlation_id,
+                fallback_reason=self._jepa_circuit_reason,
+                degrade_stage="disabled",
+            )
         if self._jepa_safe_fallback_reason:
-            return self._inline_jepa_result(
+            return self._safe_fallback_jepa_result(
                 session_id=session_id,
                 observation_id=observation_id,
                 frame=frame,
                 correlation_id=correlation_id,
                 fallback_reason=self._jepa_safe_fallback_reason,
-            )
-        if self._jepa_circuit_reason:
-            return self._inline_jepa_result(
-                session_id=session_id,
-                observation_id=observation_id,
-                frame=frame,
-                correlation_id=correlation_id,
-                fallback_reason=self._jepa_circuit_reason,
+                degrade_stage="safe_fallback",
             )
         try:
             pool = await asyncio.to_thread(self._ensure_jepa_pool)
@@ -3041,12 +3232,21 @@ class RuntimeContainer:
             if not self._jepa_safe_fallback_reason:
                 await self._activate_jepa_safe_fallback(fallback_reason)
                 self._open_jepa_circuit(fallback_reason)
-            return self._inline_jepa_result(
+            if self._jepa_safe_fallback_reason and not self._jepa_circuit_reason:
+                return self._safe_fallback_jepa_result(
+                    session_id=session_id,
+                    observation_id=observation_id,
+                    frame=frame,
+                    correlation_id=correlation_id,
+                    fallback_reason=self._jepa_safe_fallback_reason or fallback_reason,
+                    degrade_stage="safe_fallback",
+                )
+            return self._degraded_jepa_result(
                 session_id=session_id,
                 observation_id=observation_id,
-                frame=frame,
                 correlation_id=correlation_id,
                 fallback_reason=self._jepa_safe_fallback_reason or fallback_reason,
+                degrade_stage=degrade_stage,
             )
         work_item = JEPAWorkItem(
             correlation_id=correlation_id,
@@ -3063,7 +3263,7 @@ class RuntimeContainer:
         degrade_stage = "submit"
         open_circuit = False
         try:
-            result = await asyncio.wait_for(pool.submit(work_item), timeout=20.0)
+            result = await asyncio.wait_for(pool.submit(work_item), 20.0)
             if result.error is None and result.jepa_tick_dict:
                 return result
             fallback_reason = result.error or "worker returned empty JEPA tick"
@@ -3084,12 +3284,12 @@ class RuntimeContainer:
         if open_circuit and not self._jepa_safe_fallback_reason:
             await self._activate_jepa_safe_fallback(fallback_reason or "V-JEPA2 worker unavailable")
             self._open_jepa_circuit(fallback_reason or "JEPA worker unavailable")
-            return self._inline_jepa_result(
+            return self._degraded_jepa_result(
                 session_id=session_id,
                 observation_id=observation_id,
-                frame=frame,
                 correlation_id=correlation_id,
                 fallback_reason=self._jepa_safe_fallback_reason or fallback_reason or "V-JEPA2 worker unavailable",
+                degrade_stage=degrade_stage,
             )
 
         get_logger("runtime").warning(
@@ -3595,6 +3795,13 @@ class RuntimeContainer:
         )
         if top_label and top_label != "object":
             tags.append(top_label)
+        dominant_color = self._clean_label(metadata.get("dominant_color"))
+        if dominant_color:
+            if dominant_color not in tags:
+                tags.append(dominant_color)
+            scene_tag = f"{dominant_color} scene"
+            if scene_tag not in tags:
+                tags.append(scene_tag)
         return tags
 
     def _embed_smriti_query(self, query: str, dim: int = 128) -> np.ndarray:

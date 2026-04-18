@@ -217,7 +217,7 @@ def _proposal_fallback_label(region: BoundingBox | None, index: int) -> str:
     region_label = _meaningful_label(getattr(region, "label", None) or "")
     if region_label and region_label not in SUSPICIOUS_CLASSIFIER_LABELS:
         return region_label
-    return f"entity-{index + 1}"
+    return "object"
 
 
 def _label_rank(label: str, score: float, saliency: float) -> float:
