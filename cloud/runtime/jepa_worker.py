@@ -266,16 +266,14 @@ class JEPAWorkerPool:
 
         try:
             await asyncio.to_thread(self._write_request, worker, work_item)
-        except Exception as exc:
-            self._cleanup_pending_submission(worker, work_item.correlation_id)
-            raise RuntimeError(f"JEPA worker queue unavailable: {exc}") from exc
-
-        try:
             return await future
         except asyncio.CancelledError:
             self._cleanup_pending_submission(worker, work_item.correlation_id)
             future.cancel()
             raise
+        except Exception as exc:
+            self._cleanup_pending_submission(worker, work_item.correlation_id)
+            raise RuntimeError(f"JEPA worker queue unavailable: {exc}") from exc
 
     async def submit_fire_and_forget(
         self,

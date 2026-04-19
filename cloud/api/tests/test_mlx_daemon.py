@@ -371,7 +371,7 @@ class TestSendReceive:
 
     def test_invalid_json_response(self, provider, config):
         mock_proc = self._mock_daemon()
-        mock_proc.stdout.readline.return_value = "not json\n"
+        mock_proc.stdout.readline.return_value = "{ not valid json }\n"
         provider._daemon = mock_proc
 
         with patch.object(provider, '_ensure_daemon', return_value=mock_proc):

@@ -39,8 +39,11 @@ def _work_item(session_id: str, correlation_id: str, *, priority: int = 3, delay
 
 
 def test_worker_pool_processes_work_item():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=1, queue_maxsize=2)
+        pool_ref.append(pool)
         try:
             result = await pool.submit(_work_item("session-a", "corr-a"))
             assert result.error is None
@@ -52,12 +55,26 @@ def test_worker_pool_processes_work_item():
         finally:
             await pool.shutdown()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
 
 
 def test_worker_pool_returns_result_with_matching_correlation_id():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=1, queue_maxsize=2)
+        pool_ref.append(pool)
         try:
             result = await pool.submit(_work_item("session-b", "corr-b"))
             assert result.correlation_id == "corr-b"
@@ -65,12 +82,26 @@ def test_worker_pool_returns_result_with_matching_correlation_id():
         finally:
             await pool.shutdown()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
 
 
 def test_full_queue_raises_rate_limit_error_not_blocks():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=1, queue_maxsize=1)
+        pool_ref.append(pool)
         try:
             first = asyncio.create_task(pool.submit(_work_item("session-c", "slow", delay_s=0.25)))
             await asyncio.sleep(0.05)
@@ -84,12 +115,26 @@ def test_full_queue_raises_rate_limit_error_not_blocks():
         finally:
             await pool.shutdown()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
 
 
 def test_session_affinity_reuses_same_engine_for_same_session():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=2, queue_maxsize=2)
+        pool_ref.append(pool)
         try:
             first = await pool.submit(_work_item("shared-session", "corr-1"))
             second = await pool.submit(_work_item("shared-session", "corr-2"))
@@ -101,17 +146,42 @@ def test_session_affinity_reuses_same_engine_for_same_session():
         finally:
             await pool.shutdown()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
 
 
 def test_worker_pool_shuts_down_cleanly():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=1, queue_maxsize=2)
+        pool_ref.append(pool)
         await pool.submit(_work_item("shutdown-session", "corr-shutdown"))
         await pool.shutdown()
         assert all(not item["alive"] for item in pool.get_worker_stats())
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
 
 
 def test_progressive_scheduler_skips_sag_on_stable_scene():
@@ -128,8 +198,11 @@ def test_progressive_scheduler_forces_full_on_user_query():
 
 
 def test_jepa_never_runs_on_event_loop_thread():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=1, queue_maxsize=2)
+        pool_ref.append(pool)
         heartbeat = 0
 
         async def ticker() -> None:
@@ -150,12 +223,26 @@ def test_jepa_never_runs_on_event_loop_thread():
 
         assert heartbeat > 5
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
 
 
 def test_worker_pool_clears_cancelled_pending_submission():
+    pool_ref = []
+
     async def run() -> None:
         pool = JEPAWorkerPool(num_workers=1, queue_maxsize=2)
+        pool_ref.append(pool)
         try:
             task = asyncio.create_task(pool.submit(_work_item("cancel-session", "corr-cancel", delay_s=0.35)))
             await asyncio.sleep(0.05)
@@ -175,4 +262,15 @@ def test_worker_pool_clears_cancelled_pending_submission():
         finally:
             await pool.shutdown()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if pool_ref and hasattr(pool_ref[0], '_workers'):
+            for worker in pool_ref[0]._workers:
+                proc = getattr(worker, 'process', getattr(worker, '_process', None))
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+

@@ -59,3 +59,32 @@ def random_frame() -> np.ndarray:
 @pytest.fixture
 def black_frame() -> np.ndarray:
     return np.zeros((224, 224, 3), dtype=np.uint8)
+
+
+@pytest.fixture(autouse=True)
+def terminate_stray_jepa_workers():
+    """Kill any JEPAWorkerPool subprocess workers left over from prior tests.
+    
+    JEPAWorkerPool spawns Python subprocesses. If a test fails before
+    pool.shutdown() in its finally block, those workers stay alive and
+    can block the next test from acquiring resources or cause hangs.
+    """
+    import os
+    import signal
+    import subprocess as _sp
+    yield
+    # After each test: find and terminate stray jepa_worker processes
+    try:
+        result = _sp.run(
+            ["pgrep", "-f", "jepa_worker"],
+            capture_output=True, text=True,
+        )
+        pids = [int(pid.strip()) for pid in result.stdout.strip().splitlines() if pid.strip().isdigit()]
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    except Exception:
+        pass
+
