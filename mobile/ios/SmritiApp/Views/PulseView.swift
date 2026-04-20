@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 import UIKit
 
 struct PulseView: View {
@@ -26,24 +27,7 @@ struct PulseView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 
-                if let insight = UserDefaults.standard.string(forKey: "smriti.insight.latest"),
-                   let storedWeek = UserDefaults.standard.string(forKey: "smriti.insight.week"),
-                   !insightDismissed {
-                    
-                    let cal = Calendar.current
-                    let week = cal.component(.weekOfYear, from: Date())
-                    let year = cal.component(.yearForWeekOfYear, from: Date())
-                    
-                    if storedWeek == "\(year)-W\(week)" {
-                        AnticipationInsightCard(
-                            insight: insight,
-                            onDismiss: { insightDismissed = true },
-                            onSeePattern: { appModel.selectedTab = .journal }
-                        )
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .animation(.smritiSpring, value: insightDismissed)
-                    }
-                }
+                // Removed AnticipationInsightCard logic
 
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(Array(eventStore.orbSlots.enumerated()), id: \.element.id) { index, slot in

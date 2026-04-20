@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 
 /// A reusable badge displaying ECGD confidence level.
 /// Shows color-coded confidence from the epistemic confidence gate.

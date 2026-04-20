@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 import AVFoundation
 
 struct HumToFindButton: View {
@@ -44,7 +45,7 @@ final class HumRecorder: ObservableObject {
     private var sampleRate = 16_000
     private var samples: [Float] = []
 
-    func startRecording(onComplete: @escaping (String, Int) -> Void) {
+    func startRecording(onComplete: @escaping @Sendable (String, Int) -> Void) {
         guard !isRecording else { return }
 
         AVAudioApplication.requestRecordPermission { [weak self] granted in
@@ -55,7 +56,7 @@ final class HumRecorder: ObservableObject {
         }
     }
 
-    private func begin(onComplete: @escaping (String, Int) -> Void) async {
+    private func begin(onComplete: @escaping @Sendable (String, Int) -> Void) async {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
@@ -95,7 +96,7 @@ final class HumRecorder: ObservableObject {
         }
     }
 
-    private func finish(onComplete: @escaping (String, Int) -> Void) {
+    private func finish(onComplete: @escaping @Sendable (String, Int) -> Void) {
         guard isRecording else { return }
 
         let engine = engine

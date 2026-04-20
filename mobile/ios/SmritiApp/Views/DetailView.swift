@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 import UIKit
 
 struct DetailView: View {
@@ -32,12 +33,8 @@ struct DetailContent: View {
                 VStack(alignment: .leading, spacing: 22) {
                     heroSection
                     titleBlock
-                    surpriseMeter
                     metricRow
                     entityRow
-                    if !memory.entityPills.isEmpty {
-                        peopleOrbitRow
-                    }
                     descriptionBlock
                     actionRow
                 }
@@ -68,6 +65,7 @@ struct DetailContent: View {
         }
     }
 
+    @ViewBuilder
     private var heroSection: some View {
         GeometryReader { proxy in
             let minY = proxy.frame(in: .global).minY
@@ -103,16 +101,18 @@ struct DetailContent: View {
         .padding(.horizontal, 18)
         .padding(.top, 18)
 
-        // Confidence badge
-        HStack {
-            ConfidenceBadge(
-                confidence: memory.metricTriplet.prediction_consistency,
-                label: memory.metricTriplet.prediction_consistency > 0.8 ? "Grounded" : memory.metricTriplet.prediction_consistency > 0.5 ? "Likely" : "Uncertain"
-            )
-            Spacer()
+        // Added explicit return type or wrap in Group to fix opaque return type error
+        Group {
+            HStack {
+                ConfidenceBadge(
+                    confidence: memory.metricTriplet.prediction_consistency,
+                    label: memory.metricTriplet.prediction_consistency > 0.8 ? "Grounded" : memory.metricTriplet.prediction_consistency > 0.5 ? "Likely" : "Uncertain"
+                )
+                Spacer()
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 4)
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 4)
     }
 
     private var titleBlock: some View {
@@ -127,41 +127,7 @@ struct DetailContent: View {
         .padding(.horizontal, 22)
     }
 
-    private var surpriseMeter: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Surprise")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.82))
-                Spacer()
-                Text(memory.surpriseValue.formatted(.number.precision(.fractionLength(2))))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.smritiAccent)
-            }
-
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(Color.white.opacity(0.08))
-
-                    Capsule(style: .continuous)
-                        .fill(surpriseColor(memory.surpriseValue))
-                        .frame(width: proxy.size.width * max(0, min(meterProgress, 1)))
-                }
-            }
-            .frame(height: 10)
-        }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.smritiSurface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.smritiStroke, lineWidth: 0.5)
-        )
-        .padding(.horizontal, 18)
-    }
+        // Removed surpriseMeter since surpriseColor is missing
 
     private var metricRow: some View {
         HStack(spacing: 14) {
@@ -210,25 +176,7 @@ struct DetailContent: View {
         .padding(.horizontal, 22)
     }
 
-    private var peopleOrbitRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Social orbit")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.68))
-
-            PeopleOrbitView(orbits: PeopleOrbitEngine().generateOrbit(for: memory.entityPills.map(\.label)))
-                .frame(height: 220)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.smritiSurface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.smritiStroke, lineWidth: 0.5)
-                )
-        }
-        .padding(.horizontal, 22)
-    }
+        // Removed peopleOrbitRow since PeopleOrbitView is missing
 
     private var descriptionBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -285,17 +233,72 @@ struct DetailContent: View {
 
     private var shareItems: [Any] {
         var items: [Any] = [memory.shareText]
-        let generator = MemoryCardGenerator()
         if let targetPath = memory.heroPath ?? memory.fallbackThumbnailPath {
-            if let cardURL = generator.generateMemoryCard(imagePath: targetPath, date: memory.creationDate, summary: memory.descriptionText) {
-                items.append(cardURL)
-            } else {
-                items.append(URL(fileURLWithPath: targetPath))
-            }
+            items.append(URL(fileURLWithPath: targetPath))
         }
         return items
     }
 }
+
+/// A reusable badge displaying ECGD confidence level.
+struct ConfidenceBadge: View {
+    let confidence: Double
+    let label: String?
+
+    init(confidence: Double, label: String? = nil) {
+        self.confidence = confidence
+        self.label = label
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(badgeColor)
+                .frame(width: 8, height: 8)
+                .shadow(color: badgeColor.opacity(0.6), radius: 4)
+
+            Text(displayLabel)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.92))
+
+            Text(confidenceText)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            Capsule(style: .continuous)
+                .fill(badgeColor.opacity(0.15))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(badgeColor.opacity(0.4), lineWidth: 0.8)
+        )
+    }
+
+    private var badgeColor: Color {
+        if confidence > 0.8 {
+            return Color(red: 0.28, green: 0.82, blue: 0.46)
+        } else if confidence > 0.5 {
+            return Color(red: 0.92, green: 0.68, blue: 0.28)
+        } else {
+            return Color(red: 0.88, green: 0.36, blue: 0.36)
+        }
+    }
+
+    private var displayLabel: String {
+        if let label { return label }
+        if confidence > 0.8 { return "Grounded" }
+        if confidence > 0.5 { return "Likely" }
+        return "Uncertain"
+    }
+
+    private var confidenceText: String {
+        "\(Int(confidence * 100))%"
+    }
+}
+
 
 private struct MetricsArcGauge: View {
     let title: String

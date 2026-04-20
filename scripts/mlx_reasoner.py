@@ -8,8 +8,7 @@ Protocol (unchanged from existing contract):
                        "model": str, "latency_ms": float,
                        "local": bool, "vision_used": bool }
 """
-from __future__ import annotations
-import base64, json, sys, time, tempfile, os
+import base64, json, sys, time, tempfile, os, signal, argparse
 from pathlib import Path
 from typing import Optional
 
@@ -36,20 +35,42 @@ TOP_P = 0.9
 
 _MODEL = _TOKENIZER = _LOADED_PATH = None
 
-def _get_model():
+def _get_model(model_override: Optional[str] = None):
     global _MODEL, _TOKENIZER, _LOADED_PATH
     if _MODEL is None:
         import mlx_vlm
         import mlx_vlm.utils
+        
+        # Determine path
+        model_id = model_override or os.environ.get("MLX_MODEL") or FALLBACK_HF_REPO
+        
+        # If it's a HuggingFace ID and doesn't exist locally, try to map to external volume
+        if "/" in model_id and not Path(model_id).exists():
+            external_base = Path("/Volumes/Apple/AI Model")
+            try:
+                repo_name = model_id.split("/")[-1]
+                target_dir = external_base / repo_name
+                
+                if not target_dir.exists():
+                    print(f"[mlx_reasoner] Downloading {model_id} to {target_dir}...", file=sys.stderr, flush=True)
+                    from huggingface_hub import snapshot_download
+                    snapshot_download(
+                        repo_id=model_id,
+                        local_dir=str(target_dir),
+                        local_dir_use_symlinks=False
+                    )
+                model_id = str(target_dir)
+            except Exception as e:
+                print(f"[mlx_reasoner] Download/Map error: {e}, falling back to HF cache", file=sys.stderr, flush=True)
+
         # Remap gemma4_vision to gemma4 if not already present (support for mlx-vlm 0.4.4+)
         if "gemma4_vision" not in mlx_vlm.utils.MODEL_REMAPPING:
             mlx_vlm.utils.MODEL_REMAPPING["gemma4_vision"] = "gemma4"
             
-        path = LOCAL_MODEL_PATH if Path(LOCAL_MODEL_PATH).exists() else FALLBACK_HF_REPO
-        print(f"[mlx_reasoner] Loading from {path}", file=sys.stderr, flush=True)
+        print(f"[mlx_reasoner] Loading from {model_id}", file=sys.stderr, flush=True)
         try:
-            _MODEL, _TOKENIZER = mlx_vlm.load(path)
-            _LOADED_PATH = path
+            _MODEL, _TOKENIZER = mlx_vlm.load(model_id)
+            _LOADED_PATH = model_id
             print("[mlx_reasoner] Model ready", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[mlx_reasoner] Load error: {e}", file=sys.stderr, flush=True)
@@ -57,19 +78,28 @@ def _get_model():
     return _MODEL, _TOKENIZER, _LOADED_PATH
 
 def _build_prompt(user_text, system, has_image, processor, model):
-    parts = []
+    # Gemma IT models typically do not support a "system" role.
+    # We combine system and user text into the first user turn.
+    prompt_text = user_text.strip()
     if system:
-        parts.append(system.strip())
-    parts.append(user_text.strip())
+        prompt_text = f"{system.strip()}\n{prompt_text}"
     
-    # mlx_vlm.apply_chat_template expects a prompt string or list of messages
-    # and a config object/dict as the second argument.
-    messages = [{"role": "user", "content": "\n".join(parts)}]
+    # Standard format for mlx_vlm.utils.apply_chat_template
+    # content can be a string or a list of dictionaries with type: image/text
+    user_content = [{"type": "text", "text": prompt_text}]
     if has_image:
-        messages[0]["content"] = [{"type": "image"}] + [{"type": "text", "text": "\n".join(parts)}]
+        user_content = [{"type": "image"}] + user_content
     
-    import mlx_vlm
-    return mlx_vlm.apply_chat_template(processor, model.config, messages, add_generation_prompt=True)
+    messages = [{"role": "user", "content": user_content}]
+    
+    from mlx_vlm.prompt_utils import apply_chat_template
+    return apply_chat_template(
+        processor, 
+        model.config, 
+        messages, 
+        num_images=1 if has_image else 0,
+        add_generation_prompt=True
+    )
 
 def _generate(prompt, image_path, max_tokens, model, processor):
     import mlx_vlm
@@ -134,12 +164,27 @@ def _lightweight_healthcheck():
 
 
 def main():
-    if "--healthcheck" in sys.argv:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, help="HuggingFace repo ID or local path")
+    parser.add_argument("--healthcheck", action="store_true", help="Run lightweight healthcheck and exit")
+    args = parser.parse_args()
+
+    if args.healthcheck:
+        # For healthcheck, if --model is passed, we should use it to check path
+        if args.model:
+            global FALLBACK_HF_REPO
+            FALLBACK_HF_REPO = args.model
         result = _lightweight_healthcheck()
         emit_json(result)
         sys.exit(0 if result["success"] else 1)
 
-    model, tokenizer, loaded_path = _get_model()
+    # Greedy Memory Release: Clear cache BEFORE loading model to ensure fresh start
+    try:
+        import mlx.core as mx
+        mx.metal.clear_cache()
+    except Exception: pass
+
+    model, tokenizer, loaded_path = _get_model(args.model)
     model_label = Path(loaded_path).name if loaded_path else "gemma-4-e4b"
     for raw in sys.stdin:
         raw = raw.strip()
@@ -179,7 +224,7 @@ def main():
                 try: os.unlink(tmp)
                 except OSError: pass
             
-            # Explicitly clear MLX Metal buffers to prevent SIGABRT on long batches
+            # Greedy Memory Release: Aggressively clear cache to prevent GPU buffer pile-up
             try:
                 import mlx.core as mx
                 import gc
@@ -188,4 +233,7 @@ def main():
             except Exception:
                 pass
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    # Handle SIGTERM for clean exit
+    signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+    main()

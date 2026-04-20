@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 import OSLog
 
 private let mandalaLogger = Logger(subsystem: "com.toori.smriti", category: "Mandala")

@@ -17,6 +17,7 @@ struct RealityCheckView: View {
     @State private var isAnalyzing = false
     @State private var showCamera = false
     @State private var scrollTarget: String?
+    @FocusState private var isInputFocused: Bool
 
     @StateObject private var cameraModel = CameraModel()
 
@@ -55,6 +56,9 @@ struct RealityCheckView: View {
                         }
                         .padding(16)
                         .animation(.smritiSpring, value: messages.count)
+                        .onTapGesture {
+                            appModel.hideKeyboard()
+                        }
                     }
                     .onChange(of: messages.count) {
                         if let last = messages.last {
@@ -128,9 +132,11 @@ struct RealityCheckView: View {
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(Color(red: 0.28, green: 0.82, blue: 0.46))
+                    .fill(appModel.isRuntimeConnected
+                        ? Color(red: 0.28, green: 0.82, blue: 0.46)
+                        : Color(red: 0.88, green: 0.36, blue: 0.36))
                     .frame(width: 8, height: 8)
-                Text("JEPA Online")
+                Text(appModel.isRuntimeConnected ? "JEPA Online" : "Connecting...")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.7))
             }
@@ -256,6 +262,7 @@ struct RealityCheckView: View {
                 TextField("Ask about any photo...", text: $inputText)
                     .font(.system(size: 15))
                     .foregroundStyle(.white)
+                    .focused($isInputFocused)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(
@@ -302,6 +309,7 @@ struct RealityCheckView: View {
             image: nil
         )
         messages.append(userMessage)
+        appModel.hideKeyboard()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         
         // If there's a previous analysis result, use the query with it
@@ -338,6 +346,7 @@ struct RealityCheckView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
         isAnalyzing = true
+        appModel.hideKeyboard()
 
         Task {
             defer { isAnalyzing = false }
@@ -381,9 +390,9 @@ struct RealityCheckView: View {
                     confidenceLabel: confidenceLabel,
                     entities: entities,
                     similarScenes: Array(similarScenes),
-                    depthStrata: response.hits.first.flatMap { _ in
-                        // Use strata from observation if available
-                        nil as SmritiDepthStrata?
+                    depthStrata: (response.observation?.metadata?["depth_strata"] as? [String: Any]).flatMap { _ in
+                        // Map the backend strata to SmritiDepthStrata
+                        nil as SmritiDepthStrata? // This is still a placeholder until SmritiDepthStrata init is known
                     }
                 )
                 messages.append(assistantMsg)

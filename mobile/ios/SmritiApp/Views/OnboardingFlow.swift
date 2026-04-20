@@ -1,5 +1,6 @@
 import Photos
 import SwiftUI
+import SmritiKit
 
 struct OnboardingFlow: View {
     let onGetStarted: () -> Void

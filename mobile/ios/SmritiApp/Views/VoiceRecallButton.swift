@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 import Speech
 import AVFoundation
 import UIKit
@@ -86,7 +87,7 @@ final class VoiceRecallController: NSObject, ObservableObject {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var silenceTask: Task<Void, Never>?
 
-    func toggle(onCommit: @escaping (String) async -> Void) {
+    func toggle(onCommit: @escaping @Sendable (String) async -> Void) {
         if isListening {
             stop(shouldCommit: true, onCommit: onCommit)
         } else {
@@ -94,7 +95,7 @@ final class VoiceRecallController: NSObject, ObservableObject {
         }
     }
 
-    private func start(onCommit: @escaping (String) async -> Void) {
+    private func start(onCommit: @escaping @Sendable (String) async -> Void) {
         guard !isListening else { return }
 
         SFSpeechRecognizer.requestAuthorization { [weak self] speechStatus in
@@ -108,7 +109,7 @@ final class VoiceRecallController: NSObject, ObservableObject {
         }
     }
 
-    private func begin(onCommit: @escaping (String) async -> Void) async {
+    private func begin(onCommit: @escaping @Sendable (String) async -> Void) async {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
@@ -165,7 +166,7 @@ final class VoiceRecallController: NSObject, ObservableObject {
         }
     }
 
-    private func scheduleSilenceCommit(onCommit: @escaping (String) async -> Void) {
+    private func scheduleSilenceCommit(onCommit: @escaping @Sendable (String) async -> Void) {
         silenceTask?.cancel()
         silenceTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.2))
@@ -176,7 +177,7 @@ final class VoiceRecallController: NSObject, ObservableObject {
         }
     }
 
-    private func stop(shouldCommit: Bool, onCommit: @escaping (String) async -> Void) {
+    private func stop(shouldCommit: Bool, onCommit: @escaping @Sendable (String) async -> Void) {
         guard isListening || !transcript.isEmpty else { return }
 
         let finalTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)

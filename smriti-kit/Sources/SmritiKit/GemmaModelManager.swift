@@ -16,7 +16,9 @@ public final class GemmaModelManager: ObservableObject {
 
     public enum DownloadState: Equatable { case idle, downloading, ready, error(String) }
 
+    #if os(macOS)
     private var daemonProcess: Process?
+    #endif
 
     public init() {}
 

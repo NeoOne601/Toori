@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 
 /// Visual overlay that renders depth stratum zones on an image.
 /// Uses the TPDS (Tri-Planar Depth Separation) data when available,

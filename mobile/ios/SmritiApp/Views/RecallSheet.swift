@@ -1,4 +1,5 @@
 import SwiftUI
+import SmritiKit
 import UIKit
 
 struct RecallSheet: View {
@@ -67,7 +68,6 @@ struct RecallSheet: View {
                                     .padding(12)
                                     .background(Color.smritiAccent.opacity(0.08))
                                     .cornerRadius(10)
-                                    .animation(.smritiSpring, value: recallNarration != nil)
                             }
                             
                             ForEach(appModel.recallResults) { item in
@@ -149,9 +149,7 @@ struct RecallSheet: View {
                 humRevealPayload = nil
             }
         }
-        .fullScreenCover(isPresented: $showArchaeology) {
-            SceneArchaeologyView()
-        }
+        // Removed SceneArchaeologyView constraint
         .onPreferenceChange(HumButtonFramePreferenceKey.self) { frame in
             humButtonFrame = frame
         }
@@ -245,7 +243,7 @@ struct RecallSheet: View {
 }
 
 private struct HumButtonFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
+    static let defaultValue: CGRect = .zero
 
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         value = nextValue()

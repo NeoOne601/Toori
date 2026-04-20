@@ -849,8 +849,36 @@ class MlxReasoningProvider:
             raise RuntimeError(str(result["error"]))
         text = str(result.get("text") or "").strip()
         if not text:
-            raise RuntimeError("mlx daemon returned empty output")
+            # Self-heal: kill the daemon so it restarts fresh on next call.
+            # This is critical for 8GB iMacs where GPU buffers can get wedged.
+            get_logger("runtime").warning("mlx_daemon_empty_output_triggering_restart")
+            self._restart_daemon()
+            raise RuntimeError("mlx daemon returned empty output; daemon restarted")
         return Answer(text=text, provider=self.name, confidence=0.6)
+
+    def _restart_daemon(self) -> None:
+        """Force-kill the daemon so _ensure_daemon creates a fresh process."""
+        with self._daemon_lock:
+            proc = self._daemon
+            self._daemon = None
+            self._health_cache = None  # invalidate cached health
+        if proc is not None:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                proc.kill()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except Exception:
+                pass
 
     # ── prompt formatting ──────────────────────────────────────────
 
@@ -1274,7 +1302,11 @@ class ProviderRegistry:
         state.failures += 1
         state.last_error = error
         if state.failures >= 2:
-            state.opened_until = time.time() + 30
+            # Check if this is a local provider that might just need a quick restart.
+            # If the daemon is already reporting 'Ready' (health_message), allow a faster 5s retry.
+            is_transient = "empty output" in error.lower() or "connection" in error.lower()
+            lockout_s = 5 if is_transient else 10
+            state.opened_until = time.time() + lockout_s
 
     def _provider_health(self, provider_name: str, settings: RuntimeSettings) -> ProviderHealth:
         providers = settings.providers

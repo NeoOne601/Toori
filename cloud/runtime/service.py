@@ -772,6 +772,14 @@ class RuntimeContainer:
             candidates.append((confidence, label))
 
         if not candidates:
+            # Low-confidence fallback: if we have anchors but confidence is low, 
+            # still synthesize a 'Discovered' title rather than returning None.
+            if anchors:
+                for anchor in anchors:
+                    label = self._preferred_object_label(anchor.get("name") or anchor.get("template_name"))
+                    if label and label != "object":
+                        stratum = anchor.get("depth_stratum", "scene")
+                        return f"Discovered {label} in the {stratum}", {"summary_source": "anchor_fallback"}
             return None, {}
 
         candidates.sort(key=lambda item: item[0], reverse=True)
@@ -1059,6 +1067,9 @@ class RuntimeContainer:
             metadata={
                 **(base_metadata or {}),
                 **preferred_metadata,
+                "entity_tracks": tick_dict.get("entity_tracks", []),
+                "mask_results": tick_dict.get("mask_results", []),
+                "depth_strata": tick_dict.get("depth_strata"),
             },
         )
 
@@ -1149,6 +1160,7 @@ class RuntimeContainer:
         tick_dict: dict[str, Any],
         base_metadata: dict[str, Any] | None,
     ) -> None:
+        settings = self.get_settings()
         if not settings.live_features.open_vocab_labels_enabled:
             return
         
@@ -1173,6 +1185,8 @@ class RuntimeContainer:
             if settings.live_features.tvlc_enabled is False:
                 self._strip_disabled_tvlc_context(tick_dict)
             self._update_observation_from_tick(
+                observation_id=observation_id,
+                base_metadata=base_metadata,
                 tick_dict=tick_dict,
             )
         finally:
@@ -3710,12 +3724,40 @@ class RuntimeContainer:
                 {"track": track.model_dump(mode="json")},
             )
 
+        # ── Compute consumer-facing Reality Intelligence fields ──
+        # grounded_summary: prefer the LLM answer (Discovery), fall back to
+        # the deterministic Setu-2 object summary so the client always shows
+        # a human-readable description — never the raw observation ID.
+        consumer_summary = None
+        if answer is not None and answer.text:
+            consumer_summary = answer.text
+        elif summary_text and not summary_text.startswith("Analyzed obs_"):
+            consumer_summary = summary_text
+        else:
+            # Build a minimal deterministic description from proposals
+            tag_labels = [t for t in (observation.tags or []) if t and t != "object"]
+            if tag_labels:
+                consumer_summary = f"Scene contains: {', '.join(tag_labels[:6])}."
+            else:
+                consumer_summary = "Scene captured and indexed for future recall."
+
+        # confidence_label: map numeric confidence to ECGD gate label
+        obs_confidence = float(observation.confidence or 0.0)
+        if obs_confidence > 0.8:
+            consumer_confidence_label = "Grounded"
+        elif obs_confidence > 0.5:
+            consumer_confidence_label = "Likely"
+        else:
+            consumer_confidence_label = "Uncertain"
+
         response = AnalyzeResponse(
             observation=observation,
             hits=hits,
             answer=answer,
             provider_health=self.providers.health_snapshot(settings),
             reasoning_trace=reasoning_trace,
+            grounded_summary=consumer_summary,
+            confidence_label=consumer_confidence_label,
         )
         return response, scene_state, entity_tracks
 
