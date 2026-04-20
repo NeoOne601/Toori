@@ -64,8 +64,8 @@ struct OnboardingFlow: View {
                 .tag(0)
 
                 OnboardingCard(
-                    title: "Your memory, alive",
-                    subtitle: "Smriti watches what you see and remembers what surprised you."
+                    title: "Reality Intelligence",
+                    subtitle: "Toori doesn't guess what's in a photo. It sees — with geometry, depth, and confidence bounds."
                 ) {
                     BreathingOrbScene()
                 }
@@ -73,15 +73,15 @@ struct OnboardingFlow: View {
 
                 OnboardingCard(
                     title: "Ask in plain language",
-                    subtitle: "Say 'find the rainy afternoon with the telescope' and Smriti finds it."
+                    subtitle: "Say 'Is this room safe for a toddler?' and Toori gives a grounded answer — or honestly says 'I don't know.'"
                 ) {
                     VoiceWaveScene()
                 }
                 .tag(2)
 
                 OnboardingCard(
-                    title: "Hum to find",
-                    subtitle: "Sing a few notes. Smriti finds the moment."
+                    title: "The first AI that sees",
+                    subtitle: "No cameras to install. No hardware to buy. Just your phone and a question."
                 ) {
                     HumTransitionScene()
                 } footer: {
@@ -184,7 +184,7 @@ private struct PhotosPermissionScene: View {
                 .stroke(Color.smritiAccent.opacity(0.56), lineWidth: 8)
                 .frame(width: 170, height: 170)
 
-            Image(systemName: "photo.on.rectangle.angled")
+            Image(systemName: "eye.circle.fill")
                 .font(.system(size: 64, weight: .medium))
                 .foregroundStyle(Color.smritiAccent)
         }
@@ -214,7 +214,7 @@ private struct BreathingOrbScene: View {
                     )
                     .frame(width: 164, height: 164)
                     .overlay(
-                        Image(systemName: "brain.head.profile.fill")
+                        Image(systemName: "eye.circle.fill")
                             .font(.system(size: 60, weight: .medium))
                             .foregroundStyle(.white.opacity(0.88))
                     )

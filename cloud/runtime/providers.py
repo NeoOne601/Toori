@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import io
 import json
+import os
 import re
 import shlex
 import shutil
@@ -28,8 +29,32 @@ from .models import (
     ProviderConfig,
     ProviderHealth,
     ReasoningTraceEntry,
+    ReasoningTraceEntry,
     RuntimeSettings,
 )
+from .observability import get_logger
+
+
+def detect_device_tier() -> str:
+    """
+    Detects hardware tier based on physical memory.
+    Matches SmritiKit/GemmaModelManager logic:
+    - base: < 6GB
+    - standard: < 10GB (e.g. 8GB M1)
+    - enhanced: > 10GB (e.g. 16GB+ M2/M3)
+    """
+    try:
+        # sysctl is the most reliable way to get physical memory on macOS
+        mem_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
+        mem_gb = mem_bytes / (1024**3)
+        if mem_gb < 6:
+            return "base"
+        elif mem_gb < 10:
+            return "standard"
+        return "enhanced"
+    except Exception:
+        # Default to standard if detection fails
+        return "standard"
 
 
 def _image_to_base64(image_bytes: bytes) -> str:
@@ -618,6 +643,7 @@ class MlxReasoningProvider:
         self._daemon: Optional[subprocess.Popen] = None
         self._daemon_lock = threading.Lock()
         self._health_cache: Optional[tuple[ProviderHealth, float]] = None
+        self._tier = detect_device_tier()
         atexit.register(self.shutdown)
 
     # ── lifecycle ──────────────────────────────────────────────────
@@ -657,6 +683,25 @@ class MlxReasoningProvider:
                     pass
                 self._daemon = None
             argv = self._resolve_wrapper_prefix(config)
+            
+            # Auto-select model based on tier if not explicitly overridden in config.model
+            # tier standard (8GB) -> e2b, tier enhanced -> e4b
+            model_id = config.model
+            if not model_id or model_id == "auto":
+                if self._tier == "standard":
+                    model_id = "mlx-community/gemma-4-e2b-it-4bit"
+                else:
+                    model_id = "mlx-community/gemma-4-e4b-it-4bit"
+            
+            argv.extend(["--model", model_id])
+
+            get_logger("runtime").info(
+                "mlx_daemon_starting",
+                tier=self._tier,
+                model=model_id,
+                argv=argv
+            )
+
             self._daemon = subprocess.Popen(
                 argv,
                 stdin=subprocess.PIPE,

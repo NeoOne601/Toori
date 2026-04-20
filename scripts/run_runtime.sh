@@ -17,7 +17,7 @@ else
 fi
 
 TOORI_DATA_DIR="${TOORI_DATA_DIR:-.toori}"
-HOST="${TOORI_HOST:-127.0.0.1}"
+HOST="${TOORI_HOST:-0.0.0.0}"
 PORT="${TOORI_PORT:-7777}"
 
 # ── External volume cache redirection ─────────────────────────────────────────

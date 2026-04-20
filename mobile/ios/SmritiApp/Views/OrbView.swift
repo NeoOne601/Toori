@@ -81,7 +81,7 @@ struct OrbView: View {
         ZStack {
             Circle()
                 .fill(Color.white.opacity(0.03))
-            Image(systemName: "brain.head.profile.fill")
+            Image(systemName: "eye.circle.fill")
                 .font(.system(size: 34, weight: .medium))
                 .foregroundStyle(Color.smritiAccent.opacity(0.6))
         }

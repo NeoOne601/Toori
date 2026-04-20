@@ -19,3 +19,4 @@ faiss-cpu>=1.7.0
 # torch>=2.1.0
 # torchvision
 # git+https://github.com/ChaoningZhang/MobileSAM
+zeroconf

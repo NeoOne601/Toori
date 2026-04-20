@@ -7,6 +7,7 @@ import io
 import hashlib
 import os
 import re
+import threading
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -217,6 +218,7 @@ class RuntimeContainer:
         self._sag_templates_path = self._smriti_storage.templates_path or str(Path(self._smriti_storage.data_dir or self.data_dir) / "sag_templates.json")
         self._setu2_bridge = None
         self._pending_enrichment_task: asyncio.Task | None = None
+        self._reasoning_lock = threading.Lock()
 
     @staticmethod
     def _clean_label(value: object) -> str:
@@ -1147,9 +1149,19 @@ class RuntimeContainer:
         tick_dict: dict[str, Any],
         base_metadata: dict[str, Any] | None,
     ) -> None:
-        settings = self.get_settings()
         if not settings.live_features.open_vocab_labels_enabled:
             return
+        
+        # Concurrency Throttle: Skip background enrichment if the GPU is busy with a reasoning request.
+        # This prevents GPU buffer "pile-ups" on 8GB machines.
+        if not self._reasoning_lock.acquire(blocking=False):
+            get_logger("runtime").debug(
+                "living_lens_enrichment_skipped_busy",
+                session_id=session_id,
+                observation_id=observation_id,
+            )
+            return
+
         try:
             observation = self.store.get_observation(observation_id)
             await self._enrich_open_vocab_anchor_matches(
@@ -1161,10 +1173,12 @@ class RuntimeContainer:
             if settings.live_features.tvlc_enabled is False:
                 self._strip_disabled_tvlc_context(tick_dict)
             self._update_observation_from_tick(
-                observation_id,
-                base_metadata=base_metadata,
                 tick_dict=tick_dict,
             )
+        finally:
+            self._reasoning_lock.release()
+
+        try:
             payload = JEPATickPayload.model_validate(tick_dict)
             jepa_tick = _jepa_tick_from_payload(payload)
             if jepa_tick.surprise_score is not None and jepa_tick.surprise_score > 0.55:
@@ -3224,6 +3238,18 @@ class RuntimeContainer:
                 fallback_reason=self._jepa_safe_fallback_reason,
                 degrade_stage="safe_fallback",
             )
+        
+        # GPU Priority Check: If Reasoning is active (Gemma), skip JEPA to free up Metal RAM
+        # for 8GB devices. This prevents GPU buffer "pile-ups" that lead to SIGABRT.
+        if self._reasoning_lock.locked():
+            return self._safe_fallback_jepa_result(
+                session_id=session_id,
+                observation_id=observation_id,
+                frame=frame,
+                correlation_id=correlation_id,
+                fallback_reason="GPU reserved for reasoning (MLX)",
+                degrade_stage="gpu_priority_paused",
+            )
         try:
             pool = await asyncio.to_thread(self._ensure_jepa_pool)
         except RuntimeError as exc:
@@ -3713,13 +3739,35 @@ class RuntimeContainer:
             return None, []
         context = self.store.recent_observations(session_id=observation.session_id, limit=5)
         prompt = request.query or "Describe the live scene, focus on actionable objects, activities, and visual changes."
-        outcome = self.providers.reason(
-            settings,
-            prompt=prompt,
-            image_bytes=image_bytes,
-            image_path=observation.image_path,
-            context=context,
-        )
+        
+        # Concurrency Throttle: Synchronize access to the MLX GPU daemon.
+        # GPU Priority Zone: On 8GB machines, we suspend background workers to reclaim ~2GB VRAM.
+        with self._reasoning_lock:
+            get_logger("runtime").info("gpu_priority_zone_entered", session_id=observation.session_id)
+            if self._jepa_pool:
+                self._jepa_pool.suspend_all()
+            
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except Exception:
+                pass
+
+            try:
+                outcome = self.providers.reason(
+                    settings,
+                    prompt=prompt,
+                    image_bytes=image_bytes,
+                    image_path=observation.image_path,
+                    context=context,
+                )
+            finally:
+                if self._jepa_pool:
+                    self._jepa_pool.resume_all()
+                get_logger("runtime").info("gpu_priority_zone_exited", session_id=observation.session_id)
+
         self._emit_reasoning_latency(outcome.trace)
         return outcome.answer, outcome.trace
 

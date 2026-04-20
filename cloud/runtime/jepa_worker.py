@@ -337,6 +337,26 @@ class JEPAWorkerPool:
             )
         return stats
 
+    def suspend_all(self) -> None:
+        """Suspend all worker processes (SIGSTOP) to free up VRAM floor space."""
+        for worker in self._workers:
+            if self._worker_alive(worker):
+                try:
+                    os.kill(worker.process.pid, signal.SIGSTOP)
+                    self._log.info("jepa_worker_suspended", worker_id=worker.worker_id, pid=worker.process.pid)
+                except Exception as exc:
+                    self._log.warning("jepa_worker_suspend_failed", worker_id=worker.worker_id, error=str(exc))
+
+    def resume_all(self) -> None:
+        """Resume all worker processes (SIGCONT) after high-priority task finishes."""
+        for worker in self._workers:
+            if self._worker_alive(worker):
+                try:
+                    os.kill(worker.process.pid, signal.SIGCONT)
+                    self._log.info("jepa_worker_resumed", worker_id=worker.worker_id, pid=worker.process.pid)
+                except Exception as exc:
+                    self._log.warning("jepa_worker_resume_failed", worker_id=worker.worker_id, error=str(exc))
+
     async def shutdown(self, timeout_s: float = 10.0) -> None:
         await asyncio.to_thread(self._shutdown_sync, timeout_s)
 

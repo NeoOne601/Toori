@@ -77,8 +77,16 @@ def _assert_supported_python() -> None:
 
 @asynccontextmanager
 async def _runtime_lifespan(app: FastAPI):
+    from .bonjour import BonjourAdvertiser
+    
     runtime = getattr(app.state, "runtime", None)
     smriti_daemon = getattr(app.state, "smriti_daemon", None)
+    
+    # Staff Fix: Automatic LAN Discovery
+    port = 7777 # Default to current port
+    advertiser = BonjourAdvertiser(port=port)
+    await advertiser.start()
+    
     try:
         if runtime is not None and hasattr(runtime, "_load_sag_templates"):
             runtime._load_sag_templates()
@@ -88,6 +96,7 @@ async def _runtime_lifespan(app: FastAPI):
             await runtime.restore_smriti_watch_folders()
         yield
     finally:
+        await advertiser.stop()
         if smriti_daemon is not None:
             await smriti_daemon.stop()
         if runtime is not None:

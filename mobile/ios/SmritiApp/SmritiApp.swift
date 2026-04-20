@@ -1,12 +1,18 @@
 import SwiftUI
 import UIKit
 import BackgroundTasks
-    static let smritiAccent = Color(red: 0.4196, green: 0.3607, blue: 0.9058)
-    static let smritiTeal = Color(red: 0.235, green: 0.765, blue: 0.765)
+    static let smritiAccent = Color(red: 0.92, green: 0.68, blue: 0.28) // Warm amber — Reality Intelligence
+    static let smritiTeal = Color(red: 0.45, green: 0.38, blue: 0.82) // Soft indigo
     static let smritiDivider = Color.white.opacity(0.12)
     static let smritiSurface = Color.white.opacity(0.06)
     static let smritiStroke = Color.white.opacity(0.08)
-    static let smritiCanvas = Color.black.opacity(0.96)
+    static let smritiCanvas = Color(red: 0.03, green: 0.05, blue: 0.10) // Deep navy
+
+    // Reality Intelligence palette
+    static let tooriAmber = Color(red: 0.92, green: 0.68, blue: 0.28)
+    static let tooriIndigo = Color(red: 0.45, green: 0.38, blue: 0.82)
+    static let tooriCanvas = Color(red: 0.03, green: 0.05, blue: 0.10)
+    static let tooriStroke = Color.white.opacity(0.08)
 }
 
 extension Animation {
@@ -17,6 +23,7 @@ extension Animation {
 final class SmritiAppModel: ObservableObject {
     enum RootTab: Hashable {
         case pulse
+        case analyze
         case mandala
         case settings
         case journal
@@ -260,7 +267,13 @@ private struct RootShell: View {
                 .tabItem {
                     Label("Pulse", systemImage: "circle.grid.3x3.fill")
                 }
-                
+
+            RealityCheckView()
+                .tag(SmritiAppModel.RootTab.analyze)
+                .tabItem {
+                    Label("Analyze", systemImage: "eye.circle")
+                }
+
             JournalView()
                 .tag(SmritiAppModel.RootTab.journal)
                 .tabItem {

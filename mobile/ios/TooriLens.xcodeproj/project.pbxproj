@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		63D7E0692F9564DB0059E566 /* DiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D7E0682F9564D20059E566 /* DiscoveryService.swift */; };
+		63D7E06E2F956B330059E566 /* UIImage+Resize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D7E06D2F956B330059E566 /* UIImage+Resize.swift */; };
 		A10000010000000000000001 /* TooriLensApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000110000000000000001 /* TooriLensApp.swift */; };
 		A10000020000000000000001 /* RuntimeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000120000000000000001 /* RuntimeModels.swift */; };
 		A10000030000000000000001 /* CameraService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000130000000000000001 /* CameraService.swift */; };
@@ -16,6 +18,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		63D7E0682F9564D20059E566 /* DiscoveryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryService.swift; sourceTree = "<group>"; };
+		63D7E06D2F956B330059E566 /* UIImage+Resize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIImage+Resize.swift"; sourceTree = "<group>"; };
 		A10000110000000000000001 /* TooriLensApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TooriLensApp.swift; sourceTree = "<group>"; };
 		A10000120000000000000001 /* RuntimeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeModels.swift; sourceTree = "<group>"; };
 		A10000130000000000000001 /* CameraService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraService.swift; sourceTree = "<group>"; };
@@ -77,6 +81,8 @@
 		A10000350000000000000001 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				63D7E06D2F956B330059E566 /* UIImage+Resize.swift */,
+				63D7E0682F9564D20059E566 /* DiscoveryService.swift */,
 				A10000130000000000000001 /* CameraService.swift */,
 				A10000140000000000000001 /* TooriAPIClient.swift */,
 			);
@@ -171,6 +177,8 @@
 				A10000020000000000000001 /* RuntimeModels.swift in Sources */,
 				A10000030000000000000001 /* CameraService.swift in Sources */,
 				A10000040000000000000001 /* TooriAPIClient.swift in Sources */,
+				63D7E0692F9564DB0059E566 /* DiscoveryService.swift in Sources */,
+				63D7E06E2F956B330059E566 /* UIImage+Resize.swift in Sources */,
 				A10000050000000000000001 /* LensAppViewModel.swift in Sources */,
 				A10000060000000000000001 /* RootView.swift in Sources */,
 			);
@@ -224,6 +232,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = BRRD9B8GT4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TooriApp/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -247,6 +256,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = BRRD9B8GT4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TooriApp/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

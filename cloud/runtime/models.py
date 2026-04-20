@@ -548,6 +548,15 @@ class AnalyzeResponse(BaseModel):
     answer: Optional[Answer] = None
     provider_health: list[ProviderHealth] = Field(default_factory=list)
     reasoning_trace: list[ReasoningTraceEntry] = Field(default_factory=list)
+    # Consumer-facing Reality Intelligence fields
+    grounded_summary: Optional[str] = Field(
+        default=None,
+        description="Consumer-friendly grounded scene description combining Setu-2 outputs"
+    )
+    confidence_label: Optional[str] = Field(
+        default=None,
+        description="Human-readable ECGD confidence: 'Grounded', 'Likely', or 'Uncertain'"
+    )
 
 
 class LivingLensTickRequest(AnalyzeRequest):

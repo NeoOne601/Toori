@@ -832,9 +832,20 @@ public struct AnalyzeRequest: Codable, Hashable {
 }
 
 public struct AnalyzeResponse: Codable, Hashable {
+    public let observation: ObservationSummary?
     public let hits: [ObservationSummary]
+    public let grounded_summary: String?
+    public let confidence_label: String?
 
-    public init(hits: [ObservationSummary]) {
+    public init(
+        observation: ObservationSummary? = nil,
+        hits: [ObservationSummary],
+        grounded_summary: String? = nil,
+        confidence_label: String? = nil
+    ) {
+        self.observation = observation
         self.hits = hits
+        self.grounded_summary = grounded_summary
+        self.confidence_label = confidence_label
     }
 }

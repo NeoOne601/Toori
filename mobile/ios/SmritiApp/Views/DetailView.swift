@@ -102,6 +102,17 @@ struct DetailContent: View {
         )
         .padding(.horizontal, 18)
         .padding(.top, 18)
+
+        // Confidence badge
+        HStack {
+            ConfidenceBadge(
+                confidence: memory.metricTriplet.prediction_consistency,
+                label: memory.metricTriplet.prediction_consistency > 0.8 ? "Grounded" : memory.metricTriplet.prediction_consistency > 0.5 ? "Likely" : "Uncertain"
+            )
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 4)
     }
 
     private var titleBlock: some View {
@@ -221,7 +232,7 @@ struct DetailContent: View {
 
     private var descriptionBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Setu-2")
+            Text("Grounded Description")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.68))
             WordRevealText(text: memory.descriptionText)

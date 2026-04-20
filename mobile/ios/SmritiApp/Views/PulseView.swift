@@ -99,10 +99,10 @@ struct PulseView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("The Pulse")
+                    Text("Toori")
                         .font(.system(size: 28, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("Live memories arriving from Smriti")
+                    Text("Recent observations • Reality Intelligence")
                         .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.6))
                 }

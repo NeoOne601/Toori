@@ -26,51 +26,111 @@ struct RootView: View {
 
 private struct LensView: View {
     @EnvironmentObject private var viewModel: LensAppViewModel
+    @FocusState private var isPromptFocused: Bool
+    @State private var currentZoom: CGFloat = 1.0
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    CameraPreview(session: viewModel.camera.session)
-                        .frame(height: 360)
-                        .clipShape(RoundedRectangle(cornerRadius: 24))
+        ZStack {
+            // Immersive Background Camera
+            CameraPreview(session: viewModel.camera.session)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    isPromptFocused = false
+                }
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            let delta = value / currentZoom
+                            currentZoom = value
+                            viewModel.camera.setZoom(viewModel.camera.zoomFactor * delta)
+                        }
+                        .onEnded { _ in
+                            currentZoom = 1.0
+                        }
+                )
+
+            // Top Status Pill
+            VStack {
+                if !viewModel.status.isEmpty && viewModel.status != "Idle" {
+                    StatusPill(text: viewModel.status)
+                        .padding(.top, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                Spacer()
+            }
+
+            // Central Results (if any)
+            if let answer = viewModel.latestAnswer {
+                VStack {
+                    Spacer()
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Live Prompt").font(.headline)
-                        TextField("Ask what the lens should explain", text: $viewModel.prompt, axis: .vertical)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Capture and analyze") {
-                            Task { await viewModel.captureAndAnalyze() }
+                        HStack {
+                            Text("Discovery").font(.system(size: 14, weight: .bold)).capsuleStyle()
+                            Spacer()
+                            Button {
+                                viewModel.latestAnswer = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.4))
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
+                        Text(answer.text)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.white)
+                        Text("Source: \(answer.provider)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.5))
                     }
-                    .padding()
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
-                    if let answer = viewModel.latestAnswer {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Latest answer").font(.headline)
-                            Text(answer.text)
-                            Text("Provider: \(answer.provider)")
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                    .padding(20)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 120) // Above floating bar
+                }
+            }
+
+            // Bottom Floating Interaction Bar
+            VStack {
+                Spacer()
+                HStack(spacing: 12) {
+                    HStack {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(.orange)
+                        TextField("Ask the lens...", text: $viewModel.prompt)
+                            .focused($isPromptFocused)
+                            .submitLabel(.search)
+                            .onSubmit {
+                                analyze()
+                            }
                     }
-                    ForEach(viewModel.latestHits, id: \.observation_id) { hit in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(hit.summary ?? hit.observation_id).font(.headline)
-                            Text("Score \(hit.score, specifier: "%.2f")")
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(.white.opacity(0.12))
+                    .clipShape(Capsule())
+
+                    Button {
+                        analyze()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 38))
+                            .symbolRenderingMode(.multicolor)
                     }
                 }
-                .padding()
+                .padding(12)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+                .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
             }
-            .navigationTitle("Lens")
-            .toolbar { Text(viewModel.status).font(.caption).foregroundStyle(.secondary) }
+        }
+        .animation(.spring(), value: viewModel.status)
+        .preferredColorScheme(.dark)
+    }
+
+    private func analyze() {
+        isPromptFocused = false
+        Task {
+            await viewModel.captureAndAnalyze()
         }
     }
 }
@@ -210,12 +270,43 @@ private struct SettingsView: View {
     }
 }
 
+private struct StatusPill: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(backgroundColor.opacity(0.8))
+            .clipShape(Capsule())
+            .shadow(radius: 10)
+    }
+    
+    private var backgroundColor: Color {
+        if text.contains("Searching") { return .gray }
+        if text.contains("Discovered") || text.contains("Connected") { return .orange }
+        return .red // Error state
+    }
+}
+
+private extension Text {
+    func capsuleStyle() -> some View {
+        self
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.white.opacity(0.2))
+            .clipShape(Capsule())
+    }
+}
+
 private struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.videoPreviewLayer.session = session
+        view.videoPreviewLayer.videoGravity = .resizeAspectFill
         return view
     }
 

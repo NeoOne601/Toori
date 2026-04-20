@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
 final class LensAppViewModel: ObservableObject {
@@ -17,8 +18,23 @@ final class LensAppViewModel: ObservableObject {
 
     let api = TooriAPIClient()
     let camera = CameraService()
+    private let discovery = DiscoveryService()
+    private var discoveryCancellable: AnyCancellable?
 
     func bootstrap() async {
+        status = "Searching for backend..."
+        discovery.startBrowsing()
+        
+        discoveryCancellable = discovery.$discoveredEndpoint.sink { [weak self] url in
+            if let url = url {
+                self?.api.baseURL = url
+                self?.status = "Discovered \(url.host ?? "backend")"
+                Task {
+                    await self?.refresh()
+                }
+            }
+        }
+        
         await refresh()
     }
 
@@ -38,16 +54,42 @@ final class LensAppViewModel: ObservableObject {
 
     func captureAndAnalyze() async {
         do {
-            status = "Capturing frame"
-            let imageData = try await camera.capturePhoto()
-            let response = try await api.analyze(imageData: imageData, sessionId: sessionId, prompt: prompt.isEmpty ? nil : prompt)
-            latestAnswer = response.answer
-            latestHits = response.hits
-            health = response.provider_health
-            status = "Analyzed \(response.observation.id)"
+            status = "Capturing frame..."
+            let rawData = try await camera.capturePhoto()
+            
+            guard let image = UIImage(data: rawData) else {
+                status = "Error: Invalid image data"
+                return
+            }
+            
+            status = "Optimizing for iMac..."
+            guard let optimizedData = image.toOptimizedData() else {
+                status = "Error: Optimization failed"
+                return
+            }
+            
+            status = "Uploading to iMac..."
+            let response = try await api.analyze(imageData: optimizedData, sessionId: sessionId, prompt: prompt.isEmpty ? nil : prompt)
+            
+            // Dispatch updates to MainActor
+            self.latestAnswer = response.answer
+            self.latestHits = response.hits
+            self.health = response.provider_health
+            self.status = "Analyzed \(response.observation.id)"
+            
+            // Wait a moment so the UI can show the Analyze result before refresh clears status
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
             await refresh()
         } catch {
-            status = error.localizedDescription
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorNetworkConnectionLost {
+                status = "iMac Memory Overflow. Backend is restarting (8GB Limit)."
+            } else if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+                status = "iMac is heavy thinking (Swap Thrash). Request timed out."
+            } else {
+                status = error.localizedDescription
+            }
+            print("❌ [Analysis] Error: \(error)")
         }
     }
 

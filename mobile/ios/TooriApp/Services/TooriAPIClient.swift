@@ -3,10 +3,19 @@ import Foundation
 final class TooriAPIClient {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
-    private let baseURL: URL
+    var baseURL: URL
 
-    init(baseURL: URL = URL(string: ProcessInfo.processInfo.environment["TOORI_RUNTIME_URL"] ?? "http://127.0.0.1:7777")!) {
+    init(baseURL: URL = URL(string: ProcessInfo.processInfo.environment["TOORI_RUNTIME_URL"] ?? "http://192.168.0.174:7777")!) {
         self.baseURL = baseURL
+    }
+    
+    func ping() async -> Bool {
+        do {
+            let _: [ProviderHealth] = try await fetchHealth()
+            return true
+        } catch {
+            return false
+        }
     }
 
     func fetchSettings() async throws -> RuntimeSettings {
@@ -47,7 +56,8 @@ final class TooriAPIClient {
                 session_id: sessionId,
                 query: prompt,
                 decode_mode: "auto"
-            )
+            ),
+            timeout: 120.0
         )
     }
 
@@ -68,13 +78,15 @@ final class TooriAPIClient {
     private func request<Response: Decodable, Body: Encodable>(
         path: String,
         method: String,
-        body: Body?
+        body: Body?,
+        timeout: TimeInterval = 90.0
     ) async throws -> Response {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body {
             request.httpBody = try encoder.encode(body)

@@ -51,12 +51,12 @@ struct RecallSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Voice recall")
+                        Text("Ask Toori anything")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.white)
 
                         if appModel.recallResults.isEmpty, !appModel.isRecallLoading {
-                            Text("Say a memory in plain language and Smriti will pull it into view.")
+                            Text("Describe a memory in plain language and Toori will pull it into view.")
                                 .font(.system(size: 13))
                                 .foregroundStyle(.white.opacity(0.52))
                         } else {
@@ -86,7 +86,7 @@ struct RecallSheet: View {
 
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("Hum to find")
+                            Text("Search by sound")
                                 .font(.system(size: 17, weight: .semibold))
                                 .foregroundStyle(.white)
                             Spacer()

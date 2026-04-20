@@ -3,7 +3,7 @@ import SmritiKit
 import UIKit
 
 struct JournalView: View {
-    @StateObject private var appModel = SmritiAppModel.shared
+    @EnvironmentObject private var appModel: SmritiAppModel
     @State private var selectedDate = Date()
     @State private var animatedTextOpacity: Double = 0
     @State private var showAnimation = false
