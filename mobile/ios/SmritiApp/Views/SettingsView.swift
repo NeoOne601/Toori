@@ -16,10 +16,8 @@ struct SettingsView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
                     backendSection
-                    modelSection
                     storageSection
                     watchFolderSection
-                    capabilitySection
                     aboutSection
                 }
                 .padding(20)
@@ -101,94 +99,6 @@ struct SettingsView: View {
             }
         }
         .sectionCard()
-    }
-
-    // MARK: - Model Selection
-
-    private var modelSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "cpu")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.smritiAccent)
-                Text("Reasoning Model")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-
-            VStack(spacing: 10) {
-                modelOption(
-                    id: "auto",
-                    title: "Auto (Recommended)",
-                    subtitle: "Selects the best model for your hardware",
-                    icon: "sparkles"
-                )
-                modelOption(
-                    id: "gemma-4-e2b-it-4bit",
-                    title: "Gemma 4 e2b",
-                    subtitle: "Faster, lower memory — ideal for 8GB devices",
-                    icon: "hare"
-                )
-                modelOption(
-                    id: "gemma-4-e4b-it-4bit",
-                    title: "Gemma 4 e4b",
-                    subtitle: "Higher quality — requires 16GB+ RAM",
-                    icon: "brain.head.profile"
-                )
-            }
-
-            Text("If Gemma returns empty results, Toori automatically restarts the model daemon and retries.")
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.44))
-        }
-        .sectionCard()
-    }
-
-    private func modelOption(id: String, title: String, subtitle: String, icon: String) -> some View {
-        Button {
-            withAnimation(.smritiSpring) {
-                selectedModel = id
-            }
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 16))
-                    .foregroundStyle(selectedModel == id ? Color.smritiAccent : .white.opacity(0.4))
-                    .frame(width: 28)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-
-                Spacer()
-
-                ZStack {
-                    Circle()
-                        .stroke(selectedModel == id ? Color.smritiAccent : Color.white.opacity(0.2), lineWidth: 2)
-                        .frame(width: 20, height: 20)
-                    if selectedModel == id {
-                        Circle()
-                            .fill(Color.smritiAccent)
-                            .frame(width: 12, height: 12)
-                    }
-                }
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(selectedModel == id ? Color.smritiAccent.opacity(0.08) : Color.white.opacity(0.03))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(selectedModel == id ? Color.smritiAccent.opacity(0.3) : Color.smritiStroke, lineWidth: 0.5)
-            )
-        }
     }
 
     // MARK: - Storage
@@ -279,108 +189,6 @@ struct SettingsView: View {
         .sectionCard()
     }
 
-    // MARK: - Capabilities
-
-    private var capabilitySection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "eye.circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.smritiAccent)
-                Text("Reality Intelligence")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-
-            let manager = GemmaModelManager.shared
-            let currentTier = manager.detectTier()
-            let tierDisplayName: String = {
-                switch currentTier {
-                case .base: return "Essentials"
-                case .standard: return "Standard"
-                case .enhanced: return "Enhanced"
-                }
-            }()
-
-            HStack(spacing: 10) {
-                Image(systemName: "memorychip")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.smritiAccent)
-                Text(tierDisplayName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                Spacer()
-                Text(manager.selectedVariant())
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.smritiAccent.opacity(0.08))
-            )
-
-            let items: [(String, String, DeviceTier, Binding<Bool>)] = [
-                ("Grounded scene analysis", "scope", .base, $appModel.openVocabEnabled),
-                ("Gemma narration", "text.bubble", .standard, .constant(true)),
-                ("Silent journal", "book.closed", .standard, .constant(true)),
-                ("Scene archaeology", "clock.arrow.circlepath", .enhanced, .constant(true)),
-                ("People orbit", "person.2", .standard, .constant(true)),
-                ("Audio search", "waveform", .base, $appModel.tvlcEnabled),
-            ]
-            let priorities: [String: Int] = ["base": 0, "standard": 1, "enhanced": 2]
-
-            ForEach(items, id: \.0) { featureName, icon, minimumTier, binding in
-                let currentPrio = priorities[currentTier.rawValue] ?? 0
-                let minPrio = priorities[minimumTier.rawValue] ?? 0
-                let isUnlocked = currentPrio >= minPrio
-
-                HStack(spacing: 12) {
-                    Image(systemName: icon)
-                        .font(.system(size: 13))
-                        .foregroundStyle(isUnlocked ? Color.smritiAccent : .white.opacity(0.3))
-                        .frame(width: 22)
-                    
-                    Text(featureName)
-                        .font(.system(size: 14))
-                        .foregroundStyle(isUnlocked ? .white.opacity(0.9) : .white.opacity(0.4))
-                    
-                    Spacer()
-                    
-                    if isUnlocked {
-                        Toggle("", isOn: binding)
-                            .toggleStyle(SwitchToggleStyle(tint: Color.smritiAccent))
-                            .labelsHidden()
-                            .scaleEffect(0.8)
-                            .frame(width: 40)
-                    } else {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white.opacity(0.2))
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-
-            if (priorities[currentTier.rawValue] ?? 0) < 2 && ProcessInfo.processInfo.physicalMemory > 10_000_000_000 {
-                Button {
-                    showGemmaDownload = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 13))
-                        Text("Upgrade to Enhanced")
-                    }
-                }
-                .buttonStyle(SettingsPillButtonStyle(fill: Color.smritiAccent))
-            }
-        }
-        .sectionCard()
-        .sheet(isPresented: $showGemmaDownload) {
-            GemmaDownloadView()
-        }
-    }
-
     // MARK: - About
 
     private var aboutSection: some View {
@@ -412,6 +220,7 @@ struct SettingsView: View {
         }
         .sectionCard()
     }
+}
 }
 
 // MARK: - Storage Ring Chart
