@@ -8,6 +8,14 @@ struct ProviderConfig: Codable, Hashable {
     var model_path: String?
 }
 
+struct RuntimeFeatureSettings: Codable, Hashable {
+    var live_lens_use_jepa_tick: Bool = true
+    var energy_heatmap_enabled: Bool = true
+    var entity_overlay_enabled: Bool = true
+    var open_vocab_labels_enabled: Bool = true
+    var tvlc_enabled: Bool = true
+}
+
 struct RuntimeSettings: Codable {
     var runtime_profile: String
     var sampling_fps: Double
@@ -17,6 +25,7 @@ struct RuntimeSettings: Codable {
     var reasoning_backend: String
     var local_reasoning_disabled: Bool
     var providers: [String: ProviderConfig]
+    var live_features: RuntimeFeatureSettings
 }
 
 struct Observation: Codable, Identifiable, Hashable {
@@ -25,11 +34,14 @@ struct Observation: Codable, Identifiable, Hashable {
     let created_at: String
     let image_path: String
     let thumbnail_path: String
-    let summary: String?
+    var summary: String?
     let source_query: String?
     let confidence: Double
     let novelty: Double
     let providers: [String]
+    
+    // Reality Intelligence
+    var depth_strata: String?
 }
 
 struct SearchHit: Codable, Identifiable, Hashable {
@@ -61,6 +73,10 @@ struct AnalyzeResponse: Codable {
     let hits: [SearchHit]
     let answer: Answer?
     let provider_health: [ProviderHealth]
+    
+    // Reality Intelligence Grounding
+    let grounded_summary: String?
+    let confidence_label: String?
 }
 
 struct QueryResponse: Codable {

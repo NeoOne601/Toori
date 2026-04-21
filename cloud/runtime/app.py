@@ -356,10 +356,10 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         "/v1/analyze",
         dependencies=[Depends(require_auth), Depends(rate_limit_dependency("analyze"))],
     )
-    def analyze(payload: AnalyzeRequest):
+    async def analyze(payload: AnalyzeRequest):
         analyze_counter.inc()
         with analyze_latency.time():
-            return app.state.runtime.analyze(payload)
+            return await app.state.runtime.analyze(payload)
 
     @app.post(
         "/v1/living-lens/tick",

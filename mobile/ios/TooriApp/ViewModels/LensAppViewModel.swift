@@ -11,6 +11,8 @@ final class LensAppViewModel: ObservableObject {
     @Published var latestHits: [SearchHit] = []
     @Published var searchHits: [SearchHit] = []
     @Published var searchAnswer: Answer?
+    @Published var groundedSummary: String?
+    @Published var confidenceLabel: String?
     @Published var sessionId = "ios-live"
     @Published var prompt = ""
     @Published var searchText = ""
@@ -38,6 +40,10 @@ final class LensAppViewModel: ObservableObject {
         await refresh()
     }
 
+    func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
     func refresh() async {
         do {
             async let settingsTask = api.fetchSettings()
@@ -53,6 +59,7 @@ final class LensAppViewModel: ObservableObject {
     }
 
     func captureAndAnalyze() async {
+        hideKeyboard()
         do {
             status = "Capturing frame..."
             let rawData = try await camera.capturePhoto()
@@ -73,6 +80,8 @@ final class LensAppViewModel: ObservableObject {
             
             // Dispatch updates to MainActor
             self.latestAnswer = response.answer
+            self.groundedSummary = response.grounded_summary
+            self.confidenceLabel = response.confidence_label
             self.latestHits = response.hits
             self.health = response.provider_health
             self.status = "Analyzed \(response.observation.id)"
@@ -94,6 +103,7 @@ final class LensAppViewModel: ObservableObject {
     }
 
     func runSearch() async {
+        hideKeyboard()
         guard let settings else { return }
         do {
             let response = try await api.search(query: searchText, sessionId: sessionId, topK: settings.top_k)
@@ -105,6 +115,7 @@ final class LensAppViewModel: ObservableObject {
     }
 
     func saveSettings() async {
+        hideKeyboard()
         guard let settings else { return }
         do {
             self.settings = try await api.updateSettings(settings)

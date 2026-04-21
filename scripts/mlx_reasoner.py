@@ -27,8 +27,8 @@ def emit_json(payload: dict):
     else:
         os.write(REAL_STDOUT_FD, json.dumps(payload).encode('utf-8') + b'\n')
 
-LOCAL_MODEL_PATH = "/Volumes/Apple/AI Model/gemma-4-e4b-it-4bit"
-FALLBACK_HF_REPO = "mlx-community/gemma-4-e4b-it-4bit"
+LOCAL_MODEL_PATH = "/Volumes/Apple/AI Model/gemma-4-e2b-it-4bit"
+FALLBACK_HF_REPO = "mlx-community/gemma-4-e2b-it-4bit"
 DEFAULT_MAX_TOKENS = 512
 TEMP = 0.2
 TOP_P = 0.9
@@ -125,7 +125,7 @@ def _save_tmp_image(b64: str) -> str:
 
 def _write_error(msg):
     print(f"[mlx_reasoner] ERROR: {msg}", file=sys.stderr, flush=True)
-    emit_json({"text":"","tokens_generated":0,"model":"gemma-4-e4b",
+    emit_json({"text":"","tokens_generated":0,"model":"gemma-4",
                "latency_ms":0.0,"local":True,"error":msg})
 
 def _lightweight_healthcheck():

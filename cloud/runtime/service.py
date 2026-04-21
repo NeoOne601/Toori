@@ -2291,12 +2291,12 @@ class RuntimeContainer:
             ),
         )
 
-    def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
-        response, _, _ = self._analyze_with_world_model(request)
+    async def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
+        response, _, _ = await self._analyze_with_world_model(request)
         return response
 
     async def living_lens_tick(self, request: LivingLensTickRequest) -> LivingLensTickResponse:
-        response, scene_state, tracks = await asyncio.to_thread(self._analyze_with_world_model, request, True)
+        response, scene_state, tracks = await self._analyze_with_world_model(request, True)
         observations = list(reversed(self.store.recent_observations(session_id=request.session_id, limit=8)))
         history = list(reversed(self.store.recent_scene_states(session_id=request.session_id, limit=8)))
         baseline = build_baseline_comparison(observations, history) if request.proof_mode in {"both", "baseline"} else None
@@ -3581,7 +3581,7 @@ class RuntimeContainer:
             reasoning_trace=reasoning_trace,
         )
 
-    def _analyze_with_world_model(
+    async def _analyze_with_world_model(
         self,
         request: AnalyzeRequest,
         _is_tick: bool = False,
@@ -3590,10 +3590,15 @@ class RuntimeContainer:
         self.store.prune(settings.retention_days)
 
         image_bytes, image = self._load_image(request.image_base64, request.file_path)
-        embedding, provider_name, confidence, provider_metadata = self.providers.perceive(settings, image)
-        if provider_name != "basic":
-            _, _, basic_metadata = self.providers.basic.perceive(image)
-            provider_metadata = {**basic_metadata, **provider_metadata}
+        
+        # ── Capture Grounded Reality (Reality Intelligence) ──
+        embedding, provider_name, confidence, provider_metadata = self.providers.perceive(
+            settings, image
+        )
+        
+        proposal_boxes = self.providers.object_proposals(
+            settings, image, provider_name=provider_name
+        )
 
         previous = self.store.recent_observations(session_id=request.session_id, limit=1)
         novelty = 1.0
@@ -3613,13 +3618,11 @@ class RuntimeContainer:
                 *self._fallback_tags(provider_metadata),
             ],
             providers=[provider_name],
-            metadata={"perception": provider_metadata},
-        )
-
-        proposal_boxes = self.providers.object_proposals(
-            settings,
-            image,
-            provider_name=provider_name,
+            metadata={
+                "perception": provider_metadata,
+                "boxes": [box.model_dump() for box in proposal_boxes],
+                "proposal_boxes": [box.model_dump() for box in proposal_boxes],
+            },
         )
 
         hits = self.store.search_by_vector(
@@ -3630,13 +3633,33 @@ class RuntimeContainer:
             time_window_s=request.time_window_s,
         )
 
-        answer, reasoning_trace = self._maybe_reason(
+        previous_state = self.store.latest_scene_state(request.session_id)
+        recent_observations = [
+            item
+            for item in self.store.recent_observations(session_id=request.session_id, limit=6)
+            if item.id != observation.id
+        ]
+        existing_tracks = self.store.list_entity_tracks(session_id=request.session_id, limit=32)
+        
+        scene_state, entity_tracks = build_scene_state(
+            observation=observation,
+            hits=hits,
+            previous_state=previous_state,
+            recent_observations=recent_observations,
+            existing_tracks=existing_tracks,
+        )
+        self.store.save_scene_state(scene_state)
+        self.store.save_entity_tracks(entity_tracks)
+
+        answer, reasoning_trace = await self._maybe_reason(
             settings=settings,
             request=request,
             observation=observation,
             image_bytes=image_bytes,
             _is_tick=_is_tick,
+            grounded_entities=scene_state.grounded_entities if scene_state else [],
         )
+
         summary_text, summary_metadata = build_object_summary(
             observation,
             provider_metadata,
@@ -3644,6 +3667,7 @@ class RuntimeContainer:
             answer_text=answer.text if answer is not None else None,
             query=request.query,
         )
+
         if answer is not None:
             observation = self.store.update_observation(
                 observation.id,
@@ -3653,8 +3677,6 @@ class RuntimeContainer:
                     **observation.metadata,
                     "answer": answer.model_dump(mode="json"),
                     "reasoning_trace": [entry.model_dump(mode="json") for entry in reasoning_trace],
-                    "object_proposals": [box.model_dump(mode="json") for box in proposal_boxes],
-                    "proposal_boxes": [box.model_dump(mode="json") for box in proposal_boxes],
                     **summary_metadata,
                 },
             )
@@ -3665,28 +3687,12 @@ class RuntimeContainer:
                 metadata={
                     **observation.metadata,
                     "reasoning_trace": [entry.model_dump(mode="json") for entry in reasoning_trace],
-                    "object_proposals": [box.model_dump(mode="json") for box in proposal_boxes],
-                    "proposal_boxes": [box.model_dump(mode="json") for box in proposal_boxes],
                     **summary_metadata,
                 },
             )
 
-        previous_state = self.store.latest_scene_state(request.session_id)
-        recent_observations = [
-            item
-            for item in self.store.recent_observations(session_id=request.session_id, limit=6)
-            if item.id != observation.id
-        ]
-        existing_tracks = self.store.list_entity_tracks(session_id=request.session_id, limit=32)
-        scene_state, entity_tracks = build_scene_state(
-            observation=observation,
-            hits=hits,
-            previous_state=previous_state,
-            recent_observations=recent_observations,
-            existing_tracks=existing_tracks,
-        )
-        self.store.save_scene_state(scene_state)
-        self.store.save_entity_tracks(entity_tracks)
+        # Observation has already been updated with core tags and answer above.
+        # Now we link it to the computed scene state.
         observation = self.store.update_observation(
             observation.id,
             world_state_id=scene_state.id,
@@ -3694,7 +3700,6 @@ class RuntimeContainer:
                 **observation.metadata,
                 "world_model": scene_state.metrics.model_dump(mode="json"),
                 "scene_state_id": scene_state.id,
-                "proposal_boxes": [box.model_dump(mode="json") for box in proposal_boxes],
             },
         )
 
@@ -3725,21 +3730,28 @@ class RuntimeContainer:
             )
 
         # ── Compute consumer-facing Reality Intelligence fields ──
-        # grounded_summary: prefer the LLM answer (Discovery), fall back to
-        # the deterministic Setu-2 object summary so the client always shows
-        # a human-readable description — never the raw observation ID.
-        consumer_summary = None
-        if answer is not None and answer.text:
-            consumer_summary = answer.text
-        elif summary_text and not summary_text.startswith("Analyzed obs_"):
+        # 1. Prefer summary_text if it found grounded labels from proposals or metadata
+        if summary_text and not summary_text.startswith("Analyzed obs_") and summary_text != "Observed scene":
             consumer_summary = summary_text
-        else:
-            # Build a minimal deterministic description from proposals
-            tag_labels = [t for t in (observation.tags or []) if t and t != "object"]
-            if tag_labels:
-                consumer_summary = f"Scene contains: {', '.join(tag_labels[:6])}."
+        # 2. Use LLM answer if available (Discovery)
+        elif answer and answer.text:
+            consumer_summary = answer.text
+        # 3. Last resort: Synthesize from grounded entities (Reality Intelligence)
+        elif entities:
+            # Reality Intelligence Synthesis
+            grounded_items = []
+            for entity in entities[:3]:
+                if entity.label and entity.label != "unknown" and entity.label not in SUSPICIOUS_CLASSIFIER_LABELS:
+                    depth = entity.properties.get("depth_stratum", "unknown")
+                    stratum = f" in the {depth}" if depth != "unknown" else ""
+                    grounded_items.append(f"{entity.label}{stratum}")
+            
+            if grounded_items:
+                consumer_summary = f"Discovered: {', '.join(grounded_items)}."
             else:
                 consumer_summary = "Scene captured and indexed for future recall."
+        else:
+            consumer_summary = "Observation captured (No grounded objects detected)."
 
         # confidence_label: map numeric confidence to ECGD gate label
         obs_confidence = float(observation.confidence or 0.0)
@@ -3761,7 +3773,7 @@ class RuntimeContainer:
         )
         return response, scene_state, entity_tracks
 
-    def _maybe_reason(
+    async def _maybe_reason(
         self,
         *,
         settings: RuntimeSettings,
@@ -3769,6 +3781,26 @@ class RuntimeContainer:
         observation: Observation,
         image_bytes: bytes,
         _is_tick: bool = False,
+        **kwargs,
+    ) -> tuple[Optional[Answer], list[ReasoningTraceEntry]]:
+        return await self._maybe_reason_async(
+            settings=settings,
+            request=request,
+            observation=observation,
+            image_bytes=image_bytes,
+            _is_tick=_is_tick,
+            grounded_entities=kwargs.get("grounded_entities", []),
+        )
+
+    async def _maybe_reason_async(
+        self,
+        *,
+        settings: RuntimeSettings,
+        request: AnalyzeRequest,
+        observation: Observation,
+        image_bytes: bytes,
+        _is_tick: bool = False,
+        grounded_entities: list[GroundedEntity] = [],
     ) -> tuple[Optional[Answer], list[ReasoningTraceEntry]]:
         # During living_lens_tick, suppress reasoning — talker handles output
         if _is_tick and not request.query and request.decode_mode != "force":
@@ -3781,6 +3813,18 @@ class RuntimeContainer:
             return None, []
         context = self.store.recent_observations(session_id=observation.session_id, limit=5)
         prompt = request.query or "Describe the live scene, focus on actionable objects, activities, and visual changes."
+        
+        # Reality Intelligence: Inject depth strata and grounded objects into the prompt
+        if grounded_entities:
+            strata_context = []
+            for entity in grounded_entities[:5]:
+                if entity.label and entity.label != "unknown":
+                    depth = entity.properties.get("depth_stratum", "unknown")
+                    strata_context.append(f"- {entity.label} ({depth})")
+            
+            if strata_context:
+                prompt_prefix = "Reality Intelligence Context (JEPA Grounded):\n" + "\n".join(strata_context)
+                prompt = f"{prompt_prefix}\n\nUser Question: {prompt}" if request.query else f"{prompt_prefix}\n\n{prompt}"
         
         # Concurrency Throttle: Synchronize access to the MLX GPU daemon.
         # GPU Priority Zone: On 8GB machines, we suspend background workers to reclaim ~2GB VRAM.

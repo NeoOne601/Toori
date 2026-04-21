@@ -187,6 +187,9 @@ SUSPICIOUS_CLASSIFIER_LABELS = {
     "hand plane",
     "velvet",
     "lemon",
+    "toilet seat",
+    "toilet paper",
+    "toilet sitting",
 }
 
 RELATION_PHRASES = (
@@ -1305,7 +1308,7 @@ class ProviderRegistry:
             # Check if this is a local provider that might just need a quick restart.
             # If the daemon is already reporting 'Ready' (health_message), allow a faster 5s retry.
             is_transient = "empty output" in error.lower() or "connection" in error.lower()
-            lockout_s = 5 if is_transient else 10
+            lockout_s = 2 if is_transient else 10
             state.opened_until = time.time() + lockout_s
 
     def _provider_health(self, provider_name: str, settings: RuntimeSettings) -> ProviderHealth:

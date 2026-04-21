@@ -158,6 +158,15 @@ def test_living_lens_refines_generic_answers_with_object_proposals(tmp_path, mon
             BoundingBox(x=0.56, y=0.22, width=0.3, height=0.42, label="chair", score=0.88),
         ],
     )
+    def mock_perceive(settings, image):
+        return (
+            [0.1] * 128,  # embedding
+            "onnx",       # provider_name
+            0.92,         # confidence
+            {"descriptor": "onnx", "top_label": "person"}, # metadata
+        )
+
+    monkeypatch.setattr(runtime.providers, "perceive", mock_perceive)
 
     response = client.post(
         "/v1/living-lens/tick",
@@ -169,11 +178,16 @@ def test_living_lens_refines_generic_answers_with_object_proposals(tmp_path, mon
             "proof_mode": "both",
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, f"Request failed: {response.text}"
     body = response.json()
-    assert body["answer"]["text"] == "red dominant balanced textured scene"
-    assert body["observation"]["summary"] != "red dominant balanced textured scene"
-    assert "person" in body["observation"]["summary"]
+    try:
+        assert body["answer"]["text"] == "red dominant balanced textured scene"
+        assert body["observation"]["summary"] != "red dominant balanced textured scene"
+        assert "person" in body["observation"]["summary"]
+    except AssertionError as e:
+        import json
+        print(f"DEBUG: Response body: {json.dumps(body, indent=2)}")
+        raise e
     assert body["scene_state"]["primary_object_label"] == "person"
     assert len(body["scene_state"]["proposal_boxes"]) == 2
     assert body["observation"]["metadata"]["primary_object_label"] == "person"
