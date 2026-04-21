@@ -85,8 +85,9 @@ toori/
 │       ├── lib/               Shared utilities
 │       └── widgets/           Small reusable widgets
 ├── mobile/
-│   ├── ios/TooriApp/          SwiftUI client (TooriLensApp.swift entry)
-│   ├── macos/SmritiApp/       Standalone macOS 14+ menu bar app (SwiftUI + AppKit bridge)
+│   ├── ios/TooriApp/          Flagship Toori Lens app (Reality Intelligence Eye)
+│   ├── ios/SmritiApp/           Pure Smriti Memory client (Recall/Journal)
+│   ├── macos/SmritiApp/       Legacy standalone macOS menu bar app
 │   └── android/app/…          Jetpack Compose client (MainActivity.kt entry)
 ├── sdk/                       python/, typescript/, swift/, kotlin/ SDKs
 ├── scripts/
@@ -125,7 +126,9 @@ toori/
 - `cloud/perception`: Atomic perception models (DINOv2, MobileSAM, AudioEncoder) and the **TVLC (Token-to-Visual-Language-Connector)**.
 - `cloud/jepa_service`: Immersive JEPA engines, Epistemic Confidence Gating (ECGD), and World Model Alignment.
 - `desktop/electron`: Electron shell plus React/Vite operator UI.
-- `smriti-kit`: Shared Swift package for Apple clients (macOS/iOS).
+- `mobile/ios/TooriApp`: Flagship "Reality Intelligence" iOS client (Toori Lens).
+- `mobile/ios/SmritiApp`: Standalone "Memory Intelligence" iOS client (Smriti).
+- `smriti-kit`: Shared Swift package for Apple clients.
 
 ### Primary Data Flow
 
@@ -175,7 +178,59 @@ On a fresh Xcode installation, run `xcodebuild -runFirstLaunch` once before buil
 
 ---
 
-## Current Project State (2026-04-08)
+## Application Architectures
+
+Toori is a multi-surface platform powered by a core world-state runtime. Each application serves a unique role in the Reality Intelligence ecosystem.
+
+### 1. The Runtime: The World-Model Brain
+The Python runtime (`cloud/`) orchestrates perception, prediction, and reasoning.
+
+```mermaid
+graph TD
+    API["FastAPI Gateway"] --> Workers["JEPA Worker Pool"]
+    Workers --> Perceive["Perception Pipeline\n(DINOv2 / SAM)"]
+    Perceive --> Engine["Immersive JEPA Engine"]
+    Engine --> Prediction["Temporal Prediction / Surprise"]
+    Prediction --> Grounding["Async Grounding Hub\n(TVLC / ECGD)"]
+    Grounding --> Reason["Reasoning sidecars\n(Gemma / MLX)"]
+    Reason --> State["World State / SmetiDB"]
+```
+
+### 2. Toori Lens: The Reality Eye
+The flagship iOS flagship client (`mobile/ios/TooriApp`) designed for real-time scene understanding.
+
+```mermaid
+graph LR
+    Cam["AVFoundation\nCamera Feed"] --> Frame["Frame Capture\nHeartbeat (30fps)"]
+    Frame --> Analyze["POST /v1/analyze"]
+    Analyze --> GroundingUI["RealityCheckView\nGrounding / Depth Strata"]
+    GroundingUI --> Reasoning["Gemma Narration\nConfidence Gated"]
+```
+
+### 3. Smriti App: The Memory Intelligence
+The retrospective memory client (`mobile/ios/SmritiApp`) for private life logging and recall.
+
+```mermaid
+graph TB
+    Ingest["Watch Folders / Photos"] --> DB["SmetiDB\nFAISS + SQLite"]
+    DB --> Recall["Semantic Recall\n(Hybrid W-Matrix)"]
+    Recall --> Mandala["Mandala Graph\n(Cluster Discovery)"]
+    Mandala --> Journal["Gemma Journals"]
+```
+
+### 4. Desktop Console: The Scientific Operator
+The Electron operator UI (`desktop/electron/`) for instrumentation and recovery lab.
+
+```mermaid
+graph TD
+    WS["WebSocket Stream"] --> Dashboard["Operator Dashboard"]
+    Dashboard --> Readout["Scientific Readout\n(SigReg / Persistence)"]
+    Readout --> Recovery["Recovery Lab\n(Rollout Comparison)"]
+```
+
+---
+
+## Current Project State (2026-04-21)
 
 This section records the stabilization work completed through 2026-04-08. Treat it as the current handoff state for runtime, desktop, and JEPA behavior.
 
@@ -385,7 +440,49 @@ Any future agent MUST prioritize majority-vote consensus and async offloading fo
 
 ---
 
-### 2026-04-09 TVLC trainer implementation
+### 2026-04-21: Toori Lens Unification & Smriti Cleanup
+
+This phase executed the architectural separation of vision-intelligence and memory-intelligence surfaces.
+
+#### Why this work was done
+
+Both products were suffering from "split-brain" regressions:
+- `SmritiApp` contained misplaced Reality Intelligence components (`RealityCheckView`), polluting the memory-focus UX.
+- `TooriLens` (flagship) lacks a cohesive design language and hero interface.
+- Cross-project dependencies made the iOS 30 FPS camera heartbeat unstable.
+
+#### What changed
+
+| Area | Before | After |
+|------|--------|-------|
+| Vision Architecture | Misplaced vision views inside SmritiApp. | **Unified Toori Lens**: All Reality Intelligence UI components migrated to the dedicated `TooriApp` project. |
+| Design Language | Ad-hoc styles borrowed from Smriti. | **Toori Design System**: Native "Cosmic Navy" and "Toori Amber" palette implemented in `TooriDesignSystem.swift`. |
+| Hero Interface | No dedicated conversational landing. | `RealityCheckView` established as the hero vision interface with grounding evidence. |
+| Reasoning UX | Model selection hidden in Smriti settings. | Standalone `GemmaDownloadView` in Toori Lens for hardware-aware model orchestration. |
+| Stability | iOS 17 `onChange` syntax crashes on older simulators. | Backwards-compatible `.onChange` observers implemented for "perfect stability." |
+
+#### Toori Design System Details
+
+The Toori Design system (`TooriDesignSystem.swift`) defines the visual grammar for Reality Intelligence:
+
+- **Colors**: 
+    - `tooriAmber`: Signature JEPA amber (#EBAD47).
+    - `tooriCanvas`: Cinematic background (#080D1A).
+    - `tooriIndigo`: Spatial accent (#7361D1).
+    - `tooriGrounded`: Success green (#48D175).
+- **Animations**:
+    - `tooriSpring`: Snappy, predictive motion (response: 0.38, damping: 0.72).
+    - `tooriReveal`: Smooth intelligence "pulse" (easeOut, 0.45s).
+
+#### Verification completed
+
+- **Build passing**: Successfully verified with `xcodebuild` for `TooriLens`.
+- **Architectural Cleanup**: Verified `SmritiApp` is now 0% vision-logic (Recall/Journal only).
+- **Path Resolution**: Fixed `xcodeproj` paths using `SOURCE_ROOT` to prevent build-system regressions.
+
+---
+
+### 2026-04-14 TVLC trainer implementation
 
 The TVLC training path is now fully implemented and has been validated in production on this iMac. This closes the gap between "TVLC present" and "TVLC actually trained with semantic supervision."
 
