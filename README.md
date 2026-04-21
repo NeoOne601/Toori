@@ -1,32 +1,31 @@
 <div align="center">
 
-# TOORI Japanese 通り (*tōri*) · Smriti (स्मृति) · Setu-2 (सेतु) 
+# Reality Intelligence: Perception without Hallucination
 
-**The world's first hallucination-bounded, JEPA-native personal memory system & live world‑state runtime.**
-
-## Why the Names?
-
-**TOORI** — from the Japanese 通り (*tōri*): "passage, thoroughfare" — the path through which memories flow.
-
-**Smriti** (स्मृति) — Sanskrit: "that which is remembered." In the Indian philosophical tradition, Smriti refers to texts and knowledge transmitted through memory rather than direct revelation — knowledge that is *retained*, organized, and recalled. It is the perfect name for a system that makes your past retrievable without fabricating what it cannot see.
-
-**Setu-2** (सेतु) — Sanskrit: "bridge." The bridge between the non-linguistic world of JEPA geometry and the human need to ask questions in words.
-
-Your photos. Your videos. Your live camera feeds. Your memories.  
-Organized by geometry — not by captions.  
-Recalled by meaning — not by keywords.  
-Runs entirely on your machine.
+**The authoritative local world-model system for high-fidelity scene understanding.**
 
 [![Tests](https://img.shields.io/badge/tests-235%20passing-brightgreen?style=flat-square)](cloud/api/tests)
 [![JEPA Tick](https://img.shields.io/badge/JEPA%20tick-48.5ms-blue?style=flat-square)](#performance-goals)
 [![WCAG](https://img.shields.io/badge/WCAG-2.1%20AA-purple?style=flat-square)](#accessibility)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11-blue?style=flat-square)](https://python.org)
-[![TypeScript](https://img.shields.io/badge/typescript-5.x-blue?style=flat-square)](desktop/electron)
 
-[Mission & Vision](#mission--vision) · [Quick Start](#quick-start) · [Architecture](#system-design--architecture) · [Smriti](#smriti--personal-memory) · [Setu-2](#setu-2--the-language-bridge) · [API](#core-operational-api-highlights) · [Contributing](#contributing)
+[Architecture](#system-design--architecture) · [Smriti Memory](#smriti--personal-memory) · [Setu-2 Bridge](#setu-2--the-language-bridge) · [Quick Start](#quick-start) · [API](#core-operational-api-highlights)
+
+---
+
+### **"Memory is not a caption waiting to be written. It is a geometry waiting to be understood."**
 
 </div>
+
+## The Reality Intelligence Manifesto
+
+Toori is a local-only, JEPA-powered world-model ecosystem that understands the physical world through **visual truth**, not generative imagination. It replaces hallucinatory captions with geometric grounding, enabling high-fidelity scene understanding and private semantic memory.
+
+👁️ **Observe Natively**: Zero-shot perception via deep geometric grounding.  
+🧠 **Remember Semantically**: Private memory structured by physical reality.  
+💬 **Query Cinematically**: Natural language reasoning on visual truth.
+
+**The intelligence layer for the era of embodied perception. 100% Local. Zero Cloud. Just the Truth.**
 
 ---
 
