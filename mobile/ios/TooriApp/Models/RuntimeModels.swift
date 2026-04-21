@@ -39,9 +39,10 @@ struct Observation: Codable, Identifiable, Hashable {
     let confidence: Double
     let novelty: Double
     let providers: [String]
-    
+
     // Reality Intelligence
     var depth_strata: String?
+    var tags: [String]?
 }
 
 struct SearchHit: Codable, Identifiable, Hashable {

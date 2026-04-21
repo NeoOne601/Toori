@@ -8,8 +8,6 @@ struct SettingsView: View {
     @Binding var hasCompletedOnboarding: Bool
 
     @State private var draftHost = ""
-    @State private var showGemmaDownload = false
-    @State private var selectedModel = "auto"
 
     var body: some View {
         NavigationStack {

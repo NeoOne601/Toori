@@ -17,6 +17,7 @@ final class LensAppViewModel: ObservableObject {
     @Published var prompt = ""
     @Published var searchText = ""
     @Published var status = "Idle"
+    @Published var isRuntimeConnected = false
 
     let api = TooriAPIClient()
     let camera = CameraService()
@@ -53,8 +54,10 @@ final class LensAppViewModel: ObservableObject {
             health = try await healthTask
             observations = try await observationTask
             status = "Connected to runtime"
+            isRuntimeConnected = true
         } catch {
             status = error.localizedDescription
+            isRuntimeConnected = false
         }
     }
 

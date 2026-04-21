@@ -7,14 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		080134D4CE91531A518C6D44 /* TooriDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A908F5182CC87BE8CBB4F865 /* TooriDesignSystem.swift */; };
+		14434681C6FFCAEAAFBD1E08 /* RealityCheckView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5C5C6C4E5A42E7C25BA5613 /* RealityCheckView.swift */; };
+		2854107E0556EFFE0F8BA252 /* RealityMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26FCBA40700EA81F471221C /* RealityMessage.swift */; };
 		63D7E0692F9564DB0059E566 /* DiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D7E0682F9564D20059E566 /* DiscoveryService.swift */; };
 		63D7E06E2F956B330059E566 /* UIImage+Resize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D7E06D2F956B330059E566 /* UIImage+Resize.swift */; };
+		901EB360C83D39BBC202F990 /* DepthStrataOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD7435E10C464C0BFDF11C /* DepthStrataOverlay.swift */; };
 		A10000010000000000000001 /* TooriLensApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000110000000000000001 /* TooriLensApp.swift */; };
 		A10000020000000000000001 /* RuntimeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000120000000000000001 /* RuntimeModels.swift */; };
 		A10000030000000000000001 /* CameraService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000130000000000000001 /* CameraService.swift */; };
 		A10000040000000000000001 /* TooriAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000140000000000000001 /* TooriAPIClient.swift */; };
 		A10000050000000000000001 /* LensAppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000150000000000000001 /* LensAppViewModel.swift */; };
 		A10000060000000000000001 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000160000000000000001 /* RootView.swift */; };
+		B3E0433DECF6345CA1A8AC2A /* GemmaDownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A923394110BC5DC3418EEF67 /* GemmaDownloadView.swift */; };
+		E437ED316B1833B6848FC929 /* ConfidenceBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDDAEF28246DE72F0F9A36F6 /* ConfidenceBadge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +34,12 @@
 		A10000160000000000000001 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		A10000170000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000180000000000000001 /* TooriLens.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TooriLens.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A26FCBA40700EA81F471221C /* RealityMessage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RealityMessage.swift; path = TooriApp/Models/RealityMessage.swift; sourceTree = SOURCE_ROOT; };
+		A908F5182CC87BE8CBB4F865 /* TooriDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TooriDesignSystem.swift; path = TooriApp/Views/TooriDesignSystem.swift; sourceTree = SOURCE_ROOT; };
+		A923394110BC5DC3418EEF67 /* GemmaDownloadView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GemmaDownloadView.swift; path = TooriApp/Views/GemmaDownloadView.swift; sourceTree = SOURCE_ROOT; };
+		AEBD7435E10C464C0BFDF11C /* DepthStrataOverlay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DepthStrataOverlay.swift; path = TooriApp/Views/DepthStrataOverlay.swift; sourceTree = SOURCE_ROOT; };
+		E5C5C6C4E5A42E7C25BA5613 /* RealityCheckView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RealityCheckView.swift; path = TooriApp/Views/RealityCheckView.swift; sourceTree = SOURCE_ROOT; };
+		FDDAEF28246DE72F0F9A36F6 /* ConfidenceBadge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfidenceBadge.swift; path = TooriApp/Views/ConfidenceBadge.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -41,6 +53,26 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		14A21916096E88D348D9A0DE /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A908F5182CC87BE8CBB4F865 /* TooriDesignSystem.swift */,
+				FDDAEF28246DE72F0F9A36F6 /* ConfidenceBadge.swift */,
+				AEBD7435E10C464C0BFDF11C /* DepthStrataOverlay.swift */,
+				E5C5C6C4E5A42E7C25BA5613 /* RealityCheckView.swift */,
+				A923394110BC5DC3418EEF67 /* GemmaDownloadView.swift */,
+			);
+			name = Views;
+			sourceTree = "<group>";
+		};
+		6B30244FF0FFF394B3A8AA52 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A26FCBA40700EA81F471221C /* RealityMessage.swift */,
+			);
+			name = Models;
+			sourceTree = "<group>";
+		};
 		A10000310000000000000001 = {
 			isa = PBXGroup;
 			children = (
@@ -58,6 +90,8 @@
 				A10000370000000000000001 /* Views */,
 				A10000110000000000000001 /* TooriLensApp.swift */,
 				A10000170000000000000001 /* Info.plist */,
+				14A21916096E88D348D9A0DE /* Views */,
+				6B30244FF0FFF394B3A8AA52 /* Models */,
 			);
 			path = TooriApp;
 			sourceTree = "<group>";
@@ -181,6 +215,12 @@
 				63D7E06E2F956B330059E566 /* UIImage+Resize.swift in Sources */,
 				A10000050000000000000001 /* LensAppViewModel.swift in Sources */,
 				A10000060000000000000001 /* RootView.swift in Sources */,
+				080134D4CE91531A518C6D44 /* TooriDesignSystem.swift in Sources */,
+				E437ED316B1833B6848FC929 /* ConfidenceBadge.swift in Sources */,
+				901EB360C83D39BBC202F990 /* DepthStrataOverlay.swift in Sources */,
+				14434681C6FFCAEAAFBD1E08 /* RealityCheckView.swift in Sources */,
+				B3E0433DECF6345CA1A8AC2A /* GemmaDownloadView.swift in Sources */,
+				2854107E0556EFFE0F8BA252 /* RealityMessage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
