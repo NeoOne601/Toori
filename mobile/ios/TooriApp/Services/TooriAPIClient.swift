@@ -75,6 +75,52 @@ final class TooriAPIClient {
         )
     }
 
+    // MARK: - Compare (Sprint B1)
+
+    func compare(imageA: Data, imageB: Data, sessionId: String, query: String?) async throws -> CompareResponse {
+        struct ComparePayload: Codable {
+            let image_base64_a: String
+            let image_base64_b: String
+            let session_id: String
+            let query: String?
+            let decode_mode: String
+        }
+        return try await request(
+            path: "/v1/analyze/compare",
+            method: "POST",
+            body: ComparePayload(
+                image_base64_a: imageA.base64EncodedString(),
+                image_base64_b: imageB.base64EncodedString(),
+                session_id: sessionId,
+                query: query,
+                decode_mode: query != nil ? "auto" : "off"
+            ),
+            timeout: 180.0
+        )
+    }
+
+    // MARK: - Calibrate (Sprint D1)
+
+    func calibrate(sessionId: String, label: String, realWidthCm: Double?, bbox: [String: Double]?) async throws -> CalibrationResponse {
+        return try await request(
+            path: "/v1/calibrate",
+            method: "POST",
+            body: CalibratePayload(session_id: sessionId, label: label, real_width_cm: realWidthCm, bbox: bbox),
+            timeout: 10.0
+        )
+    }
+
+    // MARK: - Text-only follow-up (multi-turn)
+
+    func analyzeText(query: String, sessionId: String) async throws -> AnalyzeResponse {
+        return try await request(
+            path: "/v1/analyze",
+            method: "POST",
+            body: TextAnalyzePayload(session_id: sessionId, query: query, decode_mode: "force"),
+            timeout: 60.0
+        )
+    }
+
     private func request<Response: Decodable, Body: Encodable>(
         path: String,
         method: String,

@@ -275,11 +275,15 @@ class SemanticAnchorGraph:
         templates: list[SemanticAnchorTemplate] | None = None,
         similarity_threshold: float = PATCH_SIMILARITY_THRESHOLD,
         max_matches_per_frame: int = 8,
+        templates_path: Optional[str] = None,
+        domain_packs_dir: Optional[str] = None,
     ) -> None:
         self._templates = templates or list(BOOTSTRAP_TEMPLATES)
         self._sim_threshold = similarity_threshold
         self._max_matches = max_matches_per_frame
         self._learned_templates: list[SemanticAnchorTemplate] = []
+        self._templates_path = templates_path
+        self._domain_packs_dir = domain_packs_dir
 
     @with_fallback(fallback_value=[], log_component="sag")
     def match(
@@ -450,8 +454,17 @@ class SemanticAnchorGraph:
             min_confidence=0.60,
         )
         self._learned_templates.append(template)
+        self._auto_persist()
         log.info("template_learned", name=confirmed_label, n_nodes=len(nodes))
         return template
+
+    def _auto_persist(self) -> None:
+        """Auto-save learned templates to disk after each new registration."""
+        if self._templates_path:
+            try:
+                self.save_learned_templates(self._templates_path)
+            except Exception as exc:
+                log.warning("sag_auto_persist_failed", error=str(exc))
 
     def save_learned_templates(self, path: str) -> None:
         data = [template.to_dict() for template in self._learned_templates]
@@ -459,10 +472,26 @@ class SemanticAnchorGraph:
 
     def load_learned_templates(self, path: str) -> None:
         template_path = Path(path)
-        if not template_path.exists():
-            return
-        data = json.loads(template_path.read_text())
-        self._learned_templates = [SemanticAnchorTemplate.from_dict(item) for item in data]
+        if template_path.exists():
+            data = json.loads(template_path.read_text())
+            self._learned_templates = [SemanticAnchorTemplate.from_dict(item) for item in data]
+        else:
+            self._learned_templates = []
+        # Load domain packs if a directory is configured (A2)
+        if self._domain_packs_dir:
+            packs_dir = Path(self._domain_packs_dir)
+            existing_names = {t.name for t in self._learned_templates}
+            for pack_file in sorted(packs_dir.glob("*.json")):
+                try:
+                    pack_data = json.loads(pack_file.read_text())
+                    for item in pack_data:
+                        t = SemanticAnchorTemplate.from_dict(item)
+                        if t.name not in existing_names:
+                            self._learned_templates.append(t)
+                            existing_names.add(t.name)
+                    log.info("domain_pack_loaded", file=pack_file.name)
+                except Exception as exc:
+                    log.warning("domain_pack_load_failed", file=str(pack_file), error=str(exc))
         log.info("templates_loaded", n=len(self._learned_templates))
 
     def reset(self) -> None:

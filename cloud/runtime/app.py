@@ -26,7 +26,11 @@ from .models import (
     AnalyzeRequest,
     AudioQueryRequest,
     AudioQueryResponse,
+    CalibrationHint,
+    CalibrationResponse,
     ChallengeEvaluateRequest,
+    CompareRequest,
+    CompareResponse,
     EntityLabelCorrectionRequest,
     JEPAForecastRequest,
     LivingLensTickRequest,
@@ -674,5 +678,15 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     async def migrate_smriti_storage(payload: SmritiMigrationRequest) -> SmritiMigrationResult:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, app.state.runtime.migrate_smriti_data, payload)
+
+    # ── B1: Pairwise grounded image comparison ────────────────────────────────
+    @app.post("/v1/analyze/compare", response_model=CompareResponse)
+    async def compare_images(payload: CompareRequest):
+        return await app.state.runtime.compare(payload)
+
+    # ── D1: Metric unit calibration ───────────────────────────────────────────
+    @app.post("/v1/calibrate", response_model=CalibrationResponse)
+    async def calibrate_session(payload: CalibrationHint):
+        return await app.state.runtime.calibrate(payload)
 
     return app

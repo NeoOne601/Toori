@@ -219,6 +219,13 @@ class RuntimeContainer:
         self._setu2_bridge = None
         self._pending_enrichment_task: asyncio.Task | None = None
         self._reasoning_lock = threading.Lock()
+        self._session_scales: dict[str, float] = {}
+        # A2: Copy domain packs from package to data dir on first run
+        _domain_packs_src = Path(__file__).parent / "domain_packs"
+        _domain_packs_dst = Path(self._sag_templates_path).parent / "domain_packs"
+        if _domain_packs_src.exists() and not _domain_packs_dst.exists():
+            import shutil
+            shutil.copytree(str(_domain_packs_src), str(_domain_packs_dst))
 
     @staticmethod
     def _clean_label(value: object) -> str:
@@ -3064,6 +3071,13 @@ class RuntimeContainer:
         if not hasattr(engine, "_sag") or not isinstance(engine._sag, SemanticAnchorGraph):
             return
         try:
+            # A1/A2: Wire templates_path and domain_packs_dir before loading
+            if engine._sag._templates_path is None:
+                engine._sag._templates_path = self._sag_templates_path
+            if engine._sag._domain_packs_dir is None:
+                engine._sag._domain_packs_dir = str(
+                    Path(self._sag_templates_path).parent / "domain_packs"
+                )
             engine._sag.load_learned_templates(self._sag_templates_path)
         except Exception as exc:
             get_logger("runtime").warning("sag_template_load_failed", error=str(exc))
@@ -3081,6 +3095,187 @@ class RuntimeContainer:
                     engine._sag.save_learned_templates(self._sag_templates_path)
                 except Exception as exc:
                     get_logger("runtime").warning("sag_template_save_failed", error=str(exc))
+
+    # ── A1: Auto-label registration ──────────────────────────────────────────
+
+    def _auto_register_confirmed_labels(self, answer_text: str, scene_state: Any) -> None:
+        """When Gemma names an unknown region, register it as a learned SAG template."""
+        from cloud.jepa_service.anchor_graph import SemanticAnchorGraph
+        import re
+        unknown_entities = [
+            e for e in (getattr(scene_state, "grounded_entities", None) or [])
+            if (getattr(e, "label", "unknown") or "unknown") in {"unknown", "unknown_object", "entity"}
+        ]
+        if not unknown_entities:
+            return
+        SKIP = {
+            "the", "and", "for", "that", "this", "with", "from", "have", "been",
+            "you", "see", "can", "are", "not", "its", "has", "scene", "area",
+            "image", "shows", "appears", "visible", "left", "right", "top", "bottom",
+        }
+        nouns = [
+            n.replace("-", "_")
+            for n in re.findall(r'\b([a-z][a-z_\-]{2,24})\b', answer_text.lower())
+            if n not in SKIP
+        ][:3]
+        if not nouns:
+            return
+        for engine in self._immersive_engines.values():
+            if not (hasattr(engine, "_sag") and isinstance(engine._sag, SemanticAnchorGraph)):
+                continue
+            for entity, label in zip(unknown_entities[:3], nouns):
+                bbox = getattr(entity, "bbox", None)
+                if not bbox:
+                    continue
+                try:
+                    patch_indices = self._bbox_to_patch_indices(bbox)
+                    if len(patch_indices) >= 2:
+                        engine._sag.learn_template_from_confirmation(
+                            region_patches=patch_indices,
+                            confirmed_label=label,
+                            patch_tokens=np.zeros((196, 384), dtype=np.float32),
+                        )
+                        get_logger("runtime").info("auto_label_registered", label=label)
+                except Exception as exc:
+                    get_logger("runtime").warning("auto_label_failed", label=label, error=str(exc))
+
+    def _bbox_to_patch_indices(self, bbox: dict) -> list[int]:
+        """Convert a normalised bbox dict to a 14×14 patch index list."""
+        GRID = 14
+        x = max(0.0, min(1.0, float(bbox.get("x", 0))))
+        y = max(0.0, min(1.0, float(bbox.get("y", 0))))
+        w = max(0.01, float(bbox.get("width", 0.1)))
+        h = max(0.01, float(bbox.get("height", 0.1)))
+        col_s = int(x * GRID)
+        col_e = min(GRID - 1, int((x + w) * GRID))
+        row_s = int(y * GRID)
+        row_e = min(GRID - 1, int((y + h) * GRID))
+        return [
+            row * GRID + col
+            for row in range(row_s, row_e + 1)
+            for col in range(col_s, col_e + 1)
+        ]
+
+    # ── B1: Pairwise compare ─────────────────────────────────────────────────
+
+    async def compare(self, request: Any) -> Any:
+        """B1: Run JEPA on two images and return a grounded structural diff."""
+        from cloud.runtime.models import AnalyzeRequest, CompareResponse, ChangedRegion
+        req_a = AnalyzeRequest(
+            image_base64=request.image_base64_a,
+            session_id=request.session_id + "-a",
+            decode_mode="off",
+        )
+        req_b = AnalyzeRequest(
+            image_base64=request.image_base64_b,
+            session_id=request.session_id + "-b",
+            query=getattr(request, "query", None),
+            decode_mode=getattr(request, "decode_mode", "auto"),
+        )
+        task_a = asyncio.create_task(self._analyze_with_world_model(req_a))
+        task_b = asyncio.create_task(self._analyze_with_world_model(req_b))
+        (resp_a, scene_a, _), (resp_b, scene_b, _) = await asyncio.gather(task_a, task_b)
+        # Semantic distance in embedding space
+        emb_a = np.array(getattr(resp_a.observation, "embedding", None) or [], dtype=np.float32)
+        emb_b = np.array(getattr(resp_b.observation, "embedding", None) or [], dtype=np.float32)
+        if emb_a.size and emb_b.size:
+            denom = float(np.linalg.norm(emb_a) * np.linalg.norm(emb_b))
+            sem_dist = float(1.0 - (np.dot(emb_a, emb_b) / denom if denom > 1e-8 else 0.0))
+        else:
+            sem_dist = 0.5
+        sem_dist = round(max(0.0, min(1.0, sem_dist)), 4)
+        # Changed regions
+        labels_a = {
+            getattr(e, "label", "")
+            for e in (getattr(scene_a, "grounded_entities", None) or [])
+            if getattr(e, "label", "") not in {"unknown", "background_plane", ""}
+        }
+        entities_b = getattr(scene_b, "grounded_entities", None) or []
+        changed_regions = []
+        for e in entities_b:
+            lbl = getattr(e, "label", "")
+            if lbl in {"unknown", "background_plane", ""}:
+                continue
+            props = getattr(e, "properties", {}) or {}
+            changed_regions.append(ChangedRegion(
+                label=lbl,
+                bbox=getattr(e, "bbox", None),
+                depth_stratum=props.get("depth_stratum", "unknown"),
+                is_novel=lbl not in labels_a,
+            ))
+        # Grounded diff
+        if resp_b.answer and getattr(resp_b.answer, "text", None):
+            grounded_diff = resp_b.answer.text
+        elif changed_regions:
+            novel = [r.label for r in changed_regions if r.is_novel]
+            grounded_diff = (
+                "New objects detected: " + ", ".join(novel[:4]) + "."
+                if novel else
+                f"{len(changed_regions)} region(s) changed position or state."
+            )
+        elif sem_dist > 0.3:
+            grounded_diff = "Significant structural change detected in scene geometry."
+        elif sem_dist > 0.1:
+            grounded_diff = "Minor scene composition change — lighting or position shift."
+        else:
+            grounded_diff = "Scene appears structurally identical to the reference."
+        avg_conf = (resp_a.observation.confidence + resp_b.observation.confidence) / 2
+        conf_label = "Grounded" if avg_conf > 0.80 else "Likely" if avg_conf > 0.50 else "Uncertain"
+        change_summary = (
+            f"{len(changed_regions)} changed region"
+            f"{'s' if len(changed_regions) != 1 else ''}"
+            f", {round(sem_dist * 100)}% scene shift"
+        )
+        return CompareResponse(
+            observation_a=resp_a.observation,
+            observation_b=resp_b.observation,
+            semantic_distance=sem_dist,
+            changed_regions=changed_regions,
+            grounded_diff=grounded_diff,
+            confidence_label=conf_label,
+            similarity_pct=100 - round(sem_dist * 100),
+            change_summary=change_summary,
+        )
+
+    # ── D1: Metric calibration ────────────────────────────────────────────────
+
+    STANDARD_OBJECT_SIZES_CM: dict = {
+        "door": (80.0, 200.0),
+        "a4_sheet": (21.0, 29.7),
+        "credit_card": (8.56, 5.4),
+        "desk_surface": (120.0, 60.0),
+        "laptop": (33.0, 22.0),
+        "chair_seat": (45.0, 45.0),
+        "iphone": (7.1, 14.6),
+        "screen_display": (54.0, 30.0),
+        "a5_notebook": (14.8, 21.0),
+        "standard_brick": (21.5, 6.5),
+    }
+
+    async def calibrate(self, hint: Any) -> Any:
+        """D1: Store a px/cm scale factor for the session based on a known-size object."""
+        from cloud.runtime.models import CalibrationResponse
+        IMAGE_WIDTH_PX = 1280.0
+        label = str(hint.label)
+        bbox = getattr(hint, "bbox", None)
+        real_width_cm = getattr(hint, "real_width_cm", None)
+        if real_width_cm is None:
+            prior = self.STANDARD_OBJECT_SIZES_CM.get(label)
+            if prior:
+                real_width_cm = prior[0]
+        if real_width_cm and real_width_cm > 0 and bbox:
+            bbox_w_px = float(bbox.get("width", 0.1)) * IMAGE_WIDTH_PX
+            scale = bbox_w_px / real_width_cm
+        else:
+            scale = 12.0  # default arm's-length
+        self._session_scales[hint.session_id] = scale
+        return CalibrationResponse(
+            session_id=hint.session_id,
+            scale_px_per_cm=round(scale, 2),
+            calibrated_at=utc_now().isoformat(),
+            anchor_label=label,
+            message=f"Scale calibrated: {round(scale, 1)} px/cm via '{label}'.",
+        )
 
     def _prime_forecast_engine(
         self,
@@ -3659,6 +3854,23 @@ class RuntimeContainer:
             _is_tick=_is_tick,
             grounded_entities=scene_state.grounded_entities if scene_state else [],
         )
+
+        # A1: Auto-register Gemma-confirmed labels for unknown SAG regions
+        if answer and getattr(answer, "text", None) and scene_state:
+            try:
+                self._auto_register_confirmed_labels(answer.text, scene_state)
+            except Exception as _exc:
+                get_logger("runtime").debug("auto_label_skipped", error=str(_exc))
+
+        # D1: Inject metric sizes when session is calibrated
+        scale = self._session_scales.get(request.session_id)
+        if scale and scale > 0 and scene_state:
+            for _entity in scene_state.grounded_entities:
+                if getattr(_entity, "bbox", None):
+                    _entity.properties["estimated_width_cm"] = round(
+                        float(_entity.bbox.get("width", 0)) * 1280.0 / scale, 1)
+                    _entity.properties["estimated_height_cm"] = round(
+                        float(_entity.bbox.get("height", 0)) * 1280.0 / scale, 1)
 
         summary_text, summary_metadata = build_object_summary(
             observation,

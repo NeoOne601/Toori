@@ -21,6 +21,15 @@ struct RealityMessage: Identifiable, Equatable {
     var depthStrata: RealityDepthStrata?
     var isError: Bool = false
 
+    // B1 — Compare mode result (non-nil when this message shows a structural diff)
+    var compareResult: CompareResponse?
+
+    // D1 — Domain badge shown on response card e.g. "🌿 Plant" / "🔧 Mechanical"
+    var domainBadge: String?
+
+    // D1 — Metric size estimates for detected entities (label → estimated_width_cm)
+    var metricEntities: [String: Double] = [:]
+
     enum Role: String {
         case user
         case assistant
@@ -30,6 +39,7 @@ struct RealityMessage: Identifiable, Equatable {
         lhs.id == rhs.id
     }
 }
+
 
 // MARK: - RealityDepthStrata
 /// Tri-Planar Depth Separation masks, decoded from the backend's depth payload.

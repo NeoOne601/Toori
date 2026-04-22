@@ -559,6 +559,52 @@ class AnalyzeResponse(BaseModel):
     )
 
 
+
+class CompareRequest(BaseModel):
+    """B1: Pairwise grounded scene comparison."""
+    image_base64_a: str
+    image_base64_b: str
+    session_id: str = "default"
+    query: Optional[str] = None
+    decode_mode: DecodeMode = "auto"
+    top_k: int = 3
+
+
+class ChangedRegion(BaseModel):
+    label: str
+    bbox: Optional[dict] = None
+    depth_stratum: str = "unknown"
+    is_novel: bool = True
+
+
+class CompareResponse(BaseModel):
+    observation_a: "Observation"
+    observation_b: "Observation"
+    semantic_distance: float
+    changed_regions: list[ChangedRegion] = Field(default_factory=list)
+    grounded_diff: str
+    confidence_label: str
+    similarity_pct: int
+    change_summary: str
+
+
+class CalibrationHint(BaseModel):
+    """D1: Ground-truth measurement for one known object to calibrate px/cm scale."""
+    session_id: str = "default"
+    label: str
+    real_width_cm: Optional[float] = None
+    real_height_cm: Optional[float] = None
+    bbox: Optional[dict] = None
+
+
+class CalibrationResponse(BaseModel):
+    session_id: str
+    scale_px_per_cm: float
+    calibrated_at: str
+    anchor_label: str
+    message: str
+
+
 class LivingLensTickRequest(AnalyzeRequest):
     proof_mode: ProofMode = "both"
 

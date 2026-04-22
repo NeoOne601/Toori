@@ -10,6 +10,8 @@
 		080134D4CE91531A518C6D44 /* TooriDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A908F5182CC87BE8CBB4F865 /* TooriDesignSystem.swift */; };
 		14434681C6FFCAEAAFBD1E08 /* RealityCheckView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5C5C6C4E5A42E7C25BA5613 /* RealityCheckView.swift */; };
 		2854107E0556EFFE0F8BA252 /* RealityMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26FCBA40700EA81F471221C /* RealityMessage.swift */; };
+		A10000070000000000000001 /* CompareModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000080000000000000001 /* CompareModels.swift */; };
+		A10000090000000000000001 /* Speech.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A100000A0000000000000001 /* Speech.framework */; };
 		63D7E0692F9564DB0059E566 /* DiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D7E0682F9564D20059E566 /* DiscoveryService.swift */; };
 		63D7E06E2F956B330059E566 /* UIImage+Resize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63D7E06D2F956B330059E566 /* UIImage+Resize.swift */; };
 		901EB360C83D39BBC202F990 /* DepthStrataOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD7435E10C464C0BFDF11C /* DepthStrataOverlay.swift */; };
@@ -26,6 +28,8 @@
 /* Begin PBXFileReference section */
 		63D7E0682F9564D20059E566 /* DiscoveryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryService.swift; sourceTree = "<group>"; };
 		63D7E06D2F956B330059E566 /* UIImage+Resize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIImage+Resize.swift"; sourceTree = "<group>"; };
+		A10000080000000000000001 /* CompareModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompareModels.swift; sourceTree = "<group>"; };
+		A100000A0000000000000001 /* Speech.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Speech.framework; path = System/Library/Frameworks/Speech.framework; sourceTree = SDKROOT; };
 		A10000110000000000000001 /* TooriLensApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TooriLensApp.swift; sourceTree = "<group>"; };
 		A10000120000000000000001 /* RuntimeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeModels.swift; sourceTree = "<group>"; };
 		A10000130000000000000001 /* CameraService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraService.swift; sourceTree = "<group>"; };
@@ -47,6 +51,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000090000000000000001 /* Speech.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -108,6 +113,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000120000000000000001 /* RuntimeModels.swift */,
+				A10000080000000000000001 /* CompareModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -209,6 +215,7 @@
 			files = (
 				A10000010000000000000001 /* TooriLensApp.swift in Sources */,
 				A10000020000000000000001 /* RuntimeModels.swift in Sources */,
+				A10000070000000000000001 /* CompareModels.swift in Sources */,
 				A10000030000000000000001 /* CameraService.swift in Sources */,
 				A10000040000000000000001 /* TooriAPIClient.swift in Sources */,
 				63D7E0692F9564DB0059E566 /* DiscoveryService.swift in Sources */,

@@ -3,6 +3,8 @@
 This is the authoritative reference for every agent working in this repository.
 Read this entirely before making any change.
 
+> **Last updated: 2026-04-22** — Sprints A1 (SAG auto-expansion), A2 (domain packs), B1 (pairwise compare), D1 (metric calibration), and the TooriLens iOS UX overhaul are now documented here.
+
 ---
 
 ## Mission & Vision
@@ -42,6 +44,12 @@ toori/
 │   │   ├── app.py             create_app(), all FastAPI routes
 │   │   ├── atlas.py           EpistemicAtlas (entity relationship graphs)
 │   │   ├── config.py          resolve_data_dir(), resolve_smriti_storage(), default_settings()
+│   │   ├── domain_packs/      Auto-loaded anchor template packs (JSON)
+│   │   │   ├── plants.json         12 plant/botanical anchor templates
+│   │   │   ├── home_safety.json    10 home-safety anchor templates
+│   │   │   ├── mechanical.json     10 mechanical/automotive templates
+│   │   │   ├── medical_skin.json   8 skin/wound/lesion templates
+│   │   │   └── construction.json  8 construction/material templates
 │   │   ├── error_types.py     SmritiError hierarchy
 │   │   ├── events.py          WebSocket event bus
 │   │   ├── gemma4_bridge.py   Gemma4Bridge (anchor narration, query reformulation, alerts)
@@ -86,6 +94,26 @@ toori/
 │       └── widgets/           Small reusable widgets
 ├── mobile/
 │   ├── ios/TooriApp/          Flagship Toori Lens app (Reality Intelligence Eye)
+│   │   ├── Models/
+│   │   │   ├── RuntimeModels.swift    Codable API DTOs (mirrors models.py)
+│   │   │   └── CompareModels.swift    CompareRequest/Response, CalibratePayload,
+│   │   │                              CalibrationResponse, KnownObjectPreset enum
+│   │   ├── Services/
+│   │   │   ├── TooriAPIClient.swift   HTTP client: analyze, compare, calibrate, analyzeText, search
+│   │   │   ├── CameraService.swift    AVFoundation photo capture
+│   │   │   └── DiscoveryService.swift Bonjour LAN backend discovery
+│   │   ├── ViewModels/
+│   │   │   └── LensAppViewModel.swift Persistent UUID session, compareImages(), calibrate(),
+│   │   │                              sendTextQuery(), newConversation(), imageA/imageB state
+│   │   ├── Views/
+│   │   │   ├── RealityCheckView.swift  Hero chat interface — compare mode bar, CalibrationSheet,
+│   │   │   │                           VoiceInputController, CompareResultBubble, domain badges,
+│   │   │   │                           contextual follow-up chips, metric entity pills
+│   │   │   ├── TooriDesignSystem.swift Cosmic Navy + Toori Amber design tokens
+│   │   │   ├── ConfidenceBadge.swift   ECGD confidence badge component
+│   │   │   ├── DepthStrataOverlay.swift TPDS depth strata canvas overlay
+│   │   │   └── GemmaDownloadView.swift  Model download/status UI
+│   │   └── TooriLens.xcodeproj
 │   ├── ios/SmritiApp/           Pure Smriti Memory client (Recall/Journal)
 │   ├── macos/SmritiApp/       Legacy standalone macOS menu bar app
 │   └── android/app/…          Jetpack Compose client (MainActivity.kt entry)
@@ -196,15 +224,22 @@ graph TD
     Reason --> State["World State / SmetiDB"]
 ```
 
-### 2. Toori Lens: The Reality Eye
-The flagship iOS flagship client (`mobile/ios/TooriApp`) designed for real-time scene understanding.
+### 2. Toori Lens: The Reality Intelligence Chat
+The flagship iOS client (`mobile/ios/TooriApp`) for real-time, multi-turn scene understanding.
 
 ```mermaid
 graph LR
-    Cam["AVFoundation\nCamera Feed"] --> Frame["Frame Capture\nHeartbeat (30fps)"]
+    Cam["AVFoundation\nCamera / Photo Library"] --> Frame["User Message\nwith Image"]
     Frame --> Analyze["POST /v1/analyze"]
-    Analyze --> GroundingUI["RealityCheckView\nGrounding / Depth Strata"]
-    GroundingUI --> Reasoning["Gemma Narration\nConfidence Gated"]
+    Analyze --> GroundingUI["RealityCheckView\nGrounded Summary + ECGD Badge"]
+    GroundingUI --> Badge["Domain Badge\n🌿 🔧 🩺 🏗 🏠"]
+    GroundingUI --> Entities["Entity Pills\n± metric sizes (D1 calibrated)"]
+    GroundingUI --> Chips["Context Chips\nDomain-aware follow-ups"]
+    Chips --> TextQuery["POST /v1/analyze\nmulti-turn text follow-up"]
+    Frame2["Before / After Photos"] --> Compare["POST /v1/analyze/compare"]
+    Compare --> CompBubble["CompareResultBubble\nSimilarity % + Changed Regions"]
+    KnownObj["Known Object Preset"] --> Calibrate["POST /v1/calibrate"]
+    Calibrate --> MetricSizes["estimated_width_cm\non entity pills"]
 ```
 
 ### 3. Smriti App: The Memory Intelligence
@@ -440,7 +475,198 @@ Any future agent MUST prioritize majority-vote consensus and async offloading fo
 
 ---
 
-### 2026-04-21: Toori Lens Unification & Smriti Cleanup
+### 2026-04-22: Reality Intelligence Sprint — A1/A2/B1/D1 + TooriLens UX Overhaul
+
+This is the major capability expansion sprint. It makes TooriLens genuinely domain-versatile,
+enables structural scene comparison, and delivers a metric-aware, multi-turn conversational
+mobile interface.
+
+#### Products in scope
+
+**TooriLens only** (`mobile/ios/TooriApp/` + `cloud/runtime/`). SmritiApp is **not touched**.
+
+---
+
+#### Sprint A1 — SAG Auto-Expansion (Learn from every unknown)
+
+**Goal:** The Semantic Anchor Graph grows permanently whenever Gemma names a new entity class
+that has no existing template. Templates are persisted to disk so they survive restarts.
+
+| Area | Before | After |
+|------|--------|-------|
+| SAG templates | Fixed at load time; unknown regions remain unlabelled. | `SemanticAnchorGraph.learn_template_from_confirmation()` now calls `_auto_persist()` after each new registration; templates file is updated in-place. |
+| Runtime hook | No hook from the analysis pipeline into SAG. | `RuntimeContainer._auto_register_confirmed_labels()` fires after every `_analyze_with_world_model` response. If Gemma names a previously unknown region, it is registered as a geometric template and persisted. |
+| SAG constructor | No `templates_path` or `domain_packs_dir` parameters. | `SemanticAnchorGraph.__init__` now accepts both; `_load_sag_templates_into_engine` passes them from runtime settings on startup. |
+
+**Key files:**
+- `cloud/jepa_service/anchor_graph.py` — `learn_template_from_confirmation()`, `_auto_persist()`, `__init__` signature
+- `cloud/runtime/service.py` — `_auto_register_confirmed_labels()`, `_load_sag_templates_into_engine()`
+
+---
+
+#### Sprint A2 — Domain Pack Auto-Loading
+
+**Goal:** 5 domain-specific anchor template packs ship with the runtime and auto-load on
+first startup. The packs cover the most common real-world domains a user will photograph.
+
+**Domain packs** (`cloud/runtime/domain_packs/`):
+
+| File | Templates | Domain |
+|------|-----------|--------|
+| `plants.json` | 12 | Botanical — leaf, stem, root, flower, bark, soil, pot, bud, branch, thorn, node, crown |
+| `home_safety.json` | 10 | Safety — outlet, cord, step, stair, sharp edge, spill, window, rug, smoke detector, gate |
+| `mechanical.json` | 10 | Mechanical — engine, brake, tire, bolt, weld, filter, belt, duct, exhaust, panel |
+| `medical_skin.json` | 8 | Dermatology — lesion, wound, rash, bruise, swelling, scar, nail, skin |
+| `construction.json` | 8 | Construction — drywall, beam, concrete, tile, rebar, insulation, joist, sheathing |
+
+**Startup behavior:** `RuntimeContainer.__init__` calls `_copy_domain_packs_if_needed()` which
+copies `cloud/runtime/domain_packs/` → `{data_dir}/domain_packs/` on first run using `shutil.copytree`.
+The `SemanticAnchorGraph` then loads all `*.json` packs from this directory at startup.
+
+**Log signal to watch:** `templates_loaded n=48` (12+10+10+8+8 across all packs).
+
+---
+
+#### Sprint B1 — Pairwise Scene Comparison
+
+**Goal:** Users can upload two photos and get a grounded structural diff — not a caption
+diff but a JEPA geometric comparison: which spatial regions changed, which entities are novel,
+and how similar the two scenes are.
+
+**New API endpoint:** `POST /v1/analyze/compare`
+
+```json
+// Request
+{
+  "image_base64_a": "...",
+  "image_base64_b": "...",
+  "session_id": "uuid",
+  "query": "What changed between these two rooms?",
+  "decode_mode": "auto"
+}
+
+// Response
+{
+  "observation_a": {...},
+  "observation_b": {...},
+  "semantic_distance": 0.34,
+  "changed_regions": [
+    {"label": "workbench", "bbox": {...}, "depth_stratum": "midground", "is_novel": true}
+  ],
+  "grounded_diff": "A workbench was added in the midground. The shelving unit moved left...",
+  "confidence_label": "Grounded",
+  "similarity_pct": 66,
+  "change_summary": "2 additions, 1 removal"
+}
+```
+
+**Implementation:** `service.py::compare_scenes()` runs two JEPA analyze calls in parallel
+(`asyncio.gather`), computes cosine distance on the pooled SAG embeddings, diffs entity
+track labels between the two observations, and uses Gemma to narrate the geometric diff.
+
+**Key files:**
+- `cloud/runtime/models.py` — `CompareRequest`, `CompareResponse`, `ChangedRegion`
+- `cloud/runtime/service.py` — `compare_scenes()`
+- `cloud/runtime/app.py` — `POST /v1/analyze/compare` route
+
+**iOS wiring:**
+- `CompareModels.swift` — all Swift types including `ChangedRegion`, `KnownObjectPreset`
+- `TooriAPIClient.swift` — `compare(imageA:imageB:sessionId:query:)` method
+- `LensAppViewModel.swift` — `compareImages(query:) → CompareResponse?`, `imageA`/`imageB` state
+- `RealityCheckView.swift` — compare mode bar, `CompareResultBubble`, region pills with `✦ novel` badge
+
+---
+
+#### Sprint D1 — Metric-Unit Calibration
+
+**Goal:** Once a user identifies a known-size object (e.g., "this is a credit card"),
+the system establishes a px/cm scale for the session and injects real-world size estimates
+into every subsequent analysis response.
+
+**Known object presets** (mirrors `STANDARD_OBJECT_SIZES_CM` in `service.py`):
+
+| Key | Real width (cm) |
+|-----|----------------|
+| `door` | 80.0 |
+| `a4_sheet` | 21.0 |
+| `credit_card` | 8.56 |
+| `desk_surface` | 120.0 |
+| `laptop` | 33.0 |
+| `chair_seat` | 45.0 |
+| `iphone` | 7.1 |
+
+**New API endpoint:** `POST /v1/calibrate`
+
+```json
+// Request
+{"session_id": "uuid", "label": "credit_card", "real_width_cm": 8.56, "bbox": null}
+
+// Response
+{"session_id": "uuid", "scale_px_per_cm": 180.3, "calibrated_at": "2026-04-22T07:10:00Z",
+ "anchor_label": "credit_card", "message": "Scale calibrated: 180.3 px/cm via 'credit_card'."}
+```
+
+**Implementation:** `RuntimeContainer._session_scales` dict maps `session_id → px_per_cm`.
+Every call to `_analyze_with_world_model` checks this dict and, if calibrated, injects
+`estimated_width_cm` and `estimated_height_cm` into every `GroundedEntity.properties`.
+
+**Key files:**
+- `cloud/runtime/models.py` — `CalibratePayload`, `CalibrationHint`, `CalibrationResponse`
+- `cloud/runtime/service.py` — `calibrate_session()`, `_session_scales` dict
+- `cloud/runtime/app.py` — `POST /v1/calibrate` route
+
+**iOS wiring:**
+- `CompareModels.swift` — `CalibratePayload`, `CalibrationResponse`, `KnownObjectPreset` enum
+- `TooriAPIClient.swift` — `calibrate(sessionId:label:realWidthCm:bbox:)` method
+- `LensAppViewModel.swift` — `calibrate(preset:)`, `isCalibrated`, `showCalibrationSheet`
+- `RealityCheckView.swift` — ruler icon header button → `CalibrationSheet` (modal picker), metric size labels on entity pills
+
+---
+
+#### TooriLens iOS UX Overhaul (2026-04-22)
+
+Full rebuild of the conversational UI layer. All changes are confined to `mobile/ios/TooriApp/`.
+
+**Persistent UUID session**
+- `LensAppViewModel.sessionId` is now a UUID persisted to `UserDefaults["toori.sessionId"]`.
+- Survives app backgrounding and device lock. Rotates only when `newConversation()` is called.
+- Long-press the "Toori" title (≥0.6s) → heavy haptic + full message clear + new session.
+
+**Multi-turn follow-up**
+- Text queries after an initial analysis fire `POST /v1/analyze` with `decode_mode: "force"` on
+  the same session, so Gemma reasons over the already-stored geometric context.
+- `TooriAPIClient.analyzeText()` + `LensAppViewModel.sendTextQuery()` wired end to end.
+
+**Voice input (`VoiceInputController`)**
+- `SFSpeechRecognizer` + `AVAudioEngine` wired directly in `RealityCheckView.swift`.
+- No SmritiKit dependency — `VoiceInputController` is self-contained in the same file.
+- Mic button shows animated wave bars (`LiveWaveBars`) while recording.
+- `lastTranscript` property tracks the best transcription; `.result` is not used
+  (unavailable on this SDK version).
+- `Speech.framework` is now registered in `TooriLens.xcodeproj/project.pbxproj`.
+
+**Domain badges**
+- `domainBadge(for:)` in `RealityCheckView` inspects entity labels and returns an emoji-prefixed
+  badge string: `🌿 Plant`, `🏠 Safety`, `🔧 Mechanical`, `🩺 Medical`, `🏗 Construction`.
+- Badge appears on the top-left corner of the analysis card image.
+
+**Contextual follow-up chips**
+- After the first assistant response, a horizontal scroll of contextual suggestion chips appears
+  above the message list.
+- Chips are domain-derived: plant entities → "Is this plant healthy?", safety entities →
+  "Any safety concerns?", etc.
+- "Compare with another photo" chip activates compare mode directly.
+- "Measure this space" chip appears when session is not yet calibrated.
+
+**New Xcode project registrations**
+- `CompareModels.swift` added to `A10000340000000000000001 /* Models */` group
+  and `A10000420000000000000001 /* Sources */` build phase.
+- `Speech.framework` added to `A10000210000000000000001 /* Frameworks */` build phase.
+
+**Build verification:** `xcodebuild … -sdk iphonesimulator … BUILD SUCCEEDED` ✅
+
+---
+
 
 This phase executed the architectural separation of vision-intelligence and memory-intelligence surfaces.
 
@@ -855,6 +1081,8 @@ Rate limiting: 20 req/s burst 60 globally; 5 req/s burst 10 for `/v1/smriti/reca
 | GET | `/v1/observations` | List observations (session_id, limit, `summary_only`) |
 | GET | `/v1/file` | Serve a file from data_dir (path-restricted) |
 | POST | `/v1/analyze` | Analyze image → `AnalyzeResponse` |
+| POST | `/v1/analyze/compare` | **[Sprint B1]** Pairwise scene comparison → `CompareResponse` (semantic distance, changed regions, grounded diff, similarity_pct) |
+| POST | `/v1/calibrate` | **[Sprint D1]** Session px/cm scale calibration via known object → `CalibrationResponse` |
 | POST | `/v1/living-lens/tick` | Living lens async tick → `LivingLensTickResponse` |
 | POST | `/v1/jepa/forecast` | JEPA forecast at horizon k |
 | POST | `/v1/query` | Text/image semantic query → `QueryResponse` |
@@ -999,6 +1227,11 @@ This is the **single source of truth**. Keep `desktop/electron/src/types.ts` in 
 ### API Contracts
 - `AnalyzeRequest` — image_base64 or file_path + session_id + query + decode_mode
 - `AnalyzeResponse` — observation + hits + answer + provider_health + reasoning_trace
+- `CompareRequest` — **[Sprint B1]** image_base64_a + image_base64_b + session_id + query + decode_mode
+- `CompareResponse` — **[Sprint B1]** observation_a, observation_b, semantic_distance, changed_regions (list of `ChangedRegion`), grounded_diff, confidence_label, similarity_pct, change_summary
+- `ChangedRegion` — **[Sprint B1]** label, bbox, depth_stratum, is_novel (True when entity absent in scene A)
+- `CalibratePayload` — **[Sprint D1]** session_id, label (object name or KnownObjectPreset key), real_width_cm, bbox
+- `CalibrationResponse` — **[Sprint D1]** session_id, scale_px_per_cm, calibrated_at, anchor_label, message
 - `LivingLensTickRequest` — extends AnalyzeRequest + proof_mode
 - `ToolStateObserveRequest` — current_url, view_id, visible_entities, affordances, screenshot
 - `QueryRequest` — query text or image + top_k + filters
@@ -1320,6 +1553,11 @@ The proof surface must expose: prediction consistency, temporal continuity, surp
 33. **Consensus Voting Invariant**: Zero-shot semantic identification MUST use Multi-Slot Majority-Vote Consensus. Vector averaging of Perceiver slots is strictly prohibited as it triggers semantic collapse.
 34. **Async Cardiac Protection**: Any perception call exceeding 10ms (including `score_anchor`) MUST be offloaded to an asynchronous background task. Blocking the `LivingLens` heartbeat with semantic inference is a critical architectural failure.
 35. **Manifold Integrity**: The V2 latent manifold (`latent_vocab.npz`) must remain noun-dominated to ensure physical object stability in zero-shot identification.
+36. **SAG auto-persist on registration**: `SemanticAnchorGraph.learn_template_from_confirmation()` MUST call `_auto_persist()` after every successful registration. Persisted templates survive restart and form the long-term geometric knowledge base.
+37. **Domain packs are read-only source files**: Never mutate `cloud/runtime/domain_packs/*.json` at runtime. Auto-expansion writes only to the data-dir copy (`{TOORI_DATA_DIR}/domain_packs/`). The source pack files are the factory-reset default.
+38. **`_session_scales` calibration is session-scoped**: `POST /v1/calibrate` stores scale per session_id only. Do not persist calibration across sessions or share it between users.
+39. **Pairwise compare uses parallel analyze, not a single shared JEPA state**: `compare_scenes()` MUST run two independent `_analyze_with_world_model` calls (via `asyncio.gather`) to preserve independent observation IDs and avoid cross-contaminating SAG anchor state between image A and image B.
+40. **TooriLens has no SmritiKit dependency**: `mobile/ios/TooriApp/` MUST NOT import `SmritiKit`. All shared types live in `TooriApp/Models/RuntimeModels.swift` and `TooriApp/Models/CompareModels.swift`. `VoiceInputController` is self-contained in `RealityCheckView.swift` using `Speech.framework` directly.
 
 ---
 
@@ -1689,22 +1927,39 @@ This update connects Smriti Apple clients natively to the Gemma 4 reasoning capa
 flowchart TB
   Camera["Live Camera / File Upload"] --> Runtime["FastAPI Runtime\n127.0.0.1:7777"]
   Runtime --> Perception["Primary Local Perception\nDINOv2+MobileSAM / ONNX / basic"]
-  Perception --> JEPA["ImmersiveJEPAEngine\n14×14 patches, EMA, Guard"]
-  JEPA --> Pipeline["TPDS → SAG → CWMA → ECGD → Setu-2"]
-  JEPA --> Async["Async Consensus Identification\n(Majority-Vote Labeling)"]
-  Async -.->|Asynchronous Update| Tracks["EntityTracks (models.py)"]
+  Perception --> JEPA["ImmersiveJEPAEngine\n14x14 patches EMA Guard"]
+  JEPA --> Pipeline["TPDS SAG CWMA ECGD Setu-2"]
+  JEPA --> Async["Async Consensus Identification\nMajority-Vote Labeling"]
+  Async -.-> Tracks["EntityTracks models.py"]
   Pipeline --> Tracks
-  JEPA --> VJ2["V-JEPA2 Encoder\n(cross-tick prediction error)"]
-  JEPA --> Talker["SelectiveTalker\nĒ > μ+2σ"]
+  JEPA --> VJ2["V-JEPA2 Encoder\ncross-tick prediction error"]
+  JEPA --> Talker["SelectiveTalker\nEnergy gating"]
   Tracks --> SmritiDB["SmetiDB\nSQLite + FAISS + FTS5"]
   SmritiDB --> Ingestion["SmritiIngestionDaemon\n+ Gemma4 narration"]
   SmritiDB --> Recall["Smriti Recall\nhybrid score + W-matrix"]
   Talker --> Events["WebSocket /v1/events"]
-  Runtime --> WorldModel["World Model Layer\nentities, affordances, rollouts, benchmarks"]
+  Runtime --> WorldModel["World Model Layer\nentities affordances rollouts benchmarks"]
   WorldModel --> SQLite["SQLite\nrecovery_benchmark_runs"]
   Runtime --> Reasoning["Optional Reasoning\nMLX daemon / Ollama / Cloud"]
   Reasoning --> Gemma4["Gemma4Bridge\nnarrate / reformulate / alert"]
-  Events --> UI["Desktop Electron UI\nLiveLens, LivingLens, Smriti, Settings"]
-  Events --> SDK["SDKs\npython / ts / swift / kotlin"]
-  UI --> Mobile["iOS SwiftUI / Android Compose"]
+  Events --> UI["Desktop Electron UI\nLiveLens LivingLens Smriti Settings"]
+  Events --> SDK["SDKs\npython ts swift kotlin"]
+
+  DomainPacks["Domain Packs Sprint-A2\nplants safety mechanical medical construction"] --> SAG["SemanticAnchorGraph\nauto_persist Sprint-A1"]
+  SAG --> Pipeline
+  Gemma4 -.-> SAG
+
+  ImgPair["Image A + Image B"] --> CompareEP["POST /v1/analyze/compare Sprint-B1"]
+  CompareEP --> CompResp["CompareResponse\nsimilarity_pct changed_regions grounded_diff"]
+
+  KnownObj["Known Object Preset Sprint-D1"] --> CalEP["POST /v1/calibrate"]
+  CalEP --> SessionScale["session_scales px_per_cm"]
+  SessionScale -.-> Tracks
+
+  UI --> TooriLens["TooriLens iOS\nRealityCheckView chat"]
+  TooriLens --> AnalyzeEP["POST /v1/analyze\nmulti-turn + image"]
+  TooriLens --> CompareEP
+  TooriLens --> CalEP
+  TooriLens --> Voice["VoiceInputController\nSFSpeechRecognizer"]
+  Voice --> AnalyzeEP
 ```
